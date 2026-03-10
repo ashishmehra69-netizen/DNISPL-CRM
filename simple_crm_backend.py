@@ -75,10 +75,22 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_passwords (
+                email TEXT PRIMARY KEY,
+                password TEXT,
+                updated_at TEXT
+            )
+            """
+        )
         conn.commit()
     finally:
         conn.close()
+
+
 init_db()
+
 
 def ensure_user(manager_value: str) -> int:
     """
@@ -429,6 +441,50 @@ def delete_activity(activity_id: str):
         conn.execute("DELETE FROM activities WHERE id=?", (activity_id,))
         conn.commit()
         return jsonify({"status": "deleted", "id": activity_id})
+    finally:
+        conn.close()
+
+
+@app.route("/api/passwords/<email>", methods=["GET"])
+def get_password(email: str):
+    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
+    viewer_email = (request.args.get("viewer_email") or "").strip().lower()
+    if viewer_role not in ("supervisor", "admin") and viewer_email != (email or "").strip().lower():
+        return jsonify({"error": "not allowed"}), 403
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT email, password, updated_at FROM user_passwords WHERE lower(email)=lower(?)",
+            (email,),
+        ).fetchone()
+        if not row:
+            return jsonify({"email": email, "password": None})
+        return jsonify(dict(row))
+    finally:
+        conn.close()
+
+
+@app.route("/api/passwords", methods=["POST"])
+def set_password():
+    data = request.get_json(silent=True) or {}
+    viewer_role = (data.get("viewer_role") or "account_manager").strip().lower()
+    viewer_email = (data.get("viewer_email") or "").strip().lower()
+    email = (data.get("email") or "").strip()
+    password = (data.get("password") or "").strip()
+    if not email or not password:
+        return jsonify({"error": "email and password required"}), 400
+    if viewer_role not in ("supervisor", "admin"):
+        if not viewer_email or viewer_email != email.lower():
+            return jsonify({"error": "not allowed"}), 403
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO user_passwords (email, password, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(email) DO UPDATE SET password=excluded.password, updated_at=excluded.updated_at",
+            (email, password, utc_now()),
+        )
+        conn.commit()
+        return jsonify({"status": "ok", "email": email})
     finally:
         conn.close()
 
