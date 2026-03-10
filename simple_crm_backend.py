@@ -70,11 +70,23 @@ def init_db() -> None:
                 notes TEXT,
                 date TEXT,
                 owner TEXT,
+                account_id TEXT,
+                account_name TEXT,
                 created_at TEXT,
                 updated_at TEXT
             )
             """
         )
+        # Ensure new columns exist for older DBs
+        try:
+            conn.execute("ALTER TABLE activities ADD COLUMN account_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE activities ADD COLUMN account_name TEXT")
+        except sqlite3.OperationalError:
+            pass
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS user_passwords (
@@ -93,17 +105,12 @@ init_db()
 
 
 def ensure_user(manager_value: str) -> int:
-    """
-    Resolve manager by email first, then by name.
-    If missing, create as account_manager.
-    """
     value = (manager_value or "").strip()
     if not value:
         raise ValueError("account_manager is required")
 
     conn = get_db()
     try:
-        # Try email match
         if "@" in value:
             row = conn.execute(
                 "SELECT id FROM users WHERE lower(email)=lower(?)",
@@ -118,7 +125,6 @@ def ensure_user(manager_value: str) -> int:
             conn.commit()
             return int(cur.lastrowid)
 
-        # Try exact name match
         row = conn.execute(
             "SELECT id FROM users WHERE lower(name)=lower(?)",
             (value,),
@@ -126,7 +132,6 @@ def ensure_user(manager_value: str) -> int:
         if row:
             return int(row["id"])
 
-        # Create placeholder user from name
         placeholder_email = f"{value.lower().replace(' ', '.')}@local.crm"
         cur = conn.execute(
             "INSERT OR IGNORE INTO users (email, name, role, created_at) VALUES (?, ?, 'account_manager', ?)",
@@ -216,12 +221,6 @@ def list_users():
 
 @app.route("/api/accounts", methods=["GET"])
 def list_accounts():
-    """
-    Visibility:
-    - supervisor/admin -> all accounts
-    - account_manager -> only assigned accounts
-    via query params: viewer_email, viewer_role
-    """
     viewer_email = (request.args.get("viewer_email") or "").strip()
     viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
 
@@ -283,10 +282,6 @@ def create_or_update_account():
 
 @app.route("/api/accounts/import", methods=["POST"])
 def import_accounts():
-    """
-    Multipart upload:
-    - form-data key: file (CSV with account_name,account_manager)
-    """
     if "file" not in request.files:
         return jsonify({"error": "Missing file in form-data"}), 400
 
@@ -332,12 +327,6 @@ def import_accounts():
 
 @app.route("/api/activities", methods=["GET"])
 def list_activities():
-    """
-    Visibility:
-    - supervisor/admin -> all activities
-    - others -> only own activities by viewer_email
-    query params: viewer_email, viewer_role
-    """
     viewer_email = (request.args.get("viewer_email") or "").strip()
     viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
 
@@ -346,7 +335,7 @@ def list_activities():
         if viewer_role in ("supervisor", "admin"):
             rows = conn.execute(
                 """
-                SELECT id, type, subject, notes, date, owner, created_at, updated_at
+                SELECT id, type, subject, notes, date, owner, account_id, account_name, created_at, updated_at
                 FROM activities
                 ORDER BY datetime(date) DESC, datetime(updated_at) DESC
                 """
@@ -358,7 +347,7 @@ def list_activities():
 
         rows = conn.execute(
             """
-            SELECT id, type, subject, notes, date, owner, created_at, updated_at
+            SELECT id, type, subject, notes, date, owner, account_id, account_name, created_at, updated_at
             FROM activities
             WHERE lower(owner)=lower(?)
             ORDER BY datetime(date) DESC, datetime(updated_at) DESC
@@ -379,6 +368,8 @@ def upsert_activity():
     notes = (data.get("notes") or "").strip()
     date = (data.get("date") or "").strip()
     owner = (data.get("owner") or "").strip()
+    account_id = (data.get("account_id") or "").strip()
+    account_name = (data.get("account_name") or "").strip()
 
     if not activity_type or not subject or not date or not owner:
         return jsonify({"error": "type, subject, date, owner are required"}), 400
@@ -397,19 +388,19 @@ def upsert_activity():
             conn.execute(
                 """
                 UPDATE activities
-                SET type=?, subject=?, notes=?, date=?, owner=?, updated_at=?
+                SET type=?, subject=?, notes=?, date=?, owner=?, account_id=?, account_name=?, updated_at=?
                 WHERE id=?
                 """,
-                (activity_type, subject, notes, date, owner, now, activity_id),
+                (activity_type, subject, notes, date, owner, account_id, account_name, now, activity_id),
             )
             status = "updated"
         else:
             conn.execute(
                 """
-                INSERT INTO activities (id, type, subject, notes, date, owner, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO activities (id, type, subject, notes, date, owner, account_id, account_name, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (activity_id, activity_type, subject, notes, date, owner, now, now),
+                (activity_id, activity_type, subject, notes, date, owner, account_id, account_name, now, now),
             )
             status = "created"
         conn.commit()
