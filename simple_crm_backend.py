@@ -20,8 +20,6 @@ os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 app = Flask(__name__)
 
-init_db()
-
 
 @app.after_request
 def add_cors_headers(resp):
@@ -80,7 +78,7 @@ def init_db() -> None:
         conn.commit()
     finally:
         conn.close()
-
+init_db()
 
 def ensure_user(manager_value: str) -> int:
     """
