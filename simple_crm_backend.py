@@ -20,6 +20,8 @@ os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 app = Flask(__name__)
 
+init_db()
+
 
 @app.after_request
 def add_cors_headers(resp):
