@@ -25,16 +25,15 @@ if not DATABASE_URL:
     )
 
 
-def _ensure_sslmode(url: str) -> str:
-    if "sslmode=" in url:
-        return url
+def _strip_sslmode(url: str) -> str:
+    """Remove sslmode from the URL so we can pass it as a kwarg instead."""
     parsed = urlparse(url)
     query = dict(parse_qsl(parsed.query))
-    query.setdefault("sslmode", "require")
+    query.pop("sslmode", None)
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
-DATABASE_URL = _ensure_sslmode(DATABASE_URL)
+DATABASE_URL = _strip_sslmode(DATABASE_URL)
 
 app = Flask(__name__)
 
@@ -48,7 +47,7 @@ def add_cors_headers(resp):
 
 
 def get_conn():
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 
 def init_db() -> None:
