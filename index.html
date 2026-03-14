@@ -59,7 +59,9 @@
  <div class="card">
  <div style="display:flex; justify-content:space-between; align-items:center">
  <div>👤 <strong id="userEmail"></strong> <span class="tag" id="userRole"></span></div>
+ <div id="userActions" style="display:flex; gap:8px; align-items:center">
  <button class="btn" onclick="logout()">Logout</button>
+ </div>
  </div>
  </div>
  <div class="tabs" id="tabs"></div>
@@ -69,6 +71,8 @@
  
  <button class="fab" id="fabBtn" onclick="openAddModal()" style="display:none">+</button>
  <div class="modal" id="modal"></div>
+ <input type="file" id="leadsCsvInput" accept=".csv" style="display:none" onchange="handleLeadsCsv(event)">
+ <input type="file" id="oppsCsvInput" accept=".csv" style="display:none" onchange="handleOppsCsv(event)">
 
  <script>
  // ═══════════════════════════════════════════════════════════════
@@ -77,8 +81,222 @@
  
  const SPREADSHEET_ID = 'YOUR_GOOGLE_SHEET_ID_HERE';
  const API_KEY = 'YOUR_GOOGLE_API_KEY_HERE';
- const SUPERVISOR_EMAIL = 'ashish.mehra@dnispl.com';
- const PASSWORD = 'crm2026'; // Simple password for demo
+const SUPERVISOR_EMAIL = 'ashish.mehra@dnispl.com';
+const PASSWORD = 'crm2026'; // Simple password for demo
+const PRESALES_OWNER = 'vinod.v@dnispil.com';
+const PURCHASE_OWNER = 'Narendra.singh@dnispl.com';
+const ESCALATION_EMAILS = ['ashish.mehra@dnispl.com', 'rakesh.uniyal@dnispl.com'];
+const BUILD_VERSION = '2026-03-10-01';
+const ACCOUNT_OWNER_MAP = {
+  'Satin Credit care': 'shasank.raturi@dnispl.com',
+  'haier': 'shasank.raturi@dnispl.com',
+  'paytm': 'shasank.raturi@dnispl.com',
+  'vedanta': 'shasank.raturi@dnispl.com',
+  'haldiram': 'shasank.raturi@dnispl.com',
+  'india tv': 'shasank.raturi@dnispl.com',
+  'yum restaurant': 'shasank.raturi@dnispl.com',
+  'LG': 'shasank.raturi@dnispl.com',
+  'Samsung E& A': 'shasank.raturi@dnispl.com',
+  'Avaada Energy': 'shasank.raturi@dnispl.com',
+  'Provana': 'shasank.raturi@dnispl.com',
+  'Policy Bazaar': 'shasank.raturi@dnispl.com',
+  'DS Group': 'shasank.raturi@dnispl.com',
+  'Uflex Ltd': 'shasank.raturi@dnispl.com',
+  'NDTV': 'shasank.raturi@dnispl.com',
+  'AAJ TAK': 'shasank.raturi@dnispl.com',
+  'ABVP NEWS': 'shasank.raturi@dnispl.com',
+  'DIXON': 'shasank.raturi@dnispl.com',
+  'AIR India': 'shasank.raturi@dnispl.com',
+  'RSPL': 'shasank.raturi@dnispl.com',
+  'Indian Express': 'shasank.raturi@dnispl.com',
+  'D B Corp ltd': 'shasank.raturi@dnispl.com',
+  'Compunnel': 'shasank.raturi@dnispl.com',
+  'Dabur': 'shasank.raturi@dnispl.com',
+  'Kent RO': 'shasank.raturi@dnispl.com',
+  'Sleepwell': 'shasank.raturi@dnispl.com',
+  'IMT Ghaziabad': 'shasank.raturi@dnispl.com',
+  'Naukri.com': 'shasank.raturi@dnispl.com',
+  'Sar televenture': 'shasank.raturi@dnispl.com',
+  'Rategain': 'shasank.raturi@dnispl.com',
+  'Innovative view': 'shasank.raturi@dnispl.com',
+  'Jubiliant Foodworks': 'shasank.raturi@dnispl.com',
+  'Birla Soft': 'shasank.raturi@dnispl.com',
+  'Amar ujala': 'shasank.raturi@dnispl.com',
+  'Yamaha': 'shasank.raturi@dnispl.com',
+  'Subros': 'shasank.raturi@dnispl.com',
+  'Cube highways': 'shasank.raturi@dnispl.com',
+  'sinch mobile': 'shasank.raturi@dnispl.com',
+  'Religare': 'shasank.raturi@dnispl.com',
+  'Novel pattern': 'shasank.raturi@dnispl.com',
+  'successive digital': 'shasank.raturi@dnispl.com',
+  'Yum Restaurants india pvt Ltd': 'Ankur.verma@dnispl.com',
+  'YUM BRANDS (KFC/Pizza Hut)': 'Ankur.verma@dnispl.com',
+  'YKK INDIA PRIVATE LIMITED': 'Ankur.verma@dnispl.com',
+  'XEROX INDIA LTD': 'Ankur.verma@dnispl.com',
+  'UNISTONI': 'Ankur.verma@dnispl.com',
+  'Sierentz': 'Ankur.verma@dnispl.com',
+  'SCENARIO INDIA': 'Ankur.verma@dnispl.com',
+  'Richemont Group': 'Ankur.verma@dnispl.com',
+  'Realistic Realtors Pvt Ltd': 'Ankur.verma@dnispl.com',
+  'QUALFON TECHNOLOGY SUPPORT': 'Ankur.verma@dnispl.com',
+  'PLANET EDU EXAMS Private Limited': 'Ankur.verma@dnispl.com',
+  'PASONA INDIA Private Limited': 'Ankur.verma@dnispl.com',
+  'PANAMOURE INDIA Private Limited': 'Ankur.verma@dnispl.com',
+  'NAV BACKOFFICE': 'Ankur.verma@dnispl.com',
+  'MUNJAL HOLDINGS': 'Ankur.verma@dnispl.com',
+  'MOGLIX (Business Buy Private Limited)': 'Ankur.verma@dnispl.com',
+  'LOUIS DREYFUS COMMODITIES': 'Ankur.verma@dnispl.com',
+  'J T INFOTECH': 'Ankur.verma@dnispl.com',
+  'INDIAN HEALTH ORGANISATION': 'Ankur.verma@dnispl.com',
+  'AMERISAFE NIDHI LIMITED': 'Ankur.verma@dnispl.com',
+  'Hellmann Worldwide Logistics': 'Ankur.verma@dnispl.com',
+  'GRASS VALLEY INDIA': 'Ankur.verma@dnispl.com',
+  'Fujifilm India Pvt. Ltd.': 'Ankur.verma@dnispl.com',
+  'Elan Limited': 'Ankur.verma@dnispl.com',
+  'EHL (EuroHealth)': 'Ankur.verma@dnispl.com',
+  'DUNAR FOODS LTD': 'Ankur.verma@dnispl.com',
+  'Denkei (Nihon Denkei India)': 'Ankur.verma@dnispl.com',
+  'CROWDSTRIKE INDIA Private Limited': 'Ankur.verma@dnispl.com',
+  'Whirlpool Corporation': 'Ankur.verma@dnispl.com',
+  'VARUN GROUP (Varun Beverages)': 'Ankur.verma@dnispl.com',
+  'VALUEFIRST DIGITAL MEDIA': 'Ankur.verma@dnispl.com',
+  'VAAAN INFRA PVT LTD': 'Ankur.verma@dnispl.com',
+  'SKYLARK INFRA ENGINEERING': 'Ankur.verma@dnispl.com',
+  'SISL INFOTECH Private Limited': 'Ankur.verma@dnispl.com',
+  'SHUTTL (Super Highway Labs)': 'Ankur.verma@dnispl.com',
+  'SANDHAR TECHNOLOGIES LTD': 'Ankur.verma@dnispl.com',
+  'Redcliffe Labs': 'Ankur.verma@dnispl.com',
+  'POLICY BAZAAR': 'Ankur.verma@dnispl.com',
+  'LIME ROAD (A M Market)': 'Ankur.verma@dnispl.com',
+  'KNOWLARITY COMMUNICATIONS': 'Ankur.verma@dnispl.com',
+  'KCC BUILDCON Private Limited': 'Ankur.verma@dnispl.com',
+  'JBM Group': 'Ankur.verma@dnispl.com',
+  'IDP EDUCATION INDIA': 'Ankur.verma@dnispl.com',
+  'HeidelbergCement India': 'Ankur.verma@dnispl.com',
+  'GIRNARSOFT (CarDekho)': 'Ankur.verma@dnispl.com',
+  'FUSION MICRO FINANCE LTD': 'Ankur.verma@dnispl.com',
+  'Flukesys Global Private Limited': 'Ankur.verma@dnispl.com',
+  'ElitePro Infra': 'Ankur.verma@dnispl.com',
+  'Dr.Lime (LimeRoad)': 'Ankur.verma@dnispl.com',
+  'COLOURTEX INDUSTRIES': 'Ankur.verma@dnispl.com',
+  'CARDEKHO (GIRNARSOFT)': 'Ankur.verma@dnispl.com',
+  'BINARY SEMANTICS LTD': 'Ankur.verma@dnispl.com',
+  'Vishal Pipes Limited': 'Om.prakash@dnispl.com',
+  'Uflex': 'Om.prakash@dnispl.com',
+  'TECHBOOKS INTERNATIONAL (Aptara)': 'Om.prakash@dnispl.com',
+  'SIMPA ENERGY INDIA PVT LTD': 'Om.prakash@dnispl.com',
+  'SANSPAREILS GREENLANDS (SG)': 'Om.prakash@dnispl.com',
+  'SANGAM INDIA LTD': 'Om.prakash@dnispl.com',
+  'Rose IT Solutions': 'Om.prakash@dnispl.com',
+  'AGNISYS TECHNOLOGY Private Limited': 'Om.prakash@dnispl.com',
+  'RMSI PRIVATE LTD': 'Om.prakash@dnispl.com',
+  'R SYSTEMS INTERNATIONAL': 'Om.prakash@dnispl.com',
+  'R SYSTEMS': 'Om.prakash@dnispl.com',
+  'PPAP Automotive Ltd': 'Om.prakash@dnispl.com',
+  'PHYSICS WALLAH PVT LTD': 'Om.prakash@dnispl.com',
+  'PGS (PEPO GLOBAL SOURCING)': 'Om.prakash@dnispl.com',
+  'Metro Hospitals & Heart Inst.': 'Om.prakash@dnispl.com',
+  'Manav Rachna Institutions': 'Om.prakash@dnispl.com',
+  'MAHAVIR COLLEGE': 'Om.prakash@dnispl.com',
+  'MAGICBRICKS.COM (Times Internet)': 'Om.prakash@dnispl.com',
+  'MACCAFERRI (India)': 'Om.prakash@dnispl.com',
+  'LOGIX GROUP': 'Om.prakash@dnispl.com',
+  'LENSKART SOLUTIONS Private Limited': 'Om.prakash@dnispl.com',
+  'KRIBHCO': 'Om.prakash@dnispl.com',
+  'K.L. INTERNATIONAL SCHOOL': 'Om.prakash@dnispl.com',
+  'JIL Information Technology (Jaypee)': 'Om.prakash@dnispl.com',
+  'JAIPRAKASH POWER VENTURES': 'Om.prakash@dnispl.com',
+  'INTERARCH BUILDING PRODUCTS': 'Om.prakash@dnispl.com',
+  'INOX WIND LTD': 'Om.prakash@dnispl.com',
+  'INDIA GLYCOLS LTD': 'Om.prakash@dnispl.com',
+  'Honda Cars India Ltd': 'Om.prakash@dnispl.com',
+  'HAVELLS INDIA LIMITED': 'Om.prakash@dnispl.com',
+  'Dharampal Satyapal Limited': 'Om.prakash@dnispl.com',
+  'CTA APPARELS': 'Om.prakash@dnispl.com',
+  'BROOKFIELD INDIA OFFICE PARKS': 'Om.prakash@dnispl.com',
+  'BIBA APPARELS': 'Om.prakash@dnispl.com',
+  'Yashoda Hospital': 'Om.prakash@dnispl.com',
+  'MAHAGUN INDIA Private Limited': 'Om.prakash@dnispl.com',
+  'LAND CRAFT DEVELOPERS Private Limited': 'Om.prakash@dnispl.com',
+  'Institute of Tech & Science (I.T.S)': 'Om.prakash@dnispl.com',
+  'DABUR RESEARCH FOUNDATION': 'Om.prakash@dnispl.com',
+  'Terumo India Private Limited': 'Om.prakash@dnispl.com',
+  'STERLING TOOLS LIMITED': 'Om.prakash@dnispl.com',
+  'SHIVALIK PRINTS LTD': 'Om.prakash@dnispl.com',
+  'SHAHI EXPORTS PRIVATE LIMITED': 'Om.prakash@dnispl.com',
+  'SARVODAYA HOSPITAL & RESEARCH CENTRE': 'Om.prakash@dnispl.com',
+  'RAKSHA TPA Private Limited': 'Om.prakash@dnispl.com',
+  'NHPC LTD': 'Om.prakash@dnispl.com',
+  'Marathon Electric Motors': 'Om.prakash@dnispl.com',
+  'LENSKART': 'Om.prakash@dnispl.com',
+  'YOKOHAMA INDIA': 'Om.prakash@dnispl.com',
+  'TALBRO FORGINGS': 'Om.prakash@dnispl.com',
+  'MITHILA PLYWOOD Private Limited': 'Om.prakash@dnispl.com',
+  'LIBERTY SHOES LIMITED': 'Om.prakash@dnispl.com',
+  'I B COLLEGE': 'Om.prakash@dnispl.com',
+  'BEST FOOD INTERNATIONAL': 'Om.prakash@dnispl.com',
+  'ASIAN INSTITUTE': 'Om.prakash@dnispl.com',
+  'JAKSON ENGINEERS LIMITED': 'Om.prakash@dnispl.com',
+  'ANANT RAJ LIMITED': 'a_VIKRANT.TOLUMBIA@airtel.com',
+  'BIO-MED HEALTH CARE PRODUCTS': 'a_VIKRANT.TOLUMBIA@airtel.com',
+  'DEGANIA MEDICAL DEVICES': 'a_VIKRANT.TOLUMBIA@airtel.com',
+  'Denso International India': 'a_VIKRANT.TOLUMBIA@airtel.com',
+  'DSY Creations': 'a_VIKRANT.TOLUMBIA@airtel.com',
+  'HL Mando Anand': 'a_VIKRANT.TOLUMBIA@airtel.com',
+  'Joyson Anand Abhishek Safety': 'a_VIKRANT.TOLUMBIA@airtel.com',
+  'MUNJAL KIRIU INDUSTRIES': 'a_VIKRANT.TOLUMBIA@airtel.com',
+  'Airtel': 'soumya.m@dnispl.com',
+  'NTT': 'soumya.m@dnispl.com',
+  'Sify': 'soumya.m@dnispl.com',
+  'Yotta': 'soumya.m@dnispl.com',
+  'Ctrl S': 'soumya.m@dnispl.com',
+  'Crest': 'soumya.m@dnispl.com',
+  'Huges': 'soumya.m@dnispl.com',
+  'Altius': 'soumya.m@dnispl.com',
+  'Tikona': 'soumya.m@dnispl.com',
+  'Den': 'soumya.m@dnispl.com',
+  'Exitel': 'soumya.m@dnispl.com',
+  'Hathway': 'soumya.m@dnispl.com',
+  'Tata': 'soumya.m@dnispl.com',
+  'LIFE INSURANCE CORP (LIC)': 'a.gupta@dnispl.com',
+  'Dalmia Refractories Limited': 'a.gupta@dnispl.com',
+  'Air India Limited': 'a.gupta@dnispl.com',
+  'SANSPAREILS GREENLANDS (SG)': 'a.gupta@dnispl.com',
+  'Manav Rachna Institutions': 'a.gupta@dnispl.com',
+  'MAHAVIR COLLEGE': 'a.gupta@dnispl.com',
+  'MACCAFERRI (India)': 'a.gupta@dnispl.com',
+  'LENSKART SOLUTIONS Private Limited': 'a.gupta@dnispl.com',
+  'K.L. INTERNATIONAL SCHOOL': 'a.gupta@dnispl.com',
+  'Yashoda Hospital': 'a.gupta@dnispl.com',
+  'MAHAGUN INDIA Private Limited': 'a.gupta@dnispl.com',
+  'LAND CRAFT DEVELOPERS Private Limited': 'a.gupta@dnispl.com',
+  'Institute of Tech & Science (I.T.S)': 'a.gupta@dnispl.com',
+  'DABUR RESEARCH FOUNDATION': 'a.gupta@dnispl.com',
+  'Terumo India Private Limited': 'a.gupta@dnispl.com',
+  'STERLING TOOLS LIMITED': 'a.gupta@dnispl.com',
+  'SHIVALIK PRINTS LTD': 'a.gupta@dnispl.com',
+  'SHAHI EXPORTS PRIVATE LIMITED': 'a.gupta@dnispl.com',
+  'SARVODAYA HOSPITAL & RESEARCH CENTRE': 'a.gupta@dnispl.com',
+  'RAKSHA TPA Private Limited': 'a.gupta@dnispl.com',
+  'NHPC LTD': 'a.gupta@dnispl.com',
+  'Marathon Electric Motors': 'a.gupta@dnispl.com',
+  'LENSKART': 'a.gupta@dnispl.com',
+  'YOKOHAMA INDIA': 'a.gupta@dnispl.com',
+  'TALBRO FORGINGS': 'a.gupta@dnispl.com',
+  'LIBERTY SHOES LIMITED': 'a.gupta@dnispl.com',
+  'I B COLLEGE': 'a.gupta@dnispl.com',
+  'BEST FOOD INTERNATIONAL': 'a.gupta@dnispl.com',
+  'ASIAN INSTITUTE': 'a.gupta@dnispl.com',
+  'JCB INDIA LIMITED': 'a.gupta@dnispl.com',
+  'GARDEN REACH SHIPBUILDERS': 'a.gupta@dnispl.com',
+  'MAYFAIR': 'a.gupta@dnispl.com',
+  'MAHINDRA LOGISTICS LTD': 'a.gupta@dnispl.com',
+  'MAHINDRA & MAHINDRA LTD': 'a.gupta@dnispl.com',
+  'KOTHARI INDUSTRIES LIMITED': 'a.gupta@dnispl.com',
+  'ICRA ONLINE LIMITED': 'a.gupta@dnispl.com',
+  'POLICY BAZAAR': 'a.gupta@dnispl.com'
+};
+ const CRM_API_BASE = 'https://dnispl-crm.onrender.com';
  
  // ═══════════════════════════════════════════════════════════════
  
@@ -94,6 +312,120 @@
  if (email.includes('purchase') || email.includes('procurement') || email.includes('sourcing')) return 'purchase';
  return 'sales';
  }
+
+
+function getViewerRoleForApi() {
+ return isSupervisor ? 'supervisor' : 'account_manager';
+}
+
+function normalizeActivityFromApi(a) {
+ const created = a.created_at || a.createdDate || a.date || new Date().toISOString();
+ const modified = a.updated_at || a.modifiedDate || created;
+ return {
+ id: String(a.id || Date.now()),
+ type: a.type || 'Note',
+ subject: a.subject || '',
+ notes: a.notes || '',
+ date: a.date || created,
+ owner: a.owner || '',
+ accountId: a.account_id || a.accountId || '',
+ accountName: a.account_name || a.accountName || '',
+ createdDate: created,
+ modifiedDate: modified,
+ };
+}
+
+function normalizeAccountFromApi(a) {
+ const created = a.created_at || a.createdDate || new Date().toISOString();
+ const modified = a.updated_at || a.modifiedDate || created;
+ return {
+   id: String(a.id || Date.now()),
+   name: a.account_name || a.name || '',
+   industry: a.industry || '',
+   tier: a.tier || 'B',
+   location: a.location || '',
+   companySize: a.companySize || '',
+   annualSpend: a.annualSpend || '',
+   accountManager: a.account_manager_email || a.accountManager || '',
+   owner: a.account_manager_email || a.owner || '',
+   createdDate: created,
+   modifiedDate: modified
+ };
+}
+
+async function fetchAccountsFromApi() {
+ const url = `${CRM_API_BASE}/api/accounts?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url);
+ if (!resp.ok) throw new Error(`accounts fetch failed (${resp.status})`);
+ const data = await resp.json();
+ return Array.isArray(data) ? data.map(normalizeAccountFromApi) : [];
+}
+
+async function fetchUserPassword(email) {
+ try {
+ const url = `${CRM_API_BASE}/api/passwords/${encodeURIComponent(email)}?viewer_email=${encodeURIComponent(email)}&viewer_role=account_manager`;
+ const resp = await fetch(url);
+ if (!resp.ok) return null;
+ const data = await resp.json();
+ return data.password || null;
+ } catch (e) {
+ return null;
+ }
+}
+
+async function setUserPassword(email, password) {
+ const payload = { email, password, viewer_role: 'account_manager', viewer_email: currentUser };
+ const resp = await fetch(`${CRM_API_BASE}/api/passwords`, {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify(payload)
+ });
+ if (!resp.ok) {
+ const msg = await resp.text();
+ throw new Error(msg || 'failed to set password');
+ }
+ return resp.json();
+}
+
+function openChangePassword() {
+ const email = currentUser;
+ if (!email) return;
+ const pwd = prompt('Enter your new password:');
+ if (!pwd) return;
+ setUserPassword(email, pwd)
+ .then(() => alert('Password updated'))
+ .catch(err => alert(`Failed: ${err.message}`));
+}
+async function fetchActivitiesFromApi() {
+ const url = `${CRM_API_BASE}/api/activities?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url);
+ if (!resp.ok) throw new Error(`activities fetch failed (${resp.status})`);
+ const data = await resp.json();
+ return Array.isArray(data) ? data.map(normalizeActivityFromApi) : [];
+}
+
+async function upsertActivityToApi(activity) {
+ const resp = await fetch(`${CRM_API_BASE}/api/activities`, {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify(activity)
+ });
+ if (!resp.ok) {
+ const msg = await resp.text();
+ throw new Error(`activity save failed (${resp.status}): ${msg}`);
+ }
+ return resp.json();
+}
+
+async function deleteActivityFromApi(activityId) {
+ const url = `${CRM_API_BASE}/api/activities/${encodeURIComponent(activityId)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url, { method: 'DELETE' });
+ if (!resp.ok) {
+ const msg = await resp.text();
+ throw new Error(`activity delete failed (${resp.status}): ${msg}`);
+ }
+ return resp.json();
+}
 
 function fmtDate(v) {
  if (!v) return 'NA';
@@ -113,6 +445,86 @@ function toISOOrBlank(v) {
  return isNaN(d.getTime()) ? '' : d.toISOString();
 }
 
+
+function parseCSV(csvText) {
+ const lines = csvText.split(/\\r?\\n/).filter(l => l.trim().length);
+ if (!lines.length) return [];
+ const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+ const rows = [];
+ for (let i = 1; i < lines.length; i++) {
+ const parts = lines[i].split(',');
+ const row = {};
+ headers.forEach((h, idx) => row[h] = (parts[idx] || '').trim());
+ rows.push(row);
+ }
+ return rows;
+}
+
+function downloadCSV(filename, rows) {
+ const csv = rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\\n');
+ const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+ const url = URL.createObjectURL(blob);
+ const a = document.createElement('a');
+ a.href = url;
+ a.download = filename;
+ a.click();
+ URL.revokeObjectURL(url);
+}
+
+function hoursUntil(dueIso) {
+ if (!dueIso) return null;
+ const d = new Date(dueIso);
+ if (isNaN(d.getTime())) return null;
+ return Math.ceil((d.getTime() - Date.now()) / 3600000);
+}
+
+function dueSoon(dueIso, hours) {
+ const h = hoursUntil(dueIso);
+ return h !== null && h >= 0 && h <= hours;
+}
+
+
+function addHours(baseIso, hours) {
+ const d = baseIso ? new Date(baseIso) : new Date();
+ if (isNaN(d.getTime())) return '';
+ d.setHours(d.getHours() + hours);
+ return d.toISOString();
+}
+
+
+function escalationMailto(opp, stage, dueIso) {
+ const to = ESCALATION_EMAILS.join(',');
+ const subject = encodeURIComponent(`[CRM Escalation] ${stage} overdue: ${opp.name}`);
+ const body = encodeURIComponent(
+ `Opportunity: ${opp.name}
+Stage: ${stage}
+Owner: ${stage === 'Presales' ? opp.assignedPresales : opp.assignedPurchase}
+Due: ${dueIso}
+Current Status: ${opp.workflowStage}
+`
+ );
+ return `mailto:${to}?subject=${subject}&body=${body}`;
+}
+
+function isOverdue(dueIso) {
+ if (!dueIso) return false;
+ const d = new Date(dueIso);
+ if (isNaN(d.getTime())) return false;
+ return d.getTime() < Date.now();
+}
+
+function slaBadge(label, dueIso) {
+ if (!dueIso) return '';
+ const due = new Date(dueIso);
+ if (isNaN(due.getTime())) return '';
+ const now = new Date();
+ const diffMs = due.getTime() - now.getTime();
+ const hrs = Math.ceil(Math.abs(diffMs) / 3600000);
+ const txt = diffMs < 0 ? `Overdue ${hrs}h` : `Due ${hrs}h`;
+ const color = diffMs < 0 ? '#ff6b6b' : 'rgba(255,255,255,0.25)';
+ return `<span class="tag" style="background:${color}">${label}: ${txt}</span>`;
+}
+
 function recordActivity(type, subject, notes = '', ownerOverride = null) {
  const now = new Date().toISOString();
  state.data.activities.push({
@@ -127,7 +539,7 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  });
 }
 
- function login() {
+ async function login() {
  const email = document.getElementById('emailInput').value.trim();
  const password = document.getElementById('passwordInput').value;
  
@@ -136,7 +548,8 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  return;
  }
  
- if (password !== PASSWORD) {
+ const expected = (await fetchUserPassword(email)) || PASSWORD;
+ if (password !== expected) {
  alert('Incorrect password');
  return;
  }
@@ -150,8 +563,17 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  const roleLabel = { supervisor: 'SUPERVISOR', sales: 'SALESPERSON', presales: 'PRESALES', purchase: 'PURCHASE' };
  document.getElementById('userRole').textContent = roleLabel[getUserRole()] || 'SALESPERSON';
  document.getElementById('fabBtn').style.display = 'block';
+ const actions = document.getElementById('userActions');
+ if (actions && !document.getElementById('changePwdBtn')) {
+ const btn = document.createElement('button');
+ btn.id = 'changePwdBtn';
+ btn.className = 'btn';
+ btn.textContent = 'Change Password';
+ btn.onclick = openChangePassword;
+ actions.insertBefore(btn, actions.firstChild);
+ }
  
- loadData();
+ await loadData();
  }
 
  function logout() {
@@ -162,7 +584,7 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  document.getElementById('fabBtn').style.display = 'none';
  }
 
- function loadData() {
+ async function loadData() {
  // Use localStorage for now (replace with your backend later)
  const savedData = localStorage.getItem('crmData');
  if (savedData) {
@@ -171,10 +593,50 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  state.data = { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] };
  }
 
+ try {
+ const remoteAccounts = await fetchAccountsFromApi();
+ if (Array.isArray(remoteAccounts) && remoteAccounts.length) {
+   state.data.accounts = remoteAccounts;
+ }
+ } catch (err) {
+ console.warn('Backend accounts unavailable, using local accounts only', err);
+ }
+
  // Normalize legacy records so dates always exist
+
+function seedAccountsFromMap() {
+ if (state.data.accounts.length) return;
+ const now = new Date().toISOString();
+ Object.keys(ACCOUNT_OWNER_MAP).forEach(name => {
+   state.data.accounts.push({
+     id: Date.now().toString() + Math.random().toString().slice(2),
+     name,
+     industry: '',
+     tier: 'B',
+     location: '',
+     companySize: '',
+     annualSpend: '',
+     accountManager: ACCOUNT_OWNER_MAP[name],
+     owner: ACCOUNT_OWNER_MAP[name],
+     createdDate: now,
+     modifiedDate: now
+   });
+ });
+}
+
  ['leads','accounts','contacts','opportunities','activities'].forEach(key => {
  if (!Array.isArray(state.data[key])) state.data[key] = [];
  state.data[key] = state.data[key].map(item => {
+ if (key === 'accounts') {
+   // normalize legacy field names
+   if (!item.name && item.account_name) item.name = item.account_name;
+   if (!item.owner && item.accountOwner) item.owner = item.accountOwner;
+   const mapKey = item.name || '';
+   const mapped = ACCOUNT_OWNER_MAP[mapKey] || ACCOUNT_OWNER_MAP[mapKey.toLowerCase()] || ACCOUNT_OWNER_MAP[mapKey.toUpperCase()];
+   if (mapped) {
+     item.accountManager = mapped;
+   }
+ }
  const ts = new Date().toISOString();
  const created = item.createdDate || item.date || ts;
  const modified = item.modifiedDate || created;
@@ -192,10 +654,21 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  normalized.purchaseCosting = normalized.purchaseCosting || '';
  normalized.costingTat = normalized.costingTat || '';
  normalized.finalPricingProposal = normalized.finalPricingProposal || '';
+ normalized.presalesAssignedAt = normalized.presalesAssignedAt || '';
+ normalized.presalesDueAt = normalized.presalesDueAt || '';
+ normalized.purchaseAssignedAt = normalized.purchaseAssignedAt || '';
+ normalized.purchaseDueAt = normalized.purchaseDueAt || '';
+ normalized.costingReturnedAt = normalized.costingReturnedAt || '';
+ normalized.finalProposalAt = normalized.finalProposalAt || '';
+ normalized.assignmentDueAt = normalized.assignmentDueAt || '';
+ normalized.salesSubmittedAt = normalized.salesSubmittedAt || '';
  }
  return normalized;
  });
  });
+
+ seedAccountsFromMap();
+ saveData();
  
 function calculateWinProb(opp) {
  // Base probability from stage
@@ -292,7 +765,14 @@ function calculateICPScore(account) {
  return Math.min(score, 60);
 }
 
- document.getElementById('status').textContent = isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data';
+ try {
+ const remoteActivities = await fetchActivitiesFromApi();
+ state.data.activities = remoteActivities;
+ } catch (err) {
+ console.warn('Backend activities unavailable, using local activities only', err);
+ }
+
+ document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
  render();
  }
 
@@ -311,16 +791,25 @@ function calculateICPScore(account) {
  return state.data;
  }
  const role = getUserRole();
+ const myAccounts = state.data.accounts.filter(a => {
+ const mgr = (a.accountManager || a.account_manager || '').toLowerCase();
+ const owner = (a.owner || '').toLowerCase();
+ const me = (currentUser || '').toLowerCase();
+ return mgr === me || owner === me;
+});
+ const myAccountIds = new Set(myAccounts.map(a => a.id));
  const opportunities = state.data.opportunities.filter(o => {
  if (o.owner === currentUser) return true;
+ if (myAccountIds.has(o.accountId)) return true;
  if (role === 'presales') return o.assignedPresales === currentUser;
  if (role === 'purchase') return o.assignedPurchase === currentUser;
  return false;
  });
+ const contacts = state.data.contacts.filter(c => c.owner === currentUser || myAccountIds.has(c.accountId));
  return {
  leads: state.data.leads.filter(l => l.owner === currentUser),
- accounts: state.data.accounts.filter(a => a.owner === currentUser),
- contacts: state.data.contacts.filter(c => c.owner === currentUser),
+ accounts: myAccounts,
+ contacts,
  opportunities,
  activities: state.data.activities.filter(a => a.owner === currentUser)
  };
@@ -356,6 +845,7 @@ function calculateICPScore(account) {
  return `
  <div class="card">
  <h2>🎯 Leads (${filtered.leads.length})</h2>
+ <button class="btn" type="button" onclick="document.getElementById('leadsCsvInput').click()">Import CSV</button>
  </div>
  <div class="grid">
  ${filtered.leads.map(l => `
@@ -379,7 +869,80 @@ function calculateICPScore(account) {
  `;
 }
 
- function renderAccounts(filtered) {
+ 
+function handleLeadsCsv(e) {
+ const file = e.target.files[0];
+ if (!file) return;
+ const reader = new FileReader();
+ reader.onload = () => {
+ const rows = parseCSV(reader.result);
+ const now = new Date().toISOString();
+ rows.forEach(r => {
+ const lead = {
+ id: Date.now().toString() + Math.random().toString().slice(2),
+ name: r.name || r.lead || 'Unnamed Lead',
+ company: r.company || r.account || '',
+ email: r.email || '',
+ phone: r.phone || '',
+ source: r.source || 'CSV',
+ status: r.status || 'New',
+ notes: r.notes || '',
+ owner: r.owner || currentUser,
+ createdDate: now,
+ modifiedDate: now
+ };
+ state.data.leads.push(lead);
+ });
+ saveData();
+ render();
+ alert(`Imported ${rows.length} leads.`);
+ };
+ reader.readAsText(file);
+ e.target.value = '';
+}
+
+function handleOppsCsv(e) {
+ const file = e.target.files[0];
+ if (!file) return;
+ const reader = new FileReader();
+ reader.onload = () => {
+ const rows = parseCSV(reader.result);
+ const now = new Date().toISOString();
+ rows.forEach(r => {
+ let account = state.data.accounts.find(a => (a.name || '').toLowerCase() === (r.account || r.account_name || '').toLowerCase());
+ if (!account && (r.account || r.account_name)) {
+ account = { id: Date.now().toString() + Math.random().toString().slice(2), name: r.account || r.account_name, industry: r.industry || '', tier: r.tier || 'B', location: r.location || '', createdDate: now, modifiedDate: now };
+ state.data.accounts.push(account);
+ }
+ const opp = {
+ id: Date.now().toString() + Math.random().toString().slice(2),
+ name: r.name || r.opportunity || 'New Opportunity',
+ accountId: account ? account.id : '',
+ value: parseFloat(r.value || r.amount || '0') || 0,
+ stage: r.stage || 'Discovery',
+ owner: r.owner || currentUser,
+ createdDate: now,
+ modifiedDate: now,
+ workflowStage: 'Assigned to Presales',
+ assignedPresales: PRESALES_OWNER,
+ assignedPurchase: '',
+ presalesAssignedAt: now,
+ presalesDueAt: addHours(now, 72),
+ assignmentDueAt: addHours(now, 4),
+ salesSubmittedAt: now
+ };
+ state.data.opportunities.push(opp);
+ });
+ saveData();
+ render();
+ alert(`Imported ${rows.length} opportunities.`);
+ };
+ reader.readAsText(file);
+ e.target.value = '';
+}
+
+function renderAccounts(filtered) {
+
  return `
  <div class="card">
  <h2>🏢 Accounts (${filtered.accounts.length})</h2>
@@ -429,6 +992,7 @@ function calculateICPScore(account) {
  return `
  <div class="card">
  <h2>💰 Opportunities (${filtered.opportunities.length})</h2>
+ <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
  </div>
  <div class="grid">
  ${filtered.opportunities.map(o => {
@@ -442,7 +1006,10 @@ function calculateICPScore(account) {
  <div>
  <span class="tag">${o.stage}</span>
  <span class="tag">${o.workflowStage || 'Sales Review'}</span>
- <span class="tag" style="background:#4ade80; color:white">${winProb}% Win</span>
+ <span class="tag" style="background:#4ade80; color:white">Win Probability: ${winProb}%</span>
+ </div>
+ <div style="margin-top:6px; font-size:0.9em; font-weight:bold">
+ Win Probability: ${winProb}%
  </div>
  <div style="font-size:0.85em; opacity:0.85; margin-top:10px">
  Sales: ${o.salesOwner || o.owner || 'NA'}<br>
@@ -475,11 +1042,17 @@ function calculateICPScore(account) {
  <div style="margin:8px 0">
  <span class="tag">${o.workflowStage || 'Sales Review'}</span>
  <span class="tag">${o.stage || 'Discovery'}</span>
+ <span class="tag" style="background:#4ade80; color:white">${calculateWinProb(o)}% Win</span>
  </div>
  <div style="font-size:0.85em; line-height:1.5; opacity:0.9">
  <b>Sales:</b> ${o.salesOwner || o.owner || 'NA'}<br>
  <b>Presales:</b> ${o.assignedPresales || 'Unassigned'}<br>
  <b>Purchase:</b> ${o.assignedPurchase || 'Unassigned'}<br>
+ <div style="margin-top:8px">${slaBadge('Presales', o.presalesDueAt)} ${slaBadge('Purchase', o.purchaseDueAt)}</div>
+ <div style="margin-top:8px">
+ ${isOverdue(o.presalesDueAt) ? `<a class=\"btn btn-danger\" style=\"text-decoration:none\" href=\"${escalationMailto(o, 'Presales', o.presalesDueAt)}\">Escalate Presales</a>` : ''}
+ ${isOverdue(o.purchaseDueAt) ? `<a class=\"btn btn-danger\" style=\"text-decoration:none\" href=\"${escalationMailto(o, 'Purchase', o.purchaseDueAt)}\">Escalate Purchase</a>` : ''}
+ </div>
  <b>BOQ:</b> ${o.boq ? 'Yes' : 'No'} | <b>Costing:</b> ${o.purchaseCosting ? 'Yes' : 'No'}<br>
  <b>TAT:</b> ${fmtDateTime(o.costingTat)}<br>
  <b>Final Proposal:</b> ${o.finalPricingProposal ? 'Ready' : 'Pending'}
@@ -581,7 +1154,8 @@ function clearActivityDateRange() {
  render();
 }
 
- function renderDashboard(filtered) {
+function renderDashboard(filtered) {
+ const role = getUserRole();
  const totalPipeline = filtered.opportunities.reduce((sum, o) => sum + (o.value || 0), 0);
  const avgWin = filtered.opportunities.length
  ? Math.round(filtered.opportunities.reduce((sum, o) => sum + calculateWinProb(o), 0) / filtered.opportunities.length)
@@ -593,37 +1167,82 @@ function clearActivityDateRange() {
  ...filtered.opportunities.map(x => x.modifiedDate || x.createdDate),
  ...filtered.activities.map(x => x.modifiedDate || x.createdDate || x.date)
  ].filter(Boolean).sort().reverse()[0];
+
+ const presalesQueue = filtered.opportunities.filter(o => o.workflowStage === 'Assigned to Presales');
+ const purchaseQueue = filtered.opportunities.filter(o => o.workflowStage === 'Awaiting Purchase Costing');
+ const overduePresales = filtered.opportunities.filter(o => isOverdue(o.presalesDueAt));
+ const overduePurchase = filtered.opportunities.filter(o => isOverdue(o.purchaseDueAt));
+ const duePresalesSoon = filtered.opportunities.filter(o => dueSoon(o.presalesDueAt, 12));
+ const duePurchaseSoon = filtered.opportunities.filter(o => dueSoon(o.purchaseDueAt, 6));
+
+ const month = new Date().toISOString().slice(0,7);
+ const touchedAccountIds = new Set(
+   (filtered.activities || [])
+     .filter(a => a.accountId)
+     .map(a => a.accountId)
+ );
+ const accountTouchList = filtered.accounts.map(a => ({
+   id: a.id,
+   name: a.name,
+   touched: touchedAccountIds.has(a.id),
+ }));
+
  return `
  <div class="card">
  <h2>📊 Dashboard</h2>
  <div style="font-size:0.9em; opacity:0.8; margin-top:8px">Last Update: ${fmtDateTime(lastUpdated)}</div>
+ <div style="margin-top:10px"><button class="btn" onclick="exportMonthlyPipeline('${month}')">Export Monthly Pipeline</button></div>
  </div>
  <div class="grid">
- <div class="metric">
- <div>Leads</div>
- <div class="metric-value">${filtered.leads.length}</div>
+ <div class="metric"><div>Leads</div><div class="metric-value">${filtered.leads.length}</div></div>
+ <div class="metric"><div>Accounts</div><div class="metric-value">${filtered.accounts.length}</div></div>
+ <div class="metric"><div>Contacts</div><div class="metric-value">${filtered.contacts.length}</div></div>
+ <div class="metric"><div>Opportunities</div><div class="metric-value">${filtered.opportunities.length}</div></div>
+ <div class="metric"><div>Pipeline Value</div><div class="metric-value">₹${(totalPipeline / 10000000).toFixed(1)}Cr</div></div>
+ <div class="metric"><div>Avg Win Probability</div><div class="metric-value">${avgWin}%</div></div>
  </div>
- <div class="metric">
- <div>Accounts</div>
- <div class="metric-value">${filtered.accounts.length}</div>
+
+ <div class="card">
+ <h3>Reminders</h3>
+ <div style="margin-top:8px">Presales due soon (<=12h): ${duePresalesSoon.length} | Purchase due soon (<=6h): ${duePurchaseSoon.length}</div>
+ <div style="margin-top:8px">Overdue Presales: ${overduePresales.length} | Overdue Purchase: ${overduePurchase.length}</div>
  </div>
- <div class="metric">
- <div>Opportunities</div>
- <div class="metric-value">${filtered.opportunities.length}</div>
- </div>
- <div class="metric">
- <div>Pipeline Value</div>
- <div class="metric-value">₹${(totalPipeline / 10000000).toFixed(1)}Cr</div>
- </div>
- <div class="metric">
- <div>Avg Win Probability</div>
- <div class="metric-value">${avgWin}%</div>
+
+ <div class="card">
+ <h3>Account Touch Status</h3>
+ <div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:8px">
+ ${accountTouchList.length ? accountTouchList.map(a => `
+   <span class="tag" style="background:${a.touched ? '#22c55e' : '#ef4444'}; color:white">${a.name}</span>
+ `).join('') : 'No accounts available.'}
  </div>
  </div>
+
+ ${role === 'presales' ? `
+ <div class="card"><h3>Presales Queue</h3>${presalesQueue.length ? presalesQueue.map(o => `<div class="opp-card">${o.name} — Due: ${fmtDateTime(o.presalesDueAt)}</div>`).join('') : 'No items.'}</div>
+ ` : ''}
+ ${role === 'purchase' ? `
+ <div class="card"><h3>Purchase Queue</h3>${purchaseQueue.length ? purchaseQueue.map(o => `<div class="opp-card">${o.name} — Due: ${fmtDateTime(o.purchaseDueAt)}</div>`).join('') : 'No items.'}</div>
+ ` : ''}
  `;
  }
 
- function changeTab(tab) {
+function exportMonthlyPipeline(month) {
+ const m = month || prompt('Enter month (YYYY-MM):', new Date().toISOString().slice(0,7));
+ if (!m) return;
+ const rows = state.data.opportunities
+ .filter(o => (o.createdDate || '').startsWith(m))
+ .map(o => {
+ const account = state.data.accounts.find(a => a.id === o.accountId);
+ const win = calculateWinProb(o);
+ const weighted = (o.value || 0) * win / 100;
+ return [o.name, account?.name || '', o.owner || '', o.stage || '', o.workflowStage || '', o.value || 0, win, weighted, o.createdDate || ''];
+ });
+ rows.unshift(['Opportunity','Account','Owner','Stage','Workflow Stage','Value','Win %','Weighted Value','Created']);
+ downloadCSV(`pipeline_${m}.csv`, rows);
+}
+
+function changeTab(tab) {
+
  state.activeTab = tab;
  render();
  }
@@ -874,6 +1493,10 @@ function openActivityModal(activity = null) {
  <option value="Note" ${activity?.type === 'Note' ? 'selected' : ''}>📝 Note</option>
  </select>
  <input class="input" required name="subject" placeholder="Subject *" value="${activity?.subject || ''}">
+ <select class="input" name="accountId">
+ <option value="">Link Account (optional)</option>
+ ${state.data.accounts.map(a => `<option value="${a.id}" ${activity?.accountId === a.id ? 'selected' : ''}>${a.name}</option>`).join('')}
+ </select>
  <textarea name="notes" placeholder="What did you do? What was discussed?">${activity?.notes || ''}</textarea>
  <input class="input" required type="datetime-local" name="date" value="${activity?.date ? activity.date.slice(0,16) : new Date().toISOString().slice(0,16)}">
  <div style="margin-top:20px">
@@ -887,29 +1510,44 @@ function openActivityModal(activity = null) {
  document.getElementById('modal').classList.add('show');
 }
 
-function saveActivity(e, id) {
+async function saveActivity(e, id) {
  e.preventDefault();
- const data = Object.fromEntries(new FormData(e.target));
- data.owner = currentUser;
- data.createdDate = id ? state.data.activities.find(a => a.id === id).createdDate : new Date().toISOString();
- data.modifiedDate = new Date().toISOString();
- if (id) {
- const index = state.data.activities.findIndex(a => a.id === id);
- state.data.activities[index] = {...data, id};
- } else {
- state.data.activities.push({...data, id: Date.now().toString()});
- }
+ const formData = Object.fromEntries(new FormData(e.target));
+ const existing = id ? state.data.activities.find(a => a.id === id) : null;
+ const payload = {
+ id: id || undefined,
+ type: formData.type,
+ subject: formData.subject,
+ notes: formData.notes || '',
+ date: toISOOrBlank(formData.date) || new Date().toISOString(),
+ owner: currentUser,
+ account_id: formData.accountId || '',
+ account_name: (state.data.accounts.find(a => a.id === formData.accountId)?.name) || '',
+ createdDate: existing?.createdDate || new Date().toISOString(),
+ modifiedDate: new Date().toISOString(),
+ };
+
+ try {
+ await upsertActivityToApi(payload);
+ state.data.activities = await fetchActivitiesFromApi();
  saveData();
  closeModal();
  render();
+ } catch (err) {
+ alert(`Could not save activity to shared backend: ${err.message}`);
+ }
 }
 
-function deleteActivity(id) {
- if (confirm('Delete this activity?')) {
- state.data.activities = state.data.activities.filter(a => a.id !== id);
+async function deleteActivity(id) {
+ if (!confirm('Delete this activity?')) return;
+ try {
+ await deleteActivityFromApi(id);
+ state.data.activities = await fetchActivitiesFromApi();
  saveData();
  closeModal();
  render();
+ } catch (err) {
+ alert(`Could not delete activity from shared backend: ${err.message}`);
  }
 }
 
@@ -951,14 +1589,17 @@ function updateOpportunityWorkflow(id, updates) {
 function assignToPresales(id) {
  const opp = state.data.opportunities.find(o => o.id === id);
  if (!opp) return;
- const user = prompt('Assign presales email:', opp.assignedPresales || 'presales@company.com');
- if (!user) return;
+ const now = new Date().toISOString();
  const comments = prompt('Sales comments for presales:', opp.salesComments || '');
  const requirements = prompt('Customer requirements:', opp.requirements || '');
  updateOpportunityWorkflow(id, {
- assignedPresales: user.trim(),
+ assignedPresales: PRESALES_OWNER,
  salesComments: comments || '',
  requirements: requirements || '',
+ presalesAssignedAt: now,
+ presalesDueAt: addHours(now, 72),
+ assignmentDueAt: addHours(now, 4),
+ salesSubmittedAt: now,
  workflowStage: 'Assigned to Presales'
  });
 }
@@ -969,16 +1610,18 @@ function submitPresalesPack(id) {
  const architecture = prompt('Presales architecture notes:', opp.presalesArchitecture || '');
  const questions = prompt('Presales questions:', opp.presalesQuestions || '');
  const boq = prompt('Enter BOQ details:', opp.boq || '');
- const purchase = prompt('Assign purchase email:', opp.assignedPurchase || 'purchase@company.com');
- if (!boq || !purchase) {
- alert('BOQ and Purchase owner are required.');
+ const now = new Date().toISOString();
+ if (!boq) {
+ alert('BOQ is required.');
  return;
  }
  updateOpportunityWorkflow(id, {
  presalesArchitecture: architecture || '',
  presalesQuestions: questions || '',
  boq,
- assignedPurchase: purchase.trim(),
+ assignedPurchase: PURCHASE_OWNER,
+ purchaseAssignedAt: now,
+ purchaseDueAt: addHours(now, 24),
  workflowStage: 'Awaiting Purchase Costing'
  });
 }
@@ -993,9 +1636,11 @@ function submitPurchaseCosting(id) {
  return;
  }
  const tatISO = toISOOrBlank(tat);
+ const now = new Date().toISOString();
  updateOpportunityWorkflow(id, {
  purchaseCosting: costing,
  costingTat: tatISO || opp.costingTat || '',
+ costingReturnedAt: now,
  workflowStage: 'Costing Returned'
  });
 }
@@ -1008,8 +1653,10 @@ function submitFinalPricing(id) {
  alert('Final proposal is required.');
  return;
  }
+ const now = new Date().toISOString();
  updateOpportunityWorkflow(id, {
  finalPricingProposal: proposal,
+ finalProposalAt: now,
  workflowStage: 'Final Proposal Shared'
  });
 }
