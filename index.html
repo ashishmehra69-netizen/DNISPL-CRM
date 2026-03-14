@@ -1,0 +1,1152 @@
+<!DOCTYPE html>
+<html>
+<head>
+ <meta charset="UTF-8">
+ <title>Sales CRM - Simple Version</title>
+ <style>
+ * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
+ body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; color: white; padding: 20px; }
+ .container { max-width: 1200px; margin: 0 auto; }
+ .header { text-align: center; padding: 30px 0; }
+ .header h1 { font-size: 2.5em; margin-bottom: 10px; }
+ .login-box { background: rgba(255,255,255,0.15); padding: 40px; border-radius: 15px; max-width: 400px; margin: 50px auto; text-align: center; }
+ .input { width: 100%; padding: 12px; margin: 10px 0; border-radius: 8px; border: none; font-size: 1em; }
+ .btn { background: white; color: #667eea; border: none; padding: 12px 30px; border-radius: 8px; cursor: pointer; font-weight: bold; margin: 10px 5px; font-size: 1em; }
+ .btn:hover { transform: translateY(-2px); transition: all 0.3s; }
+ .btn-success { background: #4ade80; color: white; }
+ .btn-danger { background: #ff4757; color: white; }
+ .tabs { display: flex; gap: 10px; margin: 20px 0; overflow-x: auto; }
+ .tab { padding: 12px 24px; background: rgba(255,255,255,0.1); border: none; color: white; cursor: pointer; border-radius: 8px; }
+ .tab.active { background: white; color: #667eea; font-weight: bold; }
+ .card { background: rgba(255,255,255,0.15); padding: 20px; border-radius: 12px; margin: 15px 0; }
+ .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; margin: 20px 0; }
+ .item-card { background: rgba(255,255,255,0.1); padding: 15px; border-radius: 10px; cursor: pointer; }
+ .item-card:hover { background: rgba(255,255,255,0.2); }
+ .fab { position: fixed; bottom: 30px; right: 30px; width: 60px; height: 60px; background: white; color: #667eea; border: none; border-radius: 50%; font-size: 2em; cursor: pointer; box-shadow: 0 5px 20px rgba(0,0,0,0.3); }
+ .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; overflow-y: auto; padding: 20px; }
+ .modal.show { display: block; }
+ .modal-content { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 15px; max-width: 600px; margin: 20px auto; }
+ .status { text-align: center; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 8px; margin: 10px 0; }
+ .tag { display: inline-block; padding: 4px 10px; background: rgba(255,255,255,0.2); border-radius: 12px; font-size: 0.85em; margin: 3px; }
+ .metric { background: rgba(255,255,255,0.1); padding: 20px; border-radius: 10px; text-align: center; }
+ .metric-value { font-size: 2em; font-weight: bold; margin: 10px 0; }
+ textarea { width: 100%; padding: 10px; margin: 10px 0; border-radius: 8px; border: none; min-height: 80px; }
+ select { width: 100%; padding: 12px; margin: 10px 0; border-radius: 8px; border: none; }
+ </style>
+</head>
+<body>
+ <div class="container">
+ <div class="header">
+ <h1>🚀 Sales CRM</h1>
+ <p>Simple & Reliable</p>
+ </div>
+ 
+ <div id="loginScreen" style="display:block">
+ <div class="login-box">
+ <h2 style="margin-bottom:20px">Sign In</h2>
+ <input type="email" class="input" id="emailInput" placeholder="Your Email" value="">
+ <input type="password" class="input" id="passwordInput" placeholder="Password" value="crm2026">
+ <button class="btn btn-success" onclick="login()">Sign In</button>
+ <div style="margin-top:20px; font-size:0.9em; opacity:0.8">
+ Password: crm2026<br>
+ Supervisor: ashish.mehra@dnispl.com
+ </div>
+ </div>
+ </div>
+
+ <div id="mainScreen" style="display:none">
+ <div class="status" id="status">Loading...</div>
+ <div class="card">
+ <div style="display:flex; justify-content:space-between; align-items:center">
+ <div>👤 <strong id="userEmail"></strong> <span class="tag" id="userRole"></span></div>
+ <button class="btn" onclick="logout()">Logout</button>
+ </div>
+ </div>
+ <div class="tabs" id="tabs"></div>
+ <div id="content"></div>
+ </div>
+ </div>
+ 
+ <button class="fab" id="fabBtn" onclick="openAddModal()" style="display:none">+</button>
+ <div class="modal" id="modal"></div>
+
+ <script>
+ // ═══════════════════════════════════════════════════════════════
+ // CONFIGURATION - SIMPLE GOOGLE SHEETS BACKEND
+ // ═══════════════════════════════════════════════════════════════
+ 
+ const SPREADSHEET_ID = 'YOUR_GOOGLE_SHEET_ID_HERE';
+ const API_KEY = 'YOUR_GOOGLE_API_KEY_HERE';
+ const SUPERVISOR_EMAIL = 'ashish.mehra@dnispl.com';
+ const PASSWORD = 'crm2026'; // Simple password for demo
+ 
+ // ═══════════════════════════════════════════════════════════════
+ 
+ let currentUser = '';
+ let isSupervisor = false;
+ let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] } };
+ let activityFilter = { mode: 'today', from: '', to: '' };
+
+ function getUserRole() {
+ if (isSupervisor) return 'supervisor';
+ const email = (currentUser || '').toLowerCase();
+ if (email.includes('presales') || email.includes('pre.sales') || email.includes('solutions')) return 'presales';
+ if (email.includes('purchase') || email.includes('procurement') || email.includes('sourcing')) return 'purchase';
+ return 'sales';
+ }
+
+function fmtDate(v) {
+ if (!v) return 'NA';
+ const d = new Date(v);
+ return isNaN(d.getTime()) ? 'NA' : d.toLocaleDateString();
+}
+
+function fmtDateTime(v) {
+ if (!v) return 'NA';
+ const d = new Date(v);
+ return isNaN(d.getTime()) ? 'NA' : d.toLocaleString();
+}
+
+function toISOOrBlank(v) {
+ if (!v) return '';
+ const d = new Date(v);
+ return isNaN(d.getTime()) ? '' : d.toISOString();
+}
+
+function recordActivity(type, subject, notes = '', ownerOverride = null) {
+ const now = new Date().toISOString();
+ state.data.activities.push({
+ id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
+ type,
+ subject,
+ notes,
+ date: now,
+ createdDate: now,
+ modifiedDate: now,
+ owner: ownerOverride || currentUser
+ });
+}
+
+ function login() {
+ const email = document.getElementById('emailInput').value.trim();
+ const password = document.getElementById('passwordInput').value;
+ 
+ if (!email) {
+ alert('Please enter your email');
+ return;
+ }
+ 
+ if (password !== PASSWORD) {
+ alert('Incorrect password');
+ return;
+ }
+ 
+ currentUser = email;
+ isSupervisor = email.toLowerCase() === SUPERVISOR_EMAIL.toLowerCase();
+ 
+ document.getElementById('loginScreen').style.display = 'none';
+ document.getElementById('mainScreen').style.display = 'block';
+ document.getElementById('userEmail').textContent = currentUser;
+ const roleLabel = { supervisor: 'SUPERVISOR', sales: 'SALESPERSON', presales: 'PRESALES', purchase: 'PURCHASE' };
+ document.getElementById('userRole').textContent = roleLabel[getUserRole()] || 'SALESPERSON';
+ document.getElementById('fabBtn').style.display = 'block';
+ 
+ loadData();
+ }
+
+ function logout() {
+ currentUser = '';
+ isSupervisor = false;
+ document.getElementById('loginScreen').style.display = 'block';
+ document.getElementById('mainScreen').style.display = 'none';
+ document.getElementById('fabBtn').style.display = 'none';
+ }
+
+ function loadData() {
+ // Use localStorage for now (replace with your backend later)
+ const savedData = localStorage.getItem('crmData');
+ if (savedData) {
+ state.data = JSON.parse(savedData);
+ } else {
+ state.data = { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] };
+ }
+
+ // Normalize legacy records so dates always exist
+ ['leads','accounts','contacts','opportunities','activities'].forEach(key => {
+ if (!Array.isArray(state.data[key])) state.data[key] = [];
+ state.data[key] = state.data[key].map(item => {
+ const ts = new Date().toISOString();
+ const created = item.createdDate || item.date || ts;
+ const modified = item.modifiedDate || created;
+ const normalized = { ...item, createdDate: created, modifiedDate: modified };
+ if (key === 'opportunities') {
+ normalized.workflowStage = normalized.workflowStage || 'Sales Review';
+ normalized.salesOwner = normalized.salesOwner || normalized.owner || '';
+ normalized.assignedPresales = normalized.assignedPresales || '';
+ normalized.assignedPurchase = normalized.assignedPurchase || '';
+ normalized.salesComments = normalized.salesComments || '';
+ normalized.requirements = normalized.requirements || '';
+ normalized.presalesArchitecture = normalized.presalesArchitecture || '';
+ normalized.presalesQuestions = normalized.presalesQuestions || '';
+ normalized.boq = normalized.boq || '';
+ normalized.purchaseCosting = normalized.purchaseCosting || '';
+ normalized.costingTat = normalized.costingTat || '';
+ normalized.finalPricingProposal = normalized.finalPricingProposal || '';
+ }
+ return normalized;
+ });
+ });
+ 
+function calculateWinProb(opp) {
+ // Base probability from stage
+ const stageProb = {
+ 'Discovery': 25,
+ 'Proposal': 60,
+ 'Negotiation': 85,
+ 'Closed Won': 100,
+ 'Closed Lost': 0
+ };
+ 
+ let base = stageProb[opp.stage] || 25;
+ 
+ // Get account for this opportunity
+ const account = state.data.accounts.find(a => a.id === opp.accountId);
+ 
+ // Get contacts for this account
+ const contacts = state.data.contacts.filter(c => c.accountId === opp.accountId);
+ 
+ if (!account) return base;
+ 
+ let adjustments = 0;
+ 
+ // 1. ICP Score adjustment (±15%)
+ const icpScore = calculateICPScore(account);
+ if (icpScore >= 45) adjustments += 15;
+ else if (icpScore >= 35) adjustments += 8;
+ else if (icpScore >= 25) adjustments += 0;
+ else adjustments -= 10;
+ 
+ // 2. Competition Position (±10%)
+ if (opp.competitionPosition === 'Strong') adjustments += 10;
+ else if (opp.competitionPosition === 'Favorable') adjustments += 5;
+ else if (opp.competitionPosition === 'Unfavorable') adjustments -= 8;
+ 
+ // 3. Buying Influence Coverage (±10%)
+ const hasMAS = contacts.some(c => c.roleType === 'MAS');
+ const hasCoach = contacts.some(c => c.roleType === 'Coach');
+ const hasHighInfluence = contacts.some(c => c.influenceLevel === 'High');
+ 
+ if (hasMAS && hasCoach && hasHighInfluence) adjustments += 10;
+ else if (hasMAS && hasHighInfluence) adjustments += 5;
+ else if (!hasMAS) adjustments -= 5;
+ 
+ // 4. Contact Sentiment (±5%)
+ const positiveEmotions = contacts.filter(c => c.emotion === 'Euphoria' || c.emotion === 'Great').length;
+ const negativeEmotions = contacts.filter(c => c.emotion === 'Worry').length;
+ 
+ if (positiveEmotions > negativeEmotions && positiveEmotions > 0) adjustments += 5;
+ else if (negativeEmotions > positiveEmotions && negativeEmotions > 0) adjustments -= 5;
+ 
+ // 5. Account Mode (±5%)
+ if (account.mode === 'Business Expansion') adjustments += 5;
+ else if (account.mode === 'Overcome Bottleneck') adjustments += 3;
+ else if (account.mode === 'Status Quo') adjustments -= 5;
+ 
+ return Math.min(100, Math.max(0, base + adjustments));
+}
+
+function calculateICPScore(account) {
+ let score = 0;
+ 
+ // Company Size (0-15 points)
+ const sizeRanges = {
+ '1000+': 15, '500-1000': 12, '100-500': 10,
+ '50-100': 7, '10-50': 4, '1-10': 2
+ };
+ score += sizeRanges[account.companySize] || 0;
+ 
+ // Industry (0-10 points)
+ const targetIndustries = ['Technology', 'Finance', 'Healthcare', 'Manufacturing'];
+ if (targetIndustries.includes(account.industry)) score += 10;
+ else if (account.industry) score += 5;
+ 
+ // Budget (0-15 points)
+ if (account.annualSpend) {
+ const spendNum = parseFloat(account.annualSpend.replace(/[^\d.]/g, ''));
+ if (spendNum >= 50) score += 15;
+ else if (spendNum >= 20) score += 12;
+ else if (spendNum >= 10) score += 8;
+ else if (spendNum >= 5) score += 5;
+ else score += 2;
+ }
+ 
+ // Location (0-5 points)
+ const tierOne = ['Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai', 'Pune'];
+ if (tierOne.some(city => account.location?.includes(city))) score += 5;
+ else if (account.location) score += 3;
+ 
+ // Tier (0-10 points)
+ const tierScores = { 'A': 10, 'B': 7, 'C': 4 };
+ score += tierScores[account.tier] || 0;
+ 
+ return Math.min(score, 60);
+}
+
+ document.getElementById('status').textContent = isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data';
+ render();
+ }
+
+ function saveData() {
+ localStorage.setItem('crmData', JSON.stringify(state.data));
+ document.getElementById('status').textContent = '💾 Saved';
+ setTimeout(() => {
+ const role = getUserRole();
+ const label = role === 'supervisor' ? 'Supervisor View' : `${role.toUpperCase()} View`;
+ document.getElementById('status').textContent = `✅ ${label}`;
+ }, 1000);
+ }
+
+ function getFilteredData() {
+ if (isSupervisor) {
+ return state.data;
+ }
+ const role = getUserRole();
+ const opportunities = state.data.opportunities.filter(o => {
+ if (o.owner === currentUser) return true;
+ if (role === 'presales') return o.assignedPresales === currentUser;
+ if (role === 'purchase') return o.assignedPurchase === currentUser;
+ return false;
+ });
+ return {
+ leads: state.data.leads.filter(l => l.owner === currentUser),
+ accounts: state.data.accounts.filter(a => a.owner === currentUser),
+ contacts: state.data.contacts.filter(c => c.owner === currentUser),
+ opportunities,
+ activities: state.data.activities.filter(a => a.owner === currentUser)
+ };
+}
+
+ function render() {
+ const role = getUserRole();
+ const tabs = isSupervisor
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'dashboard']
+ : (role === 'sales'
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities']
+ : ['opportunities', 'workflow', 'activities']);
+ if (!tabs.includes(state.activeTab)) state.activeTab = tabs[0];
+ document.getElementById('tabs').innerHTML = tabs.map(t => 
+ `<button class="tab ${state.activeTab === t ? 'active' : ''}" onclick="changeTab('${t}')">${t.toUpperCase()}</button>`
+ ).join('');
+ 
+ const filtered = getFilteredData();
+ let content = '';
+ 
+ if (state.activeTab === 'leads') content = renderLeads(filtered);
+ else if (state.activeTab === 'accounts') content = renderAccounts(filtered);
+ else if (state.activeTab === 'contacts') content = renderContacts(filtered);
+ else if (state.activeTab === 'opportunities') content = renderOpportunities(filtered);
+ 	else if (state.activeTab === 'activities') content = 		renderActivities(filtered);
+ else if (state.activeTab === 'workflow') content = renderWorkflow(filtered);
+ else if (state.activeTab === 'dashboard') content = renderDashboard(filtered);
+ 
+ document.getElementById('content').innerHTML = content;
+ }
+
+ function renderLeads(filtered) {
+ return `
+ <div class="card">
+ <h2>🎯 Leads (${filtered.leads.length})</h2>
+ </div>
+ <div class="grid">
+ ${filtered.leads.map(l => `
+ <div class="item-card" onclick="editLead('${l.id}')">
+ <h3>${l.name}</h3>
+ <div>${l.company}</div>
+ <div style="margin-top:10px">
+ <span class="tag">${l.source}</span>
+ <span class="tag">${l.status}</span>
+ </div>
+ <div style="font-size:0.9em; opacity:0.8; margin-top:10px">
+ ${l.email} | ${l.phone}
+ </div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
+ 📅 Created: ${fmtDate(l.createdDate)}<br>🕒 Updated: ${fmtDate(l.modifiedDate)}
+ </div>
+ </div>
+ `).join('')}
+ ${filtered.leads.length === 0 ? '<div class="card">No leads yet. Click + to add one!</div>' : ''}
+ </div>
+ `;
+}
+
+ function renderAccounts(filtered) {
+ return `
+ <div class="card">
+ <h2>🏢 Accounts (${filtered.accounts.length})</h2>
+ </div>
+ <div class="grid">
+ ${filtered.accounts.map(a => `
+ <div class="item-card" onclick="editAccount('${a.id}')">
+ <h3>${a.name}</h3>
+ <div>${a.industry}</div>
+ <div style="margin-top:10px">
+ <span class="tag">Tier ${a.tier}</span>
+ <span class="tag">${a.location}</span>
+ </div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
+ 📅 Created: ${fmtDate(a.createdDate)}<br>🕒 Updated: ${fmtDate(a.modifiedDate)}
+ </div>
+ </div>
+ `).join('')}
+ ${filtered.accounts.length === 0 ? '<div class="card">No accounts yet. Click + to add one!</div>' : ''}
+ </div>
+ `;
+}
+ function renderContacts(filtered) {
+ return `
+ <div class="card">
+ <h2>👥 Contacts (${filtered.contacts.length})</h2>
+ </div>
+ <div class="grid">
+ ${filtered.contacts.map(c => `
+ <div class="item-card" onclick="editContact('${c.id}')">
+ <h3>${c.name}</h3>
+ <div>${c.title}</div>
+ <div style="margin-top:10px">
+ <span class="tag">${c.roleType}</span>
+ <span class="tag">${c.emotion}</span>
+ </div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
+ 📅 Created: ${fmtDate(c.createdDate)}<br>🕒 Updated: ${fmtDate(c.modifiedDate)}
+ </div>
+ </div>
+ `).join('')}
+ ${filtered.contacts.length === 0 ? '<div class="card">No contacts yet. Click + to add one!</div>' : ''}
+ </div>
+ `;
+}
+ function renderOpportunities(filtered) {
+ return `
+ <div class="card">
+ <h2>💰 Opportunities (${filtered.opportunities.length})</h2>
+ </div>
+ <div class="grid">
+ ${filtered.opportunities.map(o => {
+ const winProb = calculateWinProb(o);
+ return `
+ <div class="item-card" onclick="editOpportunity('${o.id}')">
+ <h3>${o.name}</h3>
+ <div style="color:#4ade80; font-weight:bold; font-size:1.2em; margin:10px 0">
+ ₹${(o.value / 100000).toFixed(1)}L
+ </div>
+ <div>
+ <span class="tag">${o.stage}</span>
+ <span class="tag">${o.workflowStage || 'Sales Review'}</span>
+ <span class="tag" style="background:#4ade80; color:white">${winProb}% Win</span>
+ </div>
+ <div style="font-size:0.85em; opacity:0.85; margin-top:10px">
+ Sales: ${o.salesOwner || o.owner || 'NA'}<br>
+ Presales: ${o.assignedPresales || 'Unassigned'}<br>
+ Purchase: ${o.assignedPurchase || 'Unassigned'}
+ </div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
+ 📅 Created: ${fmtDate(o.createdDate)}<br>🕒 Updated: ${fmtDate(o.modifiedDate)}
+ </div>
+ </div>
+ `;
+ }).join('')}
+ ${filtered.opportunities.length === 0 ? '<div class="card">No opportunities yet. Click + to add one!</div>' : ''}
+ </div>
+ `;
+}
+
+ function renderWorkflow(filtered) {
+ const role = getUserRole();
+ const list = filtered.opportunities;
+ return `
+ <div class="card">
+ <h2>🔄 Workflow Board (${list.length})</h2>
+ <div style="opacity:0.85; margin-top:8px">Flow: Sales → Presales → Purchase → Presales → Sales</div>
+ </div>
+ <div class="grid">
+ ${list.map(o => `
+ <div class="item-card">
+ <h3>${o.name}</h3>
+ <div style="margin:8px 0">
+ <span class="tag">${o.workflowStage || 'Sales Review'}</span>
+ <span class="tag">${o.stage || 'Discovery'}</span>
+ </div>
+ <div style="font-size:0.85em; line-height:1.5; opacity:0.9">
+ <b>Sales:</b> ${o.salesOwner || o.owner || 'NA'}<br>
+ <b>Presales:</b> ${o.assignedPresales || 'Unassigned'}<br>
+ <b>Purchase:</b> ${o.assignedPurchase || 'Unassigned'}<br>
+ <b>BOQ:</b> ${o.boq ? 'Yes' : 'No'} | <b>Costing:</b> ${o.purchaseCosting ? 'Yes' : 'No'}<br>
+ <b>TAT:</b> ${fmtDateTime(o.costingTat)}<br>
+ <b>Final Proposal:</b> ${o.finalPricingProposal ? 'Ready' : 'Pending'}
+ </div>
+ <div style="margin-top:10px">
+ ${renderWorkflowActions(o, role)}
+ <button type="button" class="btn" onclick="editOpportunity('${o.id}')">Open</button>
+ </div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:8px">
+ 📅 Created: ${fmtDate(o.createdDate)} | 🕒 Updated: ${fmtDate(o.modifiedDate)}
+ </div>
+ </div>
+ `).join('')}
+ ${list.length === 0 ? '<div class="card">No workflow items yet. Add opportunity first.</div>' : ''}
+ </div>
+ `;
+ }
+
+ function renderWorkflowActions(o, role) {
+ if (role === 'sales' && (!o.salesOwner || o.salesOwner === currentUser) && (o.workflowStage || 'Sales Review') === 'Sales Review') {
+ return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();assignToPresales('${o.id}')">Assign to Presales</button>`;
+ }
+ if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Assigned to Presales') {
+ return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPresalesPack('${o.id}')">Send BOQ to Purchase</button>`;
+ }
+ if (role === 'purchase' && o.assignedPurchase === currentUser && o.workflowStage === 'Awaiting Purchase Costing') {
+ return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPurchaseCosting('${o.id}')">Return Costing</button>`;
+ }
+ if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Costing Returned') {
+ return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Final Proposal</button>`;
+ }
+ return '';
+ }
+function renderActivities(filtered) {
+ const allActivities = [...filtered.activities].sort((a, b) =>
+ new Date(b.date || b.modifiedDate || b.createdDate) - new Date(a.date || a.modifiedDate || a.createdDate)
+ );
+ const today = new Date().toDateString();
+ const activities = allActivities.filter(a => {
+ const stamp = a.date || a.modifiedDate || a.createdDate;
+ if (!stamp) return false;
+ const d = new Date(stamp);
+ if (isNaN(d.getTime())) return false;
+ if (activityFilter.mode === 'all') return true;
+ if (activityFilter.mode === 'today') return d.toDateString() === today;
+ if (activityFilter.mode === 'range') {
+ const fromOK = !activityFilter.from || d >= new Date(activityFilter.from + 'T00:00:00');
+ const toOK = !activityFilter.to || d <= new Date(activityFilter.to + 'T23:59:59');
+ return fromOK && toOK;
+ }
+ return true;
+ });
+ 
+ return `
+ <div class="card">
+ <h2>📝 Activities (${activities.length})</h2>
+ <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px">
+ <button class="btn" type="button" onclick="setActivityFilter('all')">All</button>
+ <button class="btn" type="button" onclick="setActivityFilter('today')">Today</button>
+ <label style="font-size:0.85em">From <input class="input" style="display:inline-block; width:auto" type="date" id="activityFromDate" value="${activityFilter.from || ''}"></label>
+ <label style="font-size:0.85em">To <input class="input" style="display:inline-block; width:auto" type="date" id="activityToDate" value="${activityFilter.to || ''}"></label>
+ <button class="btn btn-success" type="button" onclick="applyActivityDateRange()">Apply</button>
+ <button class="btn btn-danger" type="button" onclick="clearActivityDateRange()">Clear</button>
+ </div>
+ </div>
+ <div class="grid">
+ ${activities.map(a => `
+ <div class="item-card">
+ <div style="display:flex; justify-content:space-between">
+ <h3>${a.type}</h3>
+ <span class="tag">${fmtDateTime(a.date || a.modifiedDate || a.createdDate)}</span>
+ </div>
+ <div style="margin:10px 0; font-weight:bold">${a.subject}</div>
+ <div style="opacity:0.8">${a.notes || 'No notes'}</div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
+ By: ${a.owner || 'NA'}<br>🕒 Updated: ${fmtDateTime(a.modifiedDate || a.date || a.createdDate)}
+ </div>
+ </div>
+ `).join('')}
+ ${activities.length === 0 ? '<div class="card">No activities logged yet. Click + to add!</div>' : ''}
+ </div>
+ `;
+}
+
+function setActivityFilter(mode) {
+ activityFilter.mode = mode;
+ render();
+}
+
+function applyActivityDateRange() {
+ const from = document.getElementById('activityFromDate')?.value || '';
+ const to = document.getElementById('activityToDate')?.value || '';
+ activityFilter = { mode: 'range', from, to };
+ render();
+}
+
+function clearActivityDateRange() {
+ activityFilter = { mode: 'all', from: '', to: '' };
+ render();
+}
+
+ function renderDashboard(filtered) {
+ const totalPipeline = filtered.opportunities.reduce((sum, o) => sum + (o.value || 0), 0);
+ const avgWin = filtered.opportunities.length
+ ? Math.round(filtered.opportunities.reduce((sum, o) => sum + calculateWinProb(o), 0) / filtered.opportunities.length)
+ : 0;
+ const lastUpdated = [
+ ...filtered.leads.map(x => x.modifiedDate || x.createdDate),
+ ...filtered.accounts.map(x => x.modifiedDate || x.createdDate),
+ ...filtered.contacts.map(x => x.modifiedDate || x.createdDate),
+ ...filtered.opportunities.map(x => x.modifiedDate || x.createdDate),
+ ...filtered.activities.map(x => x.modifiedDate || x.createdDate || x.date)
+ ].filter(Boolean).sort().reverse()[0];
+ return `
+ <div class="card">
+ <h2>📊 Dashboard</h2>
+ <div style="font-size:0.9em; opacity:0.8; margin-top:8px">Last Update: ${fmtDateTime(lastUpdated)}</div>
+ </div>
+ <div class="grid">
+ <div class="metric">
+ <div>Leads</div>
+ <div class="metric-value">${filtered.leads.length}</div>
+ </div>
+ <div class="metric">
+ <div>Accounts</div>
+ <div class="metric-value">${filtered.accounts.length}</div>
+ </div>
+ <div class="metric">
+ <div>Opportunities</div>
+ <div class="metric-value">${filtered.opportunities.length}</div>
+ </div>
+ <div class="metric">
+ <div>Pipeline Value</div>
+ <div class="metric-value">₹${(totalPipeline / 10000000).toFixed(1)}Cr</div>
+ </div>
+ <div class="metric">
+ <div>Avg Win Probability</div>
+ <div class="metric-value">${avgWin}%</div>
+ </div>
+ </div>
+ `;
+ }
+
+ function changeTab(tab) {
+ state.activeTab = tab;
+ render();
+ }
+
+
+function openAddModal() {
+ switch (state.activeTab) {
+ case 'leads':
+ openLeadModal();
+ break;
+ case 'accounts':
+ openAccountModal();
+ break;
+ case 'contacts':
+ openContactModal();
+ break;
+ case 'opportunities':
+ openOpportunityModal();
+ break;
+ case 'workflow':
+ openOpportunityModal();
+ break;
+ case 'activities':
+ openActivityModal();
+ break;
+ default:
+ openLeadModal();
+ }
+}
+
+ function openOpportunityModal(opp = null) {
+ const filtered = getFilteredData();
+ document.getElementById('modal').innerHTML = `
+ <div class="modal-content">
+ <h2>${opp ? 'Edit' : 'Add'} Opportunity</h2>
+ <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(opp?.createdDate || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(opp?.modifiedDate || new Date().toISOString())}</div>
+ <form onsubmit="saveOpportunity(event, ${opp ? `'${opp.id}'` : 'null'})">
+ <input class="input" required name="name" placeholder="Opportunity Name *" value="${opp?.name || ''}">
+ 
+ <select class="input" required name="accountId">
+ <option value="">Select Account *</option>
+ ${filtered.accounts.map(a => `<option value="${a.id}" ${opp?.accountId === a.id ? 'selected' : ''}>${a.name}</option>`).join('')}
+ </select>
+ 
+ <input class="input" required type="number" name="value" placeholder="Value (₹) *" value="${opp?.value || ''}">
+ 
+ <select class="input" required name="stage">
+ <option value="">Select Stage *</option>
+ <option value="Discovery" ${opp?.stage === 'Discovery' ? 'selected' : ''}>Discovery</option>
+ <option value="Proposal" ${opp?.stage === 'Proposal' ? 'selected' : ''}>Proposal</option>
+ <option value="Negotiation" ${opp?.stage === 'Negotiation' ? 'selected' : ''}>Negotiation</option>
+ <option value="Closed Won" ${opp?.stage === 'Closed Won' ? 'selected' : ''}>Closed Won</option>
+ <option value="Closed Lost" ${opp?.stage === 'Closed Lost' ? 'selected' : ''}>Closed Lost</option>
+ </select>
+ 
+ <select class="input" name="competitionPosition">
+ <option value="">Competition Position</option>
+ <option value="Strong" ${opp?.competitionPosition === 'Strong' ? 'selected' : ''}>Strong</option>
+ <option value="Favorable" ${opp?.competitionPosition === 'Favorable' ? 'selected' : ''}>Favorable</option>
+ <option value="Neutral" ${opp?.competitionPosition === 'Neutral' ? 'selected' : ''}>Neutral</option>
+ <option value="Unfavorable" ${opp?.competitionPosition === 'Unfavorable' ? 'selected' : ''}>Unfavorable</option>
+ </select>
+
+ <select class="input" name="assignedPresales">
+ <option value="">Assign Presales</option>
+ ${getTeamUsers('presales').map(u => `<option value="${u}" ${opp?.assignedPresales === u ? 'selected' : ''}>${u}</option>`).join('')}
+ </select>
+ <select class="input" name="assignedPurchase">
+ <option value="">Assign Purchase</option>
+ ${getTeamUsers('purchase').map(u => `<option value="${u}" ${opp?.assignedPurchase === u ? 'selected' : ''}>${u}</option>`).join('')}
+ </select>
+ <textarea name="salesComments" placeholder="Sales Comments">${opp?.salesComments || ''}</textarea>
+ <textarea name="requirements" placeholder="Customer Requirements">${opp?.requirements || ''}</textarea>
+ <textarea name="presalesArchitecture" placeholder="Presales Architecture Notes">${opp?.presalesArchitecture || ''}</textarea>
+ <textarea name="presalesQuestions" placeholder="Presales Questions">${opp?.presalesQuestions || ''}</textarea>
+ <textarea name="boq" placeholder="BOQ">${opp?.boq || ''}</textarea>
+ <textarea name="purchaseCosting" placeholder="Purchase Costing">${opp?.purchaseCosting || ''}</textarea>
+ <input class="input" type="datetime-local" name="costingTat" value="${opp?.costingTat ? opp.costingTat.slice(0,16) : ''}">
+ <textarea name="finalPricingProposal" placeholder="Final Pricing Proposal">${opp?.finalPricingProposal || ''}</textarea>
+ <select class="input" name="workflowStage">
+ <option value="Sales Review" ${opp?.workflowStage === 'Sales Review' ? 'selected' : ''}>Sales Review</option>
+ <option value="Assigned to Presales" ${opp?.workflowStage === 'Assigned to Presales' ? 'selected' : ''}>Assigned to Presales</option>
+ <option value="Awaiting Purchase Costing" ${opp?.workflowStage === 'Awaiting Purchase Costing' ? 'selected' : ''}>Awaiting Purchase Costing</option>
+ <option value="Costing Returned" ${opp?.workflowStage === 'Costing Returned' ? 'selected' : ''}>Costing Returned</option>
+ <option value="Final Proposal Shared" ${opp?.workflowStage === 'Final Proposal Shared' ? 'selected' : ''}>Final Proposal Shared</option>
+ </select>
+ 
+ <div style="margin-top:20px">
+ <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+ <button type="submit" class="btn btn-success">Save</button>
+ ${opp ? `<button type="button" class="btn btn-danger" onclick="deleteOpportunity('${opp.id}')">Delete</button>` : ''}
+ </div>
+ </form>
+ </div>
+ `;
+ document.getElementById('modal').classList.add('show');
+}
+
+ function openLeadModal(lead = null) {
+ document.getElementById('modal').innerHTML = `
+ <div class="modal-content">
+ <h2>${lead ? 'Edit' : 'Add'} Lead</h2>
+ <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(lead?.createdDate || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(lead?.modifiedDate || new Date().toISOString())}</div>
+ <form onsubmit="saveLead(event, ${lead ? `'${lead.id}'` : 'null'})">
+ <input class="input" required name="name" placeholder="Name *" value="${lead?.name || ''}">
+ <input class="input" required name="company" placeholder="Company *" value="${lead?.company || ''}">
+ <input class="input" required type="email" name="email" placeholder="Email *" value="${lead?.email || ''}">
+ <input class="input" required name="phone" placeholder="Phone *" value="${lead?.phone || ''}">
+ <label style="display:block; margin:8px 0 6px 2px; font-size:0.9em; opacity:0.9;">Assign To *</label>
+ <select class="input" required name="owner">
+ <option value="" ${lead?.owner ? '' : 'selected'} disabled>Select Assignee *</option>
+ ${getTeamUsers('sales').map(u => `<option value="${u}" ${(lead?.owner || '') === u ? 'selected' : ''}>${u}</option>`).join('')}
+ </select>
+ <select class="input" required name="source">
+ <option value="">Select Source *</option>
+ <option value="Referral" ${lead?.source === 'Referral' ? 'selected' : ''}>Referral</option>
+ <option value="Website" ${lead?.source === 'Website' ? 'selected' : ''}>Website</option>
+ <option value="LinkedIn" ${lead?.source === 'LinkedIn' ? 'selected' : ''}>LinkedIn</option>
+ <option value="Cold Call" ${lead?.source === 'Cold Call' ? 'selected' : ''}>Cold Call</option>
+ </select>
+ <select class="input" required name="status">
+ <option value="">Select Status *</option>
+ <option value="New" ${lead?.status === 'New' ? 'selected' : ''}>New</option>
+ <option value="Contacted" ${lead?.status === 'Contacted' ? 'selected' : ''}>Contacted</option>
+ <option value="Qualified" ${lead?.status === 'Qualified' ? 'selected' : ''}>Qualified</option>
+ </select>
+ <textarea name="notes" placeholder="Notes">${lead?.notes || ''}</textarea>
+ <div style="margin-top:20px">
+ <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+ <button type="submit" class="btn btn-success">Save</button>
+ ${lead ? `<button type="button" class="btn btn-danger" onclick="deleteLead('${lead.id}')">Delete</button>` : ''}
+ </div>
+ </form>
+ </div>
+ `;
+ document.getElementById('modal').classList.add('show');
+ }
+
+ function openAccountModal(account = null) {
+ document.getElementById('modal').innerHTML = `
+ <div class="modal-content">
+ <h2>${account ? 'Edit' : 'Add'} Account</h2>
+ <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(account?.createdDate || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(account?.modifiedDate || new Date().toISOString())}</div>
+ <form onsubmit="saveAccount(event, ${account ? `'${account.id}'` : 'null'})">
+ <input class="input" required name="name" placeholder="Account Name *" value="${account?.name || ''}">
+ <input class="input" required name="industry" placeholder="Industry *" value="${account?.industry || ''}">
+ 
+ <select class="input" required name="tier">
+ <option value="">Select Tier *</option>
+ <option value="A" ${account?.tier === 'A' ? 'selected' : ''}>A - Strategic</option>
+ <option value="B" ${account?.tier === 'B' ? 'selected' : ''}>B - Growth</option>
+ <option value="C" ${account?.tier === 'C' ? 'selected' : ''}>C - Maintenance</option>
+ </select>
+ 
+ <input class="input" required name="location" placeholder="Location *" value="${account?.location || ''}">
+ 
+ <select class="input" name="companySize">
+ <option value="">Company Size</option>
+ <option value="1000+" ${account?.companySize === '1000+' ? 'selected' : ''}>1000+</option>
+ <option value="500-1000" ${account?.companySize === '500-1000' ? 'selected' : ''}>500-1000</option>
+ <option value="100-500" ${account?.companySize === '100-500' ? 'selected' : ''}>100-500</option>
+ <option value="50-100" ${account?.companySize === '50-100' ? 'selected' : ''}>50-100</option>
+ <option value="10-50" ${account?.companySize === '10-50' ? 'selected' : ''}>10-50</option>
+ <option value="1-10" ${account?.companySize === '1-10' ? 'selected' : ''}>1-10</option>
+ </select>
+ 
+ <input class="input" name="annualSpend" placeholder="Annual Spend (e.g., ₹50L)" value="${account?.annualSpend || ''}">
+ 
+ <select class="input" name="mode">
+ <option value="">Account Mode</option>
+ <option value="Business Expansion" ${account?.mode === 'Business Expansion' ? 'selected' : ''}>Business Expansion</option>
+ <option value="Overcome Bottleneck" ${account?.mode === 'Overcome Bottleneck' ? 'selected' : ''}>Overcome Bottleneck</option>
+ <option value="Status Quo" ${account?.mode === 'Status Quo' ? 'selected' : ''}>Status Quo</option>
+ </select>
+ 
+ <div style="margin-top:20px">
+ <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+ <button type="submit" class="btn btn-success">Save</button>
+ ${account ? `<button type="button" class="btn btn-danger" onclick="deleteAccount('${account.id}')">Delete</button>` : ''}
+ </div>
+ </form>
+ </div>
+ `;
+ document.getElementById('modal').classList.add('show');
+}
+
+ function openContactModal(contact = null) {
+ document.getElementById('modal').innerHTML = `
+ <div class="modal-content">
+ <h2>${contact ? 'Edit' : 'Add'} Contact</h2>
+ <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(contact?.createdDate || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(contact?.modifiedDate || new Date().toISOString())}</div>
+ <form onsubmit="saveContact(event, ${contact ? `'${contact.id}'` : 'null'})">
+ <input class="input" required name="name" placeholder="Name *" value="${contact?.name || ''}">
+ <input class="input" name="title" placeholder="Title" value="${contact?.title || ''}">
+ <input class="input" type="email" name="email" placeholder="Email" value="${contact?.email || ''}">
+ <input class="input" name="phone" placeholder="Phone" value="${contact?.phone || ''}">
+ 
+ <select class="input" required name="roleType">
+ <option value="">Select Role *</option>
+ <option value="MAS" ${contact?.roleType === 'MAS' ? 'selected' : ''}>MAS</option>
+ <option value="TE" ${contact?.roleType === 'TE' ? 'selected' : ''}>TE</option>
+ <option value="EU" ${contact?.roleType === 'EU' ? 'selected' : ''}>EU</option>
+ <option value="Coach" ${contact?.roleType === 'Coach' ? 'selected' : ''}>Coach</option>
+ </select>
+ 
+ <select class="input" required name="influenceLevel">
+ <option value="">Influence Level *</option>
+ <option value="High" ${contact?.influenceLevel === 'High' ? 'selected' : ''}>High</option>
+ <option value="Medium" ${contact?.influenceLevel === 'Medium' ? 'selected' : ''}>Medium</option>
+ <option value="Low" ${contact?.influenceLevel === 'Low' ? 'selected' : ''}>Low</option>
+ </select>
+ 
+ <select class="input" required name="emotion">
+ <option value="">Select Emotion *</option>
+ <option value="Euphoria" ${contact?.emotion === 'Euphoria' ? 'selected' : ''}>Euphoria</option>
+ <option value="Great" ${contact?.emotion === 'Great' ? 'selected' : ''}>Great</option>
+ <option value="OK" ${contact?.emotion === 'OK' ? 'selected' : ''}>OK</option>
+ <option value="Worry" ${contact?.emotion === 'Worry' ? 'selected' : ''}>Worry</option>
+ </select>
+ 
+ <input class="input" name="accountId" placeholder="Account ID (optional)" value="${contact?.accountId || ''}">
+ 
+ <div style="margin-top:20px">
+ <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+ <button type="submit" class="btn btn-success">Save</button>
+ ${contact ? `<button type="button" class="btn btn-danger" onclick="deleteContact('${contact.id}')">Delete</button>` : ''}
+ </div>
+ </form>
+ </div>
+ `;
+ document.getElementById('modal').classList.add('show');
+}
+ 
+function openActivityModal(activity = null) {
+ document.getElementById('modal').innerHTML = `
+ <div class="modal-content">
+ <h2>${activity ? 'Edit' : 'Log'} Activity</h2>
+ <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(activity?.createdDate || activity?.date || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(activity?.modifiedDate || activity?.date || new Date().toISOString())}</div>
+ <form onsubmit="saveActivity(event, ${activity ? `'${activity.id}'` : 'null'})">
+ <select class="input" required name="type">
+ <option value="">Select Type *</option>
+ <option value="Call" ${activity?.type === 'Call' ? 'selected' : ''}>📞 Call</option>
+ <option value="Email" ${activity?.type === 'Email' ? 'selected' : ''}>📧 Email</option>
+ <option value="Meeting" ${activity?.type === 'Meeting' ? 'selected' : ''}>🤝 Meeting</option>
+ <option value="Demo" ${activity?.type === 'Demo' ? 'selected' : ''}>💻 Demo</option>
+ <option value="Proposal" ${activity?.type === 'Proposal' ? 'selected' : ''}>📄 Proposal</option>
+ <option value="Follow-up" ${activity?.type === 'Follow-up' ? 'selected' : ''}>🔄 Follow-up</option>
+ <option value="Note" ${activity?.type === 'Note' ? 'selected' : ''}>📝 Note</option>
+ </select>
+ <input class="input" required name="subject" placeholder="Subject *" value="${activity?.subject || ''}">
+ <textarea name="notes" placeholder="What did you do? What was discussed?">${activity?.notes || ''}</textarea>
+ <input class="input" required type="datetime-local" name="date" value="${activity?.date ? activity.date.slice(0,16) : new Date().toISOString().slice(0,16)}">
+ <div style="margin-top:20px">
+ <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+ <button type="submit" class="btn btn-success">Save Activity</button>
+ ${activity ? `<button type="button" class="btn btn-danger" onclick="deleteActivity('${activity.id}')">Delete</button>` : ''}
+ </div>
+ </form>
+ </div>
+ `;
+ document.getElementById('modal').classList.add('show');
+}
+
+function saveActivity(e, id) {
+ e.preventDefault();
+ const data = Object.fromEntries(new FormData(e.target));
+ data.owner = currentUser;
+ data.createdDate = id ? state.data.activities.find(a => a.id === id).createdDate : new Date().toISOString();
+ data.modifiedDate = new Date().toISOString();
+ if (id) {
+ const index = state.data.activities.findIndex(a => a.id === id);
+ state.data.activities[index] = {...data, id};
+ } else {
+ state.data.activities.push({...data, id: Date.now().toString()});
+ }
+ saveData();
+ closeModal();
+ render();
+}
+
+function deleteActivity(id) {
+ if (confirm('Delete this activity?')) {
+ state.data.activities = state.data.activities.filter(a => a.id !== id);
+ saveData();
+ closeModal();
+ render();
+ }
+}
+
+function getTeamUsers(role) {
+ const users = new Set();
+ if (role === 'sales') {
+ state.data.leads.forEach(l => l.owner && users.add(l.owner));
+ state.data.accounts.forEach(a => a.owner && users.add(a.owner));
+ state.data.contacts.forEach(c => c.owner && users.add(c.owner));
+ state.data.opportunities.forEach(o => o.owner && users.add(o.owner));
+ users.add(currentUser || 'sales@company.com');
+ return Array.from(users);
+ }
+ const opportunities = state.data.opportunities || [];
+ opportunities.forEach(o => {
+ if (role === 'presales' && o.assignedPresales) users.add(o.assignedPresales);
+ if (role === 'purchase' && o.assignedPurchase) users.add(o.assignedPurchase);
+ });
+ if (role === 'presales') users.add('presales@company.com');
+ if (role === 'purchase') users.add('purchase@company.com');
+ return Array.from(users);
+}
+
+function updateOpportunityWorkflow(id, updates) {
+ const idx = state.data.opportunities.findIndex(o => o.id === id);
+ if (idx === -1) return;
+ const prev = state.data.opportunities[idx].workflowStage || 'Sales Review';
+ state.data.opportunities[idx] = {
+ ...state.data.opportunities[idx],
+ ...updates,
+ modifiedDate: new Date().toISOString()
+ };
+ const next = state.data.opportunities[idx].workflowStage || prev;
+ recordActivity('Workflow', `Opportunity moved: ${state.data.opportunities[idx].name}`, `${prev} → ${next}`);
+ saveData();
+ render();
+}
+
+function assignToPresales(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ const user = prompt('Assign presales email:', opp.assignedPresales || 'presales@company.com');
+ if (!user) return;
+ const comments = prompt('Sales comments for presales:', opp.salesComments || '');
+ const requirements = prompt('Customer requirements:', opp.requirements || '');
+ updateOpportunityWorkflow(id, {
+ assignedPresales: user.trim(),
+ salesComments: comments || '',
+ requirements: requirements || '',
+ workflowStage: 'Assigned to Presales'
+ });
+}
+
+function submitPresalesPack(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ const architecture = prompt('Presales architecture notes:', opp.presalesArchitecture || '');
+ const questions = prompt('Presales questions:', opp.presalesQuestions || '');
+ const boq = prompt('Enter BOQ details:', opp.boq || '');
+ const purchase = prompt('Assign purchase email:', opp.assignedPurchase || 'purchase@company.com');
+ if (!boq || !purchase) {
+ alert('BOQ and Purchase owner are required.');
+ return;
+ }
+ updateOpportunityWorkflow(id, {
+ presalesArchitecture: architecture || '',
+ presalesQuestions: questions || '',
+ boq,
+ assignedPurchase: purchase.trim(),
+ workflowStage: 'Awaiting Purchase Costing'
+ });
+}
+
+function submitPurchaseCosting(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ const costing = prompt('Purchase costing details:', opp.purchaseCosting || '');
+ const tat = prompt('Costing TAT (YYYY-MM-DD HH:MM):', opp.costingTat || '');
+ if (!costing) {
+ alert('Costing is required.');
+ return;
+ }
+ const tatISO = toISOOrBlank(tat);
+ updateOpportunityWorkflow(id, {
+ purchaseCosting: costing,
+ costingTat: tatISO || opp.costingTat || '',
+ workflowStage: 'Costing Returned'
+ });
+}
+
+function submitFinalPricing(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ const proposal = prompt('Final pricing proposal for sales:', opp.finalPricingProposal || '');
+ if (!proposal) {
+ alert('Final proposal is required.');
+ return;
+ }
+ updateOpportunityWorkflow(id, {
+ finalPricingProposal: proposal,
+ workflowStage: 'Final Proposal Shared'
+ });
+}
+
+function saveLead(e, id) {
+ e.preventDefault();
+ const data = Object.fromEntries(new FormData(e.target));
+ data.owner = data.owner || currentUser;
+ data.createdDate = id ? state.data.leads.find(l => l.id === id).createdDate : new Date().toISOString();
+ data.modifiedDate = new Date().toISOString();
+ if (id) {
+ const index = state.data.leads.findIndex(l => l.id === id);
+ state.data.leads[index] = {...data, id};
+ recordActivity('Lead', `Lead updated: ${data.name}`, `Assigned to ${data.owner}`, data.owner);
+ } else {
+ state.data.leads.push({...data, id: Date.now().toString()});
+ recordActivity('Lead', `Lead created: ${data.name}`, `Assigned to ${data.owner}`, data.owner);
+ }
+ saveData();
+ closeModal();
+ render();
+}
+
+function saveAccount(e, id) {
+ e.preventDefault();
+ const data = Object.fromEntries(new FormData(e.target));
+ data.owner = currentUser;
+ data.createdDate = id ? state.data.accounts.find(a => a.id === id).createdDate : new Date().toISOString();
+ data.modifiedDate = new Date().toISOString();
+ if (id) {
+ const index = state.data.accounts.findIndex(a => a.id === id);
+ state.data.accounts[index] = {...data, id};
+ recordActivity('Account', `Account updated: ${data.name}`);
+ } else {
+ state.data.accounts.push({...data, id: Date.now().toString()});
+ recordActivity('Account', `Account created: ${data.name}`);
+ }
+ saveData();
+ closeModal();
+ render();
+}
+
+function saveContact(e, id) {
+ e.preventDefault();
+ const data = Object.fromEntries(new FormData(e.target));
+ data.owner = currentUser;
+ data.createdDate = id ? state.data.contacts.find(c => c.id === id).createdDate : new Date().toISOString();
+ data.modifiedDate = new Date().toISOString();
+ if (id) {
+ const index = state.data.contacts.findIndex(c => c.id === id);
+ state.data.contacts[index] = {...data, id};
+ recordActivity('Contact', `Contact updated: ${data.name}`);
+ } else {
+ state.data.contacts.push({...data, id: Date.now().toString()});
+ recordActivity('Contact', `Contact created: ${data.name}`);
+ }
+ saveData();
+ closeModal();
+ render();
+}
+
+function saveOpportunity(e, id) {
+ e.preventDefault();
+ const existing = id ? state.data.opportunities.find(o => o.id === id) : null;
+ const data = Object.fromEntries(new FormData(e.target));
+ data.value = parseFloat(data.value || 0);
+ data.owner = existing?.owner || currentUser;
+ data.salesOwner = existing?.salesOwner || currentUser;
+ data.createdDate = existing?.createdDate || new Date().toISOString();
+ data.modifiedDate = new Date().toISOString();
+ data.workflowStage = data.workflowStage || existing?.workflowStage || 'Sales Review';
+ data.assignedPresales = data.assignedPresales || existing?.assignedPresales || '';
+ data.assignedPurchase = data.assignedPurchase || existing?.assignedPurchase || '';
+ data.salesComments = data.salesComments || existing?.salesComments || '';
+ data.requirements = data.requirements || existing?.requirements || '';
+ data.presalesArchitecture = data.presalesArchitecture || existing?.presalesArchitecture || '';
+ data.presalesQuestions = data.presalesQuestions || existing?.presalesQuestions || '';
+ data.boq = data.boq || existing?.boq || '';
+ data.purchaseCosting = data.purchaseCosting || existing?.purchaseCosting || '';
+ data.costingTat = toISOOrBlank(data.costingTat) || existing?.costingTat || '';
+ data.finalPricingProposal = data.finalPricingProposal || existing?.finalPricingProposal || '';
+ if (id) {
+ const index = state.data.opportunities.findIndex(o => o.id === id);
+ state.data.opportunities[index] = {...data, id};
+ recordActivity('Opportunity', `Opportunity updated: ${data.name}`);
+ } else {
+ state.data.opportunities.push({...data, id: Date.now().toString()});
+ recordActivity('Opportunity', `Opportunity created: ${data.name}`);
+ }
+ saveData();
+ closeModal();
+ render();
+}
+ function editLead(id) { openLeadModal(state.data.leads.find(l => l.id === id)); }
+ function editAccount(id) { openAccountModal(state.data.accounts.find(a => a.id === id)); }
+ function editContact(id) { openContactModal(state.data.contacts.find(c => c.id === id)); }
+ function editOpportunity(id) { openOpportunityModal(state.data.opportunities.find(o => o.id === id)); }
+
+ function deleteLead(id) {
+ if (confirm('Delete this lead?')) {
+ state.data.leads = state.data.leads.filter(l => l.id !== id);
+ saveData();
+ closeModal();
+ render();
+ }
+ }
+
+ function deleteAccount(id) {
+ if (confirm('Delete this account?')) {
+ state.data.accounts = state.data.accounts.filter(a => a.id !== id);
+ saveData();
+ closeModal();
+ render();
+ }
+ }
+
+ function deleteContact(id) {
+ if (confirm('Delete this contact?')) {
+ state.data.contacts = state.data.contacts.filter(c => c.id !== id);
+ saveData();
+ closeModal();
+ render();
+ }
+ }
+
+ function deleteOpportunity(id) {
+ if (confirm('Delete this opportunity?')) {
+ state.data.opportunities = state.data.opportunities.filter(o => o.id !== id);
+ saveData();
+ closeModal();
+ render();
+ }
+ }
+
+ function closeModal() {
+ document.getElementById('modal').classList.remove('show');
+ }
+ </script>
+</body>
+</html>
