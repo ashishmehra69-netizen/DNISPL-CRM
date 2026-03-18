@@ -84,8 +84,9 @@
 const SUPERVISOR_EMAIL = 'ashish.mehra@dnispl.com';
 const PASSWORD = 'crm2026'; // Simple password for demo
 const PRESALES_OWNER = 'vinod.v@dnispil.com';
-const PURCHASE_OWNER = 'Narendra.singh@dnispl.com';
+const PURCHASE_OWNER = 'narendra.singh@dnispl.com';
 const ESCALATION_EMAILS = ['ashish.mehra@dnispl.com', 'rakesh.uniyal@dnispl.com'];
+const SALES_TEAM_USERS = ['rakesh.uniyal@dnispl.com'];
 const BUILD_VERSION = '2026-03-10-01';
 const ACCOUNT_OWNER_MAP = {
   'Satin Credit care': 'shasank.raturi@dnispl.com',
@@ -1193,7 +1194,11 @@ function renderAccounts(filtered) {
 
  function renderWorkflowActions(o, role) {
  if (role === 'sales' && (!o.salesOwner || o.salesOwner === currentUser) && (o.workflowStage || 'Sales Review') === 'Sales Review') {
- return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();assignToPresales('${o.id}')">Assign to Presales</button>`;
+ const canDirectToPurchase = normalizeEmail(currentUser) === 'rakesh.uniyal@dnispl.com' || isSupervisor;
+ return `
+ <button type="button" class="btn btn-success" onclick="event.stopPropagation();assignToPresales('${o.id}')">Assign to Presales</button>
+ ${canDirectToPurchase ? `<button type="button" class="btn" onclick="event.stopPropagation();assignDirectToPurchase('${o.id}')">Assign Direct to Purchase</button>` : ''}
+ `;
  }
  if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Assigned to Presales') {
  return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPresalesPack('${o.id}')">Send BOQ to Purchase</button>`;
@@ -1680,6 +1685,7 @@ function getTeamUsers(role) {
  state.data.accounts.forEach(a => a.owner && users.add(a.owner));
  state.data.contacts.forEach(c => c.owner && users.add(c.owner));
  state.data.opportunities.forEach(o => o.owner && users.add(o.owner));
+ SALES_TEAM_USERS.forEach(u => users.add(u));
  users.add(currentUser || 'sales@company.com');
  return Array.from(users);
  }
@@ -1689,7 +1695,10 @@ function getTeamUsers(role) {
  if (role === 'purchase' && o.assignedPurchase) users.add(o.assignedPurchase);
  });
  if (role === 'presales') users.add('presales@company.com');
- if (role === 'purchase') users.add('purchase@company.com');
+ if (role === 'purchase') {
+  users.add('purchase@company.com');
+  users.add(PURCHASE_OWNER);
+ }
  return Array.from(users);
 }
 
@@ -1723,6 +1732,29 @@ function assignToPresales(id) {
  assignmentDueAt: addHours(now, 4),
  salesSubmittedAt: now,
  workflowStage: 'Assigned to Presales'
+ });
+}
+
+function assignDirectToPurchase(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ if (normalizeEmail(currentUser) !== 'rakesh.uniyal@dnispl.com' && !isSupervisor) {
+  alert('Only rakesh.uniyal@dnispl.com can use direct purchase assignment.');
+  return;
+ }
+ const now = new Date().toISOString();
+ const comments = prompt('Sales comments for purchase:', opp.salesComments || '');
+ const requirements = prompt('Customer requirements for purchase:', opp.requirements || '');
+ updateOpportunityWorkflow(id, {
+  assignedPurchase: PURCHASE_OWNER,
+  assignedPresales: '',
+  salesComments: comments || '',
+  requirements: requirements || '',
+  purchaseAssignedAt: now,
+  purchaseDueAt: addHours(now, 24),
+  salesSubmittedAt: now,
+  assignmentDueAt: addHours(now, 4),
+  workflowStage: 'Awaiting Purchase Costing'
  });
 }
 
