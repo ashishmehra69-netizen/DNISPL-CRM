@@ -88,6 +88,18 @@ const PURCHASE_OWNER = 'narendra.singh@dnispl.com';
 const ESCALATION_EMAILS = ['ashish.mehra@dnispl.com', 'rakesh.uniyal@dnispl.com'];
 const SALES_TEAM_USERS = ['rakesh.uniyal@dnispl.com'];
 const BUILD_VERSION = '2026-03-10-01';
+const SUSPECT_QUESTIONS = [
+ 'What is your organization primary line of business?',
+ 'What is your approximate annual turnover?',
+ 'How many employees do you have?',
+ 'How many locations / branches / plants do you operate?',
+ 'Is your IT centralized or distributed today?',
+ 'Do you have an in-house IT team? If yes, what is its size?',
+ 'Who currently manages your IT infrastructure?',
+ 'What major platforms are you currently using?',
+ 'When was your infrastructure last upgraded?',
+ 'What recurring IT challenges are you facing today?'
+];
 const ACCOUNT_OWNER_MAP = {
   'Satin Credit care': 'shasank.raturi@dnispl.com',
   'haier': 'shasank.raturi@dnispl.com',
@@ -377,6 +389,22 @@ function formatUserLabel(email) {
  return formatManagerLabel(email);
 }
 
+function getAccountSuspectScore(account) {
+ const explicit = Number(account?.suspectScore || account?.suspect_score);
+ if (!Number.isNaN(explicit) && explicit > 0) return explicit;
+ let score = 0;
+ for (let i = 1; i <= 10; i++) {
+  const value = String(account?.[`suspect_q${i}`] || '').trim();
+  if (value) score += 1;
+ }
+ return score;
+}
+
+function getAccountQuestionnaireCompletion(account) {
+ const score = getAccountSuspectScore(account);
+ return Math.round((score / 10) * 100);
+}
+
 function renderManagerFilterControls(filtered) {
  const options = getManagerFilterOptions(filtered);
  if (!isSupervisor) return '';
@@ -423,8 +451,20 @@ function normalizeAccountFromApi(a) {
    industry: a.industry || '',
    tier: a.tier || 'B',
    location: a.location || '',
-   companySize: a.companySize || '',
-   annualSpend: a.annualSpend || '',
+   companySize: a.companySize || a.company_size || '',
+   annualSpend: a.annualSpend || a.annual_spend || '',
+   mode: a.mode || '',
+   suspectScore: Number(a.suspect_score || a.suspectScore || 0),
+   suspect_q1: a.suspect_q1 || '',
+   suspect_q2: a.suspect_q2 || '',
+   suspect_q3: a.suspect_q3 || '',
+   suspect_q4: a.suspect_q4 || '',
+   suspect_q5: a.suspect_q5 || '',
+   suspect_q6: a.suspect_q6 || '',
+   suspect_q7: a.suspect_q7 || '',
+   suspect_q8: a.suspect_q8 || '',
+   suspect_q9: a.suspect_q9 || '',
+   suspect_q10: a.suspect_q10 || '',
    accountManager: a.account_manager_email || a.accountManager || '',
    owner: a.account_manager_email || a.owner || '',
    createdDate: created,
@@ -438,6 +478,19 @@ async function fetchAccountsFromApi() {
  if (!resp.ok) throw new Error(`accounts fetch failed (${resp.status})`);
  const data = await resp.json();
  return Array.isArray(data) ? data.map(normalizeAccountFromApi) : [];
+}
+
+async function upsertAccountToApi(accountPayload) {
+ const resp = await fetch(`${CRM_API_BASE}/api/accounts`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(accountPayload)
+ });
+ if (!resp.ok) {
+  const msg = await resp.text();
+  throw new Error(`account save failed (${resp.status}): ${msg}`);
+ }
+ return resp.json();
 }
 
 async function fetchUserPassword(email) {
@@ -835,6 +888,9 @@ function calculateWinProb(opp) {
  if (account.mode === 'Business Expansion') adjustments += 5;
  else if (account.mode === 'Overcome Bottleneck') adjustments += 3;
  else if (account.mode === 'Status Quo') adjustments -= 5;
+
+ // 6. Suspect Discovery Completeness (0 to +10)
+ adjustments += getAccountSuspectScore(account);
  
  return Math.min(100, Math.max(0, base + adjustments));
 }
@@ -1066,13 +1122,15 @@ function renderAccounts(filtered) {
  ${renderManagerFilterControls(filtered)}
  </div>
  <div class="grid">
- ${filtered.accounts.map(a => `
- <div class="item-card" onclick="editAccount('${a.id}')">
- <h3>${a.name}</h3>
- <div>${a.industry}</div>
+${filtered.accounts.map(a => `
+<div class="item-card" onclick="editAccount('${a.id}')">
+<h3>${a.name}</h3>
+<div>${a.industry}</div>
  <div style="margin-top:10px">
  <span class="tag">Tier ${a.tier}</span>
  <span class="tag">${a.location}</span>
+ <span class="tag" style="background:#4ade80; color:white">Suspect Score: ${getAccountSuspectScore(a)}/10</span>
+ <span class="tag" style="background:#22c55e; color:white">Questionnaire: ${getAccountQuestionnaireCompletion(a)}%</span>
  </div>
  <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
  📅 Created: ${fmtDate(a.createdDate)}<br>🕒 Updated: ${fmtDate(a.modifiedDate)}
@@ -1544,6 +1602,15 @@ function openAddModal() {
  <option value="Overcome Bottleneck" ${account?.mode === 'Overcome Bottleneck' ? 'selected' : ''}>Overcome Bottleneck</option>
  <option value="Status Quo" ${account?.mode === 'Status Quo' ? 'selected' : ''}>Status Quo</option>
  </select>
+
+ <div class="card" style="margin-top:12px">
+ <h3 style="margin-bottom:8px">Suspect Discovery Form (Mandatory)</h3>
+ <div style="font-size:0.9em; opacity:0.9; margin-bottom:8px">Fill all 10 responses. Each answered question adds 1 point to win probability.</div>
+ ${SUSPECT_QUESTIONS.map((q, idx) => `
+  <label style="display:block; margin-top:10px; margin-bottom:4px; font-size:0.92em;">Q${idx + 1}. ${q}</label>
+  <textarea class="input" required name="suspect_q${idx + 1}" placeholder="Enter response for Q${idx + 1}">${account?.[`suspect_q${idx + 1}`] || ''}</textarea>
+ `).join('')}
+ </div>
  
  <div style="margin-top:20px">
  <button type="button" class="btn" onclick="closeModal()">Cancel</button>
@@ -1834,23 +1901,45 @@ function saveLead(e, id) {
  render();
 }
 
-function saveAccount(e, id) {
+async function saveAccount(e, id) {
  e.preventDefault();
  const data = Object.fromEntries(new FormData(e.target));
- data.owner = currentUser;
- data.createdDate = id ? state.data.accounts.find(a => a.id === id).createdDate : new Date().toISOString();
- data.modifiedDate = new Date().toISOString();
- if (id) {
- const index = state.data.accounts.findIndex(a => a.id === id);
- state.data.accounts[index] = {...data, id};
- recordActivity('Account', `Account updated: ${data.name}`);
- } else {
- state.data.accounts.push({...data, id: Date.now().toString()});
- recordActivity('Account', `Account created: ${data.name}`);
+
+ const suspectAnswers = {};
+ for (let i = 1; i <= 10; i++) {
+  suspectAnswers[`suspect_q${i}`] = String(data[`suspect_q${i}`] || '').trim();
  }
- saveData();
- closeModal();
- render();
+ const suspectScore = Object.values(suspectAnswers).filter(Boolean).length;
+
+ if (suspectScore < 10) {
+  alert('Please fill all 10 suspect discovery responses.');
+  return;
+ }
+
+ const payload = {
+  id: id || undefined,
+  account_name: data.name,
+  account_manager: currentUser,
+  industry: data.industry || '',
+  tier: data.tier || '',
+  location: data.location || '',
+  company_size: data.companySize || '',
+  annual_spend: data.annualSpend || '',
+  mode: data.mode || '',
+  suspect_score: suspectScore,
+  ...suspectAnswers,
+ };
+
+ try {
+  await upsertAccountToApi(payload);
+  state.data.accounts = await fetchAccountsFromApi();
+  recordActivity('Account', `Account ${id ? 'updated' : 'created'}: ${data.name}`);
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  alert(`Could not save account to shared backend: ${err.message}`);
+ }
 }
 
 function saveContact(e, id) {
