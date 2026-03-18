@@ -25,16 +25,15 @@ if not DATABASE_URL:
     )
 
 
-def _ensure_sslmode(url: str) -> str:
-    if "sslmode=" in url:
-        return url
+def _strip_sslmode(url: str) -> str:
+    """Remove sslmode from the URL so we can pass it as a kwarg instead."""
     parsed = urlparse(url)
     query = dict(parse_qsl(parsed.query))
-    query.setdefault("sslmode", "require")
+    query.pop("sslmode", None)
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
-DATABASE_URL = _ensure_sslmode(DATABASE_URL)
+DATABASE_URL = _strip_sslmode(DATABASE_URL)
 
 app = Flask(__name__)
 
@@ -48,7 +47,7 @@ def add_cors_headers(resp):
 
 
 def get_conn():
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 
 def init_db() -> None:
@@ -72,11 +71,45 @@ def init_db() -> None:
                     id SERIAL PRIMARY KEY,
                     account_name TEXT UNIQUE,
                     account_manager_id INTEGER REFERENCES users(id),
+                    industry TEXT,
+                    tier TEXT,
+                    location TEXT,
+                    company_size TEXT,
+                    annual_spend TEXT,
+                    mode TEXT,
+                    suspect_q1 TEXT,
+                    suspect_q2 TEXT,
+                    suspect_q3 TEXT,
+                    suspect_q4 TEXT,
+                    suspect_q5 TEXT,
+                    suspect_q6 TEXT,
+                    suspect_q7 TEXT,
+                    suspect_q8 TEXT,
+                    suspect_q9 TEXT,
+                    suspect_q10 TEXT,
+                    suspect_score INTEGER DEFAULT 0,
                     created_at TIMESTAMPTZ DEFAULT now(),
                     updated_at TIMESTAMPTZ DEFAULT now()
                 );
                 """
             )
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS industry TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS tier TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS location TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS company_size TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS annual_spend TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS mode TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q1 TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q2 TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q3 TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q4 TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q5 TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q6 TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q7 TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q8 TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q9 TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q10 TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_score INTEGER DEFAULT 0;")
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS activities (
@@ -108,6 +141,14 @@ def init_db() -> None:
 
 
 init_db()
+
+
+def compute_suspect_score(data: dict) -> int:
+    score = 0
+    for idx in range(1, 11):
+        if str(data.get(f"suspect_q{idx}") or "").strip():
+            score += 1
+    return score
 
 
 def ensure_user(manager_value: str) -> int:
@@ -154,30 +195,121 @@ def ensure_user(manager_value: str) -> int:
         conn.close()
 
 
-def upsert_account(account_name: str, manager_id: int) -> str:
-    name = (account_name or "").strip()
+def upsert_account(data: dict, manager_id: int) -> str:
+    name = (data.get("account_name") or "").strip()
     if not name:
         raise ValueError("account_name is required")
+    account_id = str(data.get("id") or "").strip()
+
+    industry = (data.get("industry") or "").strip()
+    tier = (data.get("tier") or "").strip()
+    location = (data.get("location") or "").strip()
+    company_size = (data.get("company_size") or data.get("companySize") or "").strip()
+    annual_spend = (data.get("annual_spend") or data.get("annualSpend") or "").strip()
+    mode = (data.get("mode") or "").strip()
+    suspect_answers = {
+        f"suspect_q{i}": (data.get(f"suspect_q{i}") or "").strip()
+        for i in range(1, 11)
+    }
+    suspect_score = compute_suspect_score(suspect_answers)
 
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT id FROM accounts WHERE lower(account_name)=lower(%s)",
-                (name,),
-            )
+            if account_id.isdigit():
+                cur.execute("SELECT id FROM accounts WHERE id=%s", (int(account_id),))
+            else:
+                cur.execute(
+                    "SELECT id FROM accounts WHERE lower(account_name)=lower(%s)",
+                    (name,),
+                )
             row = cur.fetchone()
             if row:
                 cur.execute(
-                    "UPDATE accounts SET account_manager_id=%s, updated_at=now() WHERE id=%s",
-                    (manager_id, int(row["id"])),
+                    """
+                    UPDATE accounts
+                    SET account_manager_id=%s,
+                        industry=%s,
+                        tier=%s,
+                        location=%s,
+                        company_size=%s,
+                        annual_spend=%s,
+                        mode=%s,
+                        suspect_q1=%s,
+                        suspect_q2=%s,
+                        suspect_q3=%s,
+                        suspect_q4=%s,
+                        suspect_q5=%s,
+                        suspect_q6=%s,
+                        suspect_q7=%s,
+                        suspect_q8=%s,
+                        suspect_q9=%s,
+                        suspect_q10=%s,
+                        suspect_score=%s,
+                        updated_at=now()
+                    WHERE id=%s
+                    """,
+                    (
+                        manager_id,
+                        industry,
+                        tier,
+                        location,
+                        company_size,
+                        annual_spend,
+                        mode,
+                        suspect_answers["suspect_q1"],
+                        suspect_answers["suspect_q2"],
+                        suspect_answers["suspect_q3"],
+                        suspect_answers["suspect_q4"],
+                        suspect_answers["suspect_q5"],
+                        suspect_answers["suspect_q6"],
+                        suspect_answers["suspect_q7"],
+                        suspect_answers["suspect_q8"],
+                        suspect_answers["suspect_q9"],
+                        suspect_answers["suspect_q10"],
+                        suspect_score,
+                        int(row["id"]),
+                    ),
                 )
                 conn.commit()
                 return "updated"
 
             cur.execute(
-                "INSERT INTO accounts (account_name, account_manager_id, created_at, updated_at) VALUES (%s, %s, now(), now())",
-                (name, manager_id),
+                """
+                INSERT INTO accounts (
+                    account_name, account_manager_id, industry, tier, location, company_size, annual_spend, mode,
+                    suspect_q1, suspect_q2, suspect_q3, suspect_q4, suspect_q5,
+                    suspect_q6, suspect_q7, suspect_q8, suspect_q9, suspect_q10, suspect_score,
+                    created_at, updated_at
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s,
+                    now(), now()
+                )
+                """,
+                (
+                    name,
+                    manager_id,
+                    industry,
+                    tier,
+                    location,
+                    company_size,
+                    annual_spend,
+                    mode,
+                    suspect_answers["suspect_q1"],
+                    suspect_answers["suspect_q2"],
+                    suspect_answers["suspect_q3"],
+                    suspect_answers["suspect_q4"],
+                    suspect_answers["suspect_q5"],
+                    suspect_answers["suspect_q6"],
+                    suspect_answers["suspect_q7"],
+                    suspect_answers["suspect_q8"],
+                    suspect_answers["suspect_q9"],
+                    suspect_answers["suspect_q10"],
+                    suspect_score,
+                ),
             )
             conn.commit()
             return "created"
@@ -237,6 +369,9 @@ def list_accounts():
                 cur.execute(
                     """
                     SELECT a.id, a.account_name, a.created_at, a.updated_at,
+                           a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode,
+                           a.suspect_q1, a.suspect_q2, a.suspect_q3, a.suspect_q4, a.suspect_q5,
+                           a.suspect_q6, a.suspect_q7, a.suspect_q8, a.suspect_q9, a.suspect_q10, a.suspect_score,
                            u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
                     FROM accounts a
                     LEFT JOIN users u ON u.id = a.account_manager_id
@@ -259,6 +394,9 @@ def list_accounts():
             cur.execute(
                 """
                 SELECT a.id, a.account_name, a.created_at, a.updated_at,
+                       a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode,
+                       a.suspect_q1, a.suspect_q2, a.suspect_q3, a.suspect_q4, a.suspect_q5,
+                       a.suspect_q6, a.suspect_q7, a.suspect_q8, a.suspect_q9, a.suspect_q10, a.suspect_score,
                        u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
                 FROM accounts a
                 LEFT JOIN users u ON u.id = a.account_manager_id
@@ -282,7 +420,7 @@ def create_or_update_account():
 
     try:
         manager_id = ensure_user(account_manager)
-        result = upsert_account(account_name, manager_id)
+        result = upsert_account(data, manager_id)
         return jsonify({"status": result, "account_name": account_name}), 200
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -315,7 +453,13 @@ def import_accounts():
             continue
         try:
             manager_id = ensure_user(manager)
-            result = upsert_account(name, manager_id)
+            result = upsert_account(
+                {
+                    "account_name": name,
+                    "account_manager": manager,
+                },
+                manager_id,
+            )
             if result == "created":
                 created += 1
             else:
