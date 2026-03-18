@@ -300,10 +300,11 @@ const ACCOUNT_OWNER_MAP = {
  
  // ═══════════════════════════════════════════════════════════════
  
- let currentUser = '';
- let isSupervisor = false;
- let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] } };
- let activityFilter = { mode: 'today', from: '', to: '' };
+let currentUser = '';
+let isSupervisor = false;
+let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] } };
+let activityFilter = { mode: 'today', from: '', to: '' };
+let managerFilter = '';
 
  function getUserRole() {
  if (isSupervisor) return 'supervisor';
@@ -316,6 +317,78 @@ const ACCOUNT_OWNER_MAP = {
 
 function getViewerRoleForApi() {
  return isSupervisor ? 'supervisor' : 'account_manager';
+}
+
+function normalizeEmail(value) {
+ return String(value || '').trim().toLowerCase();
+}
+
+function getAccountManagerEmailByAccountId(accountId) {
+ const account = state.data.accounts.find(a => String(a.id) === String(accountId));
+ if (!account) return '';
+ return normalizeEmail(account.accountManager || account.account_manager || account.owner);
+}
+
+function getLeadManagerEmail(lead) {
+ return normalizeEmail(lead.owner || lead.accountManager || lead.account_manager);
+}
+
+function getAccountManagerEmail(account) {
+ return normalizeEmail(account.accountManager || account.account_manager || account.owner);
+}
+
+function getContactManagerEmail(contact) {
+ return getAccountManagerEmailByAccountId(contact.accountId) || normalizeEmail(contact.owner);
+}
+
+function getOpportunityManagerEmail(opp) {
+ return getAccountManagerEmailByAccountId(opp.accountId) || normalizeEmail(opp.salesOwner || opp.owner);
+}
+
+function getActivityManagerEmail(activity) {
+ return getAccountManagerEmailByAccountId(activity.accountId) || normalizeEmail(activity.owner);
+}
+
+function getManagerFilterOptions(filtered) {
+ const seen = new Set();
+ const values = [];
+ [
+  ...(filtered.accounts || []).map(getAccountManagerEmail),
+  ...(filtered.leads || []).map(getLeadManagerEmail),
+  ...(filtered.contacts || []).map(getContactManagerEmail),
+  ...(filtered.opportunities || []).map(getOpportunityManagerEmail),
+  ...(filtered.activities || []).map(getActivityManagerEmail)
+ ].forEach(email => {
+  if (!email || seen.has(email)) return;
+  seen.add(email);
+  values.push(email);
+ });
+ return values.sort();
+}
+
+function formatManagerLabel(email) {
+ if (!email) return 'Unassigned';
+ return email;
+}
+
+function renderManagerFilterControls(filtered) {
+ const options = getManagerFilterOptions(filtered);
+ if (!isSupervisor) return '';
+ return `
+ <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px">
+ <label style="font-size:0.9em; font-weight:600">Account Manager</label>
+ <select class="input" style="width:auto; min-width:280px" onchange="setManagerFilter(this.value)">
+ <option value="">All Managers</option>
+ ${options.map(email => `<option value="${email}" ${managerFilter === email ? 'selected' : ''}>${formatManagerLabel(email)}</option>`).join('')}
+ </select>
+ ${managerFilter ? '<button class="btn" type="button" onclick="setManagerFilter(\'\')">Clear</button>' : ''}
+ </div>
+ `;
+}
+
+function setManagerFilter(value) {
+ managerFilter = normalizeEmail(value);
+ render();
 }
 
 function normalizeActivityFromApi(a) {
@@ -539,17 +612,27 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  });
 }
 
- async function login() {
+async function login() {
  const email = document.getElementById('emailInput').value.trim();
  const password = document.getElementById('passwordInput').value;
+ const loginBtn = document.querySelector('#loginScreen .btn.btn-success');
  
  if (!email) {
  alert('Please enter your email');
  return;
  }
+
+ if (loginBtn) {
+  loginBtn.disabled = true;
+  loginBtn.textContent = 'Signing In...';
+ }
  
  const expected = (await fetchUserPassword(email)) || PASSWORD;
  if (password !== expected) {
+ if (loginBtn) {
+  loginBtn.disabled = false;
+  loginBtn.textContent = 'Sign In';
+ }
  alert('Incorrect password');
  return;
  }
@@ -572,8 +655,19 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  btn.onclick = openChangePassword;
  actions.insertBefore(btn, actions.firstChild);
  }
- 
- await loadData();
+
+ const statusEl = document.getElementById('status');
+ if (statusEl) statusEl.textContent = 'Loading accounts and activities...';
+
+ loadData().catch(err => {
+  console.error('loadData failed', err);
+  alert('Signed in, but data loading failed. Please refresh once.');
+ }).finally(() => {
+  if (loginBtn) {
+   loginBtn.disabled = false;
+   loginBtn.textContent = 'Sign In';
+  }
+ });
  }
 
  function logout() {
@@ -593,13 +687,24 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  state.data = { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] };
  }
 
- try {
- const remoteAccounts = await fetchAccountsFromApi();
- if (Array.isArray(remoteAccounts) && remoteAccounts.length) {
+ const [accountsResult, activitiesResult] = await Promise.allSettled([
+  fetchAccountsFromApi(),
+  fetchActivitiesFromApi()
+ ]);
+
+ if (accountsResult.status === 'fulfilled') {
+  const remoteAccounts = accountsResult.value;
+  if (Array.isArray(remoteAccounts) && remoteAccounts.length) {
    state.data.accounts = remoteAccounts;
+  }
+ } else {
+  console.warn('Backend accounts unavailable, using local accounts only', accountsResult.reason);
  }
- } catch (err) {
- console.warn('Backend accounts unavailable, using local accounts only', err);
+
+ if (activitiesResult.status === 'fulfilled') {
+  state.data.activities = activitiesResult.value;
+ } else {
+  console.warn('Backend activities unavailable, using local activities only', activitiesResult.reason);
  }
 
  // Normalize legacy records so dates always exist
@@ -765,13 +870,6 @@ function calculateICPScore(account) {
  return Math.min(score, 60);
 }
 
- try {
- const remoteActivities = await fetchActivitiesFromApi();
- state.data.activities = remoteActivities;
- } catch (err) {
- console.warn('Backend activities unavailable, using local activities only', err);
- }
-
  document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
  render();
  }
@@ -786,32 +884,44 @@ function calculateICPScore(account) {
  }, 1000);
  }
 
- function getFilteredData() {
+function getFilteredData() {
+ let baseData;
  if (isSupervisor) {
- return state.data;
+  baseData = state.data;
+ } else {
+  const role = getUserRole();
+  const myAccounts = state.data.accounts.filter(a => {
+   const mgr = normalizeEmail(a.accountManager || a.account_manager);
+   const owner = normalizeEmail(a.owner);
+   const me = normalizeEmail(currentUser);
+   return mgr === me || owner === me;
+  });
+  const myAccountIds = new Set(myAccounts.map(a => String(a.id)));
+  const opportunities = state.data.opportunities.filter(o => {
+   if (normalizeEmail(o.owner) === normalizeEmail(currentUser)) return true;
+   if (myAccountIds.has(String(o.accountId))) return true;
+   if (role === 'presales') return normalizeEmail(o.assignedPresales) === normalizeEmail(currentUser);
+   if (role === 'purchase') return normalizeEmail(o.assignedPurchase) === normalizeEmail(currentUser);
+   return false;
+  });
+  const contacts = state.data.contacts.filter(c => normalizeEmail(c.owner) === normalizeEmail(currentUser) || myAccountIds.has(String(c.accountId)));
+  baseData = {
+   leads: state.data.leads.filter(l => normalizeEmail(l.owner) === normalizeEmail(currentUser)),
+   accounts: myAccounts,
+   contacts,
+   opportunities,
+   activities: state.data.activities.filter(a => normalizeEmail(a.owner) === normalizeEmail(currentUser))
+  };
  }
- const role = getUserRole();
- const myAccounts = state.data.accounts.filter(a => {
- const mgr = (a.accountManager || a.account_manager || '').toLowerCase();
- const owner = (a.owner || '').toLowerCase();
- const me = (currentUser || '').toLowerCase();
- return mgr === me || owner === me;
-});
- const myAccountIds = new Set(myAccounts.map(a => a.id));
- const opportunities = state.data.opportunities.filter(o => {
- if (o.owner === currentUser) return true;
- if (myAccountIds.has(o.accountId)) return true;
- if (role === 'presales') return o.assignedPresales === currentUser;
- if (role === 'purchase') return o.assignedPurchase === currentUser;
- return false;
- });
- const contacts = state.data.contacts.filter(c => c.owner === currentUser || myAccountIds.has(c.accountId));
+
+ if (!managerFilter) return baseData;
+
  return {
- leads: state.data.leads.filter(l => l.owner === currentUser),
- accounts: myAccounts,
- contacts,
- opportunities,
- activities: state.data.activities.filter(a => a.owner === currentUser)
+  leads: (baseData.leads || []).filter(l => getLeadManagerEmail(l) === managerFilter),
+  accounts: (baseData.accounts || []).filter(a => getAccountManagerEmail(a) === managerFilter),
+  contacts: (baseData.contacts || []).filter(c => getContactManagerEmail(c) === managerFilter),
+  opportunities: (baseData.opportunities || []).filter(o => getOpportunityManagerEmail(o) === managerFilter),
+  activities: (baseData.activities || []).filter(a => getActivityManagerEmail(a) === managerFilter)
  };
 }
 
@@ -841,10 +951,11 @@ function calculateICPScore(account) {
  document.getElementById('content').innerHTML = content;
  }
 
- function renderLeads(filtered) {
+function renderLeads(filtered) {
  return `
  <div class="card">
  <h2>🎯 Leads (${filtered.leads.length})</h2>
+ ${renderManagerFilterControls(filtered)}
  <button class="btn" type="button" onclick="document.getElementById('leadsCsvInput').click()">Import CSV</button>
  </div>
  <div class="grid">
@@ -946,6 +1057,7 @@ function renderAccounts(filtered) {
  return `
  <div class="card">
  <h2>🏢 Accounts (${filtered.accounts.length})</h2>
+ ${renderManagerFilterControls(filtered)}
  </div>
  <div class="grid">
  ${filtered.accounts.map(a => `
@@ -969,6 +1081,7 @@ function renderAccounts(filtered) {
  return `
  <div class="card">
  <h2>👥 Contacts (${filtered.contacts.length})</h2>
+ ${renderManagerFilterControls(filtered)}
  </div>
  <div class="grid">
  ${filtered.contacts.map(c => `
@@ -992,6 +1105,7 @@ function renderAccounts(filtered) {
  return `
  <div class="card">
  <h2>💰 Opportunities (${filtered.opportunities.length})</h2>
+ ${renderManagerFilterControls(filtered)}
  <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
  </div>
  <div class="grid">
@@ -1033,6 +1147,7 @@ function renderAccounts(filtered) {
  return `
  <div class="card">
  <h2>🔄 Workflow Board (${list.length})</h2>
+ ${renderManagerFilterControls(filtered)}
  <div style="opacity:0.85; margin-top:8px">Flow: Sales → Presales → Purchase → Presales → Sales</div>
  </div>
  <div class="grid">
@@ -1109,6 +1224,7 @@ function renderActivities(filtered) {
  return `
  <div class="card">
  <h2>📝 Activities (${activities.length})</h2>
+ ${renderManagerFilterControls(filtered)}
  <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px">
  <button class="btn" type="button" onclick="setActivityFilter('all')">All</button>
  <button class="btn" type="button" onclick="setActivityFilter('today')">Today</button>
@@ -1190,6 +1306,7 @@ function renderDashboard(filtered) {
  return `
  <div class="card">
  <h2>📊 Dashboard</h2>
+ ${renderManagerFilterControls(filtered)}
  <div style="font-size:0.9em; opacity:0.8; margin-top:8px">Last Update: ${fmtDateTime(lastUpdated)}</div>
  <div style="margin-top:10px"><button class="btn" onclick="exportMonthlyPipeline('${month}')">Export Monthly Pipeline</button></div>
  </div>
