@@ -1,0 +1,480 @@
+import csv
+import os
+from datetime import datetime
+from io import StringIO
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from flask import Flask, jsonify, request
+
+
+def utc_now() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+
+DATABASE_URL = (
+    os.environ.get("DATABASE_URL")
+    or os.environ.get("SUPABASE_DB_URL")
+    or os.environ.get("SUPABASE_DATABASE_URL")
+)
+
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is required (set it to your Supabase Postgres connection string)."
+    )
+
+
+def _strip_sslmode(url: str) -> str:
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query))
+    query.pop("sslmode", None)
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+DATABASE_URL = _strip_sslmode(DATABASE_URL)
+
+app = Flask(__name__)
+
+
+@app.after_request
+def add_cors_headers(resp):
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    return resp
+
+
+def get_conn():
+    sslmode = os.environ.get("PGSSLMODE", "require")
+    return psycopg2.connect(DATABASE_URL, sslmode=sslmode)
+
+
+def init_db() -> None:
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    email TEXT UNIQUE,
+                    name TEXT,
+                    role TEXT DEFAULT 'account_manager',
+                    created_at TIMESTAMPTZ DEFAULT now()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS accounts (
+                    id SERIAL PRIMARY KEY,
+                    account_name TEXT UNIQUE,
+                    account_manager_id INTEGER REFERENCES users(id),
+                    created_at TIMESTAMPTZ DEFAULT now(),
+                    updated_at TIMESTAMPTZ DEFAULT now()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS activities (
+                    id TEXT PRIMARY KEY,
+                    type TEXT,
+                    subject TEXT,
+                    notes TEXT,
+                    date TEXT,
+                    owner TEXT,
+                    account_id TEXT,
+                    account_name TEXT,
+                    created_at TIMESTAMPTZ DEFAULT now(),
+                    updated_at TIMESTAMPTZ DEFAULT now()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_passwords (
+                    email TEXT PRIMARY KEY,
+                    password TEXT,
+                    updated_at TIMESTAMPTZ DEFAULT now()
+                );
+                """
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+init_db()
+
+
+def ensure_user(manager_value: str) -> int:
+    value = (manager_value or "").strip()
+    if not value:
+        raise ValueError("account_manager is required")
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if "@" in value:
+                cur.execute(
+                    "SELECT id FROM users WHERE lower(email)=lower(%s)",
+                    (value,),
+                )
+                row = cur.fetchone()
+                if row:
+                    return int(row["id"])
+                cur.execute(
+                    "INSERT INTO users (email, name, role, created_at) VALUES (%s, %s, 'account_manager', now()) RETURNING id",
+                    (value, value.split("@")[0]),
+                )
+                new_id = cur.fetchone()["id"]
+                conn.commit()
+                return int(new_id)
+
+            cur.execute(
+                "SELECT id FROM users WHERE lower(name)=lower(%s)",
+                (value,),
+            )
+            row = cur.fetchone()
+            if row:
+                return int(row["id"])
+
+            placeholder_email = f"{value.lower().replace(' ', '.')}@local.crm"
+            cur.execute(
+                "INSERT INTO users (email, name, role, created_at) VALUES (%s, %s, 'account_manager', now()) RETURNING id",
+                (placeholder_email, value),
+            )
+            new_id = cur.fetchone()["id"]
+            conn.commit()
+            return int(new_id)
+    finally:
+        conn.close()
+
+
+def upsert_account(account_name: str, manager_id: int) -> str:
+    name = (account_name or "").strip()
+    if not name:
+        raise ValueError("account_name is required")
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id FROM accounts WHERE lower(account_name)=lower(%s)",
+                (name,),
+            )
+            row = cur.fetchone()
+            if row:
+                cur.execute(
+                    "UPDATE accounts SET account_manager_id=%s, updated_at=now() WHERE id=%s",
+                    (manager_id, int(row["id"])),
+                )
+                conn.commit()
+                return "updated"
+
+            cur.execute(
+                "INSERT INTO accounts (account_name, account_manager_id, created_at, updated_at) VALUES (%s, %s, now(), now())",
+                (name, manager_id),
+            )
+            conn.commit()
+            return "created"
+    finally:
+        conn.close()
+
+
+@app.route('/api/health', methods=['GET'])
+def health():
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute('SELECT COUNT(*) AS c FROM users')
+            users = cur.fetchone()['c']
+            cur.execute('SELECT COUNT(*) AS c FROM accounts')
+            accounts = cur.fetchone()['c']
+        return jsonify({
+            'status': 'ok',
+            'db_host': urlparse(DATABASE_URL).hostname,
+            'users': users,
+            'accounts': accounts,
+        })
+    finally:
+        conn.close()
+
+
+@app.route('/api/accounts', methods=['GET'])
+def list_accounts():
+    viewer_email = (request.args.get('viewer_email') or '').strip()
+    viewer_role = (request.args.get('viewer_role') or 'account_manager').strip().lower()
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if viewer_role in ('supervisor', 'admin'):
+                cur.execute(
+                    """
+                    SELECT a.id, a.account_name, a.created_at, a.updated_at,
+                           u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
+                    FROM accounts a
+                    LEFT JOIN users u ON u.id = a.account_manager_id
+                    ORDER BY a.account_name
+                    """
+                )
+                return jsonify(cur.fetchall())
+
+            if not viewer_email:
+                return jsonify({'error': 'viewer_email is required for non-supervisor access'}), 400
+
+            cur.execute(
+                'SELECT id FROM users WHERE lower(email)=lower(%s)',
+                (viewer_email,),
+            )
+            manager = cur.fetchone()
+            if not manager:
+                return jsonify([])
+
+            cur.execute(
+                """
+                SELECT a.id, a.account_name, a.created_at, a.updated_at,
+                       u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
+                FROM accounts a
+                LEFT JOIN users u ON u.id = a.account_manager_id
+                WHERE a.account_manager_id = %s
+                ORDER BY a.account_name
+                """,
+                (int(manager['id']),),
+            )
+            return jsonify(cur.fetchall())
+    finally:
+        conn.close()
+
+
+@app.route('/api/accounts', methods=['POST'])
+def create_or_update_account():
+    data = request.get_json(silent=True) or {}
+    account_name = (data.get('account_name') or '').strip()
+    account_manager = (data.get('account_manager') or '').strip()
+    if not account_name or not account_manager:
+        return jsonify({'error': 'account_name and account_manager are required'}), 400
+
+    try:
+        manager_id = ensure_user(account_manager)
+        result = upsert_account(account_name, manager_id)
+        return jsonify({'status': result, 'account_name': account_name}), 200
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+
+@app.route('/api/accounts/import', methods=['POST'])
+def import_accounts():
+    if 'file' not in request.files:
+        return jsonify({'error': 'Missing file in form-data'}), 400
+
+    file_obj = request.files['file']
+    if not file_obj or not file_obj.filename:
+        return jsonify({'error': 'Invalid file'}), 400
+
+    try:
+        content = file_obj.read().decode('utf-8', errors='replace')
+        reader = csv.DictReader(StringIO(content))
+    except Exception as exc:
+        return jsonify({'error': f'Could not read CSV: {exc}'}), 400
+
+    created = 0
+    updated = 0
+    failed = []
+
+    for idx, row in enumerate(reader, start=2):
+        name = (row.get('account_name') or '').strip()
+        manager = (row.get('account_manager') or '').strip()
+        if not name or not manager:
+            failed.append({'row': idx, 'error': 'Missing account_name/account_manager'})
+            continue
+        try:
+            manager_id = ensure_user(manager)
+            result = upsert_account(name, manager_id)
+            if result == 'created':
+                created += 1
+            else:
+                updated += 1
+        except Exception as exc:
+            failed.append({'row': idx, 'error': str(exc), 'account_name': name})
+
+    return jsonify({
+        'created': created,
+        'updated': updated,
+        'failed_count': len(failed),
+        'failed_rows': failed[:50],
+    })
+
+
+@app.route('/api/activities', methods=['GET'])
+def list_activities():
+    viewer_email = (request.args.get('viewer_email') or '').strip()
+    viewer_role = (request.args.get('viewer_role') or 'account_manager').strip().lower()
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if viewer_role in ('supervisor', 'admin'):
+                cur.execute(
+                    """
+                    SELECT id, type, subject, notes, date, owner, account_id, account_name, created_at, updated_at
+                    FROM activities
+                    ORDER BY date DESC, updated_at DESC
+                    """
+                )
+                return jsonify(cur.fetchall())
+
+            if not viewer_email:
+                return jsonify({'error': 'viewer_email is required for non-supervisor access'}), 400
+
+            cur.execute(
+                """
+                SELECT id, type, subject, notes, date, owner, account_id, account_name, created_at, updated_at
+                FROM activities
+                WHERE lower(owner)=lower(%s)
+                ORDER BY date DESC, updated_at DESC
+                """,
+                (viewer_email,),
+            )
+            return jsonify(cur.fetchall())
+    finally:
+        conn.close()
+
+
+@app.route('/api/activities', methods=['POST'])
+def upsert_activity():
+    data = request.get_json(silent=True) or {}
+    activity_id = (data.get('id') or '').strip()
+    activity_type = (data.get('type') or '').strip()
+    subject = (data.get('subject') or '').strip()
+    notes = (data.get('notes') or '').strip()
+    date = (data.get('date') or '').strip()
+    owner = (data.get('owner') or '').strip()
+    account_id = (data.get('account_id') or '').strip()
+    account_name = (data.get('account_name') or '').strip()
+
+    if not activity_type or not subject or not date or not owner:
+        return jsonify({'error': 'type, subject, date, owner are required'}), 400
+
+    if not activity_id:
+        activity_id = f"act_{int(datetime.utcnow().timestamp() * 1000)}"
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute('SELECT id FROM activities WHERE id=%s', (activity_id,))
+            row = cur.fetchone()
+            if row:
+                cur.execute(
+                    """
+                    UPDATE activities
+                    SET type=%s, subject=%s, notes=%s, date=%s, owner=%s, account_id=%s, account_name=%s, updated_at=now()
+                    WHERE id=%s
+                    """,
+                    (activity_type, subject, notes, date, owner, account_id, account_name, activity_id),
+                )
+                status = 'updated'
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO activities (id, type, subject, notes, date, owner, account_id, account_name, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+                    """,
+                    (activity_id, activity_type, subject, notes, date, owner, account_id, account_name),
+                )
+                status = 'created'
+        conn.commit()
+        return jsonify({'status': status, 'id': activity_id})
+    finally:
+        conn.close()
+
+
+@app.route('/api/activities/<activity_id>', methods=['DELETE'])
+def delete_activity(activity_id: str):
+    viewer_email = (request.args.get('viewer_email') or '').strip()
+    viewer_role = (request.args.get('viewer_role') or 'account_manager').strip().lower()
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute('SELECT id, owner FROM activities WHERE id=%s', (activity_id,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({'error': 'activity not found'}), 404
+
+            if viewer_role not in ('supervisor', 'admin'):
+                if not viewer_email:
+                    return jsonify({'error': 'viewer_email is required'}), 400
+                if (row['owner'] or '').lower() != viewer_email.lower():
+                    return jsonify({'error': 'not allowed'}), 403
+
+            cur.execute('DELETE FROM activities WHERE id=%s', (activity_id,))
+        conn.commit()
+        return jsonify({'status': 'deleted', 'id': activity_id})
+    finally:
+        conn.close()
+
+
+@app.route('/api/passwords/<email>', methods=['GET'])
+def get_password(email: str):
+    viewer_role = (request.args.get('viewer_role') or 'account_manager').strip().lower()
+    viewer_email = (request.args.get('viewer_email') or '').strip().lower()
+    if viewer_role not in ('supervisor', 'admin') and viewer_email != (email or '').strip().lower():
+        return jsonify({'error': 'not allowed'}), 403
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                'SELECT email, password, updated_at FROM user_passwords WHERE lower(email)=lower(%s)',
+                (email,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return jsonify({'email': email, 'password': None})
+            return jsonify(row)
+    finally:
+        conn.close()
+
+
+@app.route('/api/passwords', methods=['POST'])
+def set_password():
+    data = request.get_json(silent=True) or {}
+    viewer_role = (data.get('viewer_role') or 'account_manager').strip().lower()
+    viewer_email = (data.get('viewer_email') or '').strip().lower()
+    email = (data.get('email') or '').strip().lower()
+    password = (data.get('password') or '').strip()
+    if not email or not password:
+        return jsonify({'error': 'email and password required'}), 400
+    if viewer_role not in ('supervisor', 'admin'):
+        if not viewer_email or viewer_email != email:
+            return jsonify({'error': 'not allowed'}), 403
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO user_passwords (email, password, updated_at)
+                VALUES (%s, %s, now())
+                ON CONFLICT(email)
+                DO UPDATE SET password=EXCLUDED.password, updated_at=EXCLUDED.updated_at
+                """,
+                (email, password),
+            )
+        conn.commit()
+        return jsonify({'status': 'ok', 'email': email})
+    finally:
+        conn.close()
+
+
+@app.route('/api/<path:_>', methods=['OPTIONS'])
+def options_passthrough(_):
+    return ('', 204)
+
+
+@app.route('/api', methods=['GET'])
+def api_root():
+    return jsonify({'status': 'ok'})
