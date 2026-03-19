@@ -1035,6 +1035,9 @@ function renderLeads(filtered) {
  <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
  📅 Created: ${fmtDate(l.createdDate)}<br>🕒 Updated: ${fmtDate(l.modifiedDate)}
  </div>
+ <div style="margin-top:10px">
+ <button type="button" class="btn" onclick="event.stopPropagation();editLead('${l.id}')">Edit</button>
+ </div>
  </div>
  `).join('')}
  ${filtered.leads.length === 0 ? '<div class="card">No leads yet. Click + to add one!</div>' : ''}
@@ -1135,6 +1138,9 @@ ${filtered.accounts.map(a => `
  <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
  📅 Created: ${fmtDate(a.createdDate)}<br>🕒 Updated: ${fmtDate(a.modifiedDate)}
  </div>
+ <div style="margin-top:10px">
+ <button type="button" class="btn" onclick="event.stopPropagation();editAccount('${a.id}')">Edit</button>
+ </div>
  </div>
  `).join('')}
  ${filtered.accounts.length === 0 ? '<div class="card">No accounts yet. Click + to add one!</div>' : ''}
@@ -1158,6 +1164,9 @@ ${filtered.accounts.map(a => `
  </div>
  <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
  📅 Created: ${fmtDate(c.createdDate)}<br>🕒 Updated: ${fmtDate(c.modifiedDate)}
+ </div>
+ <div style="margin-top:10px">
+ <button type="button" class="btn" onclick="event.stopPropagation();editContact('${c.id}')">Edit</button>
  </div>
  </div>
  `).join('')}
@@ -1196,6 +1205,9 @@ ${filtered.accounts.map(a => `
  </div>
  <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
  📅 Created: ${fmtDate(o.createdDate)}<br>🕒 Updated: ${fmtDate(o.modifiedDate)}
+ </div>
+ <div style="margin-top:10px">
+ <button type="button" class="btn" onclick="event.stopPropagation();editOpportunity('${o.id}')">Edit</button>
  </div>
  </div>
  `;
@@ -1304,7 +1316,7 @@ function renderActivities(filtered) {
  </div>
  <div class="grid">
  ${activities.map(a => `
- <div class="item-card">
+ <div class="item-card" onclick="editActivity('${a.id}')">
  <div style="display:flex; justify-content:space-between">
  <h3>${a.type}</h3>
  <span class="tag">${fmtDateTime(a.date || a.modifiedDate || a.createdDate)}</span>
@@ -1313,6 +1325,9 @@ function renderActivities(filtered) {
  <div style="opacity:0.8">${a.notes || 'No notes'}</div>
  <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
  By: ${formatUserLabel(a.owner || 'NA')}<br>🕒 Updated: ${fmtDateTime(a.modifiedDate || a.date || a.createdDate)}
+ </div>
+ <div style="margin-top:10px">
+ <button type="button" class="btn" onclick="event.stopPropagation();editActivity('${a.id}')">Edit</button>
  </div>
  </div>
  `).join('')}
@@ -1997,6 +2012,7 @@ function saveOpportunity(e, id) {
  function editAccount(id) { openAccountModal(state.data.accounts.find(a => a.id === id)); }
  function editContact(id) { openContactModal(state.data.contacts.find(c => c.id === id)); }
  function editOpportunity(id) { openOpportunityModal(state.data.opportunities.find(o => o.id === id)); }
+ function editActivity(id) { openActivityModal(state.data.activities.find(a => a.id === id)); }
 
  function deleteLead(id) {
  if (confirm('Delete this lead?')) {
