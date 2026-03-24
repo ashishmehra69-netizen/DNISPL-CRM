@@ -2080,9 +2080,8 @@ async function deleteActivity(id) {
 }
 
 function getTeamUsers(role) {
- const users = new Set();
-
  if (role === 'sales') {
+  const users = new Set();
   state.data.leads.forEach(l => l.owner && users.add(l.owner));
   state.data.accounts.forEach(a => a.owner && users.add(a.owner));
   state.data.contacts.forEach(c => c.owner && users.add(c.owner));
@@ -2093,16 +2092,14 @@ function getTeamUsers(role) {
  }
 
  if (role === 'presales') {
-  return [PRESALES_OWNER];
-}
-
-
- if (role === 'purchase') {
-  users.add(PURCHASE_OWNER); // force correct default first
-  return Array.from(users);
+  return [PRESALES_OWNER]; // ONLY vinod.v@dnispl.com
  }
 
- return Array.from(users);
+ if (role === 'purchase') {
+  return [PURCHASE_OWNER]; // ONLY narendra.singh@dnispl.com
+ }
+
+ return [];
 }
 
  const opportunities = state.data.opportunities || [];
