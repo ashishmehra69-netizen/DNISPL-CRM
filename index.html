@@ -375,6 +375,17 @@ function getOpportunityManagerEmail(opp) {
  return getAccountManagerEmailByAccountId(opp.accountId) || normalizeEmail(opp.salesOwner || opp.owner);
 }
 
+function getOpportunityManagerEmails(opp) {
+ const set = new Set();
+ const accountMgr = getAccountManagerEmailByAccountId(opp.accountId);
+ const salesMgr = normalizeEmail(opp.salesOwner || opp.owner);
+ const ownerMgr = normalizeEmail(opp.owner);
+ if (accountMgr) set.add(accountMgr);
+ if (salesMgr) set.add(salesMgr);
+ if (ownerMgr) set.add(ownerMgr);
+ return Array.from(set);
+}
+
 function getActivityManagerEmail(activity) {
  return getAccountManagerEmailByAccountId(activity.accountId) || normalizeEmail(activity.owner);
 }
@@ -386,7 +397,7 @@ function getManagerFilterOptions(filtered) {
   ...(filtered.accounts || []).map(getAccountManagerEmail),
   ...(filtered.leads || []).map(getLeadManagerEmail),
   ...(filtered.contacts || []).map(getContactManagerEmail),
-  ...(filtered.opportunities || []).map(getOpportunityManagerEmail),
+  ...((filtered.opportunities || []).reduce((acc, o) => acc.concat(getOpportunityManagerEmails(o)), [])),
   ...(filtered.activities || []).map(getActivityManagerEmail)
  ].forEach(email => {
   if (!email || seen.has(email)) return;
@@ -968,6 +979,7 @@ async function login() {
  
  currentUser = email;
  isSupervisor = email.toLowerCase() === SUPERVISOR_EMAIL.toLowerCase();
+ managerFilter = '';
  
  document.getElementById('loginScreen').style.display = 'none';
  document.getElementById('mainScreen').style.display = 'block';
@@ -1005,6 +1017,7 @@ async function login() {
  function logout() {
  currentUser = '';
  isSupervisor = false;
+ managerFilter = '';
  if (slaTimer) {
   clearInterval(slaTimer);
   slaTimer = null;
@@ -1280,7 +1293,7 @@ function getFilteredData() {
   leads: (baseData.leads || []).filter(l => getLeadManagerEmail(l) === managerFilter),
   accounts: (baseData.accounts || []).filter(a => getAccountManagerEmail(a) === managerFilter),
   contacts: (baseData.contacts || []).filter(c => getContactManagerEmail(c) === managerFilter),
-  opportunities: (baseData.opportunities || []).filter(o => getOpportunityManagerEmail(o) === managerFilter),
+  opportunities: (baseData.opportunities || []).filter(o => getOpportunityManagerEmails(o).includes(managerFilter)),
   activities: (baseData.activities || []).filter(a => getActivityManagerEmail(a) === managerFilter)
  };
 }
@@ -2097,26 +2110,24 @@ async function deleteActivity(id) {
 function getTeamUsers(role) {
  const users = new Set();
  if (role === 'sales') {
-  state.data.leads.forEach(l => l.owner && users.add(l.owner));
-  state.data.accounts.forEach(a => a.owner && users.add(a.owner));
-  state.data.contacts.forEach(c => c.owner && users.add(c.owner));
-  state.data.opportunities.forEach(o => o.owner && users.add(o.owner));
-  SALES_TEAM_USERS.forEach(u => users.add(u));
-  users.add(currentUser || 'sales@company.com');
-  return Array.from(users);
+ state.data.leads.forEach(l => l.owner && users.add(l.owner));
+ state.data.accounts.forEach(a => a.owner && users.add(a.owner));
+ state.data.contacts.forEach(c => c.owner && users.add(c.owner));
+ state.data.opportunities.forEach(o => o.owner && users.add(o.owner));
+ SALES_TEAM_USERS.forEach(u => users.add(u));
+ users.add(currentUser || 'sales@company.com');
+ return Array.from(users);
  }
-
  const opportunities = state.data.opportunities || [];
  opportunities.forEach(o => {
-  if (role === 'presales' && o.assignedPresales) users.add(o.assignedPresales);
-  if (role === 'purchase' && o.assignedPurchase) users.add(o.assignedPurchase);
+ if (role === 'presales' && o.assignedPresales) users.add(o.assignedPresales);
+ if (role === 'purchase' && o.assignedPurchase) users.add(o.assignedPurchase);
  });
-
- if (role === 'presales') users.add(PRESALES_OWNER); // vinod.v@dnispl.com
+ if (role === 'presales') users.add(PRESALES_OWNER);
  if (role === 'purchase') {
-  users.add(PURCHASE_OWNER); // narendra.singh@dnispl.com
+  users.add('purchase@company.com');
+  users.add(PURCHASE_OWNER);
  }
-
  return Array.from(users);
 }
 
