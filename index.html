@@ -926,19 +926,32 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  });
 }
 
+<script>
 async function login() {
   const email = document.getElementById('emailInput').value.trim().toLowerCase();
   const password = document.getElementById('passwordInput').value;
+  const loginBtn = document.querySelector('#loginScreen .btn.btn-success');
+
   if (!email) return alert('Please enter your email');
 
-  // Fast fallback login (prevents password API delay/failure lock)
+  if (loginBtn) {
+    loginBtn.disabled = true;
+    loginBtn.textContent = 'Signing In...';
+  }
+
   let expected = PASSWORD;
   try {
     const p = await fetchUserPassword(email);
     if (p) expected = p;
   } catch (e) {}
 
-  if (password !== expected) return alert('Incorrect password');
+  if (password !== expected) {
+    if (loginBtn) {
+      loginBtn.disabled = false;
+      loginBtn.textContent = 'Sign In';
+    }
+    return alert('Incorrect password');
+  }
 
   currentUser = email;
   isSupervisor = email === SUPERVISOR_EMAIL.toLowerCase();
@@ -946,31 +959,46 @@ async function login() {
   document.getElementById('loginScreen').style.display = 'none';
   document.getElementById('mainScreen').style.display = 'block';
   document.getElementById('userEmail').textContent = currentUser;
-  const roleLabel = { supervisor: 'SUPERVISOR', sales: 'SALESPERSON', presales: 'PRESALES', purchase: 'PURCHASE' };
+
+  const roleLabel = {
+    supervisor: 'SUPERVISOR',
+    sales: 'SALESPERSON',
+    presales: 'PRESALES',
+    purchase: 'PURCHASE'
+  };
   document.getElementById('userRole').textContent = roleLabel[getUserRole()] || 'SALESPERSON';
   document.getElementById('fabBtn').style.display = 'block';
 
-  await loadData();
-  render();
-}
-
-
- const statusEl = document.getElementById('status');
- if (statusEl) statusEl.textContent = 'Loading accounts and activities...';
-
- loadData().catch(err => {
-  console.error('loadData failed', err);
-  alert('Signed in, but data loading failed. Please refresh once.');
- }).finally(() => {
-  runSLAEngine();
-  if (slaTimer) clearInterval(slaTimer);
-  slaTimer = setInterval(runSLAEngine, 60000);
-  if (loginBtn) {
-   loginBtn.disabled = false;
-   loginBtn.textContent = 'Sign In';
+  const actions = document.getElementById('userActions');
+  if (actions && !document.getElementById('changePwdBtn')) {
+    const btn = document.createElement('button');
+    btn.id = 'changePwdBtn';
+    btn.className = 'btn';
+    btn.textContent = 'Change Password';
+    btn.onclick = openChangePassword;
+    actions.insertBefore(btn, actions.firstChild);
   }
- });
- }
+
+  const statusEl = document.getElementById('status');
+  if (statusEl) statusEl.textContent = 'Loading accounts and activities...';
+
+  try {
+    await loadData();
+  } catch (err) {
+    console.error('loadData failed', err);
+    alert('Signed in, but data loading failed. Please refresh once.');
+  } finally {
+    runSLAEngine();
+    if (slaTimer) clearInterval(slaTimer);
+    slaTimer = setInterval(runSLAEngine, 60000);
+
+    if (loginBtn) {
+      loginBtn.disabled = false;
+      loginBtn.textContent = 'Sign In';
+    }
+  }
+}
+</script>
 
  function logout() {
  currentUser = '';
