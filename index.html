@@ -336,6 +336,55 @@ let managerFilter = '';
 let slaEngineRunning = false;
 let slaTimer = null;
 
+
+function applyLoggedInUi() {
+ document.getElementById('loginScreen').style.display = 'none';
+ document.getElementById('mainScreen').style.display = 'block';
+ document.getElementById('userEmail').textContent = currentUser;
+ const roleLabel = { supervisor: 'SUPERVISOR', sales: 'SALESPERSON', presales: 'PRESALES', purchase: 'PURCHASE' };
+ document.getElementById('userRole').textContent = roleLabel[getUserRole()] || 'SALESPERSON';
+ document.getElementById('fabBtn').style.display = 'block';
+ const actions = document.getElementById('userActions');
+ if (actions && !document.getElementById('changePwdBtn')) {
+  const btn = document.createElement('button');
+  btn.id = 'changePwdBtn';
+  btn.className = 'btn';
+  btn.textContent = 'Change Password';
+  btn.onclick = openChangePassword;
+  actions.insertBefore(btn, actions.firstChild);
+ }
+}
+
+function persistSession() {
+ localStorage.setItem('crmCurrentUser', currentUser || '');
+ localStorage.setItem('crmIsSupervisor', isSupervisor ? '1' : '0');
+}
+
+function clearSession() {
+ localStorage.removeItem('crmCurrentUser');
+ localStorage.removeItem('crmIsSupervisor');
+}
+
+async function restoreSessionIfAny() {
+ const savedUser = normalizeEmail(localStorage.getItem('crmCurrentUser') || '');
+ if (!savedUser) return false;
+ currentUser = savedUser;
+ isSupervisor = savedUser === SUPERVISOR_EMAIL.toLowerCase() || localStorage.getItem('crmIsSupervisor') === '1';
+ managerFilter = '';
+ applyLoggedInUi();
+ const statusEl = document.getElementById('status');
+ if (statusEl) statusEl.textContent = 'Restoring session and loading data...';
+ try {
+  await loadData();
+ } catch (err) {
+  console.error('restoreSession loadData failed', err);
+ }
+ runSLAEngine();
+ if (slaTimer) clearInterval(slaTimer);
+ slaTimer = setInterval(runSLAEngine, 60000);
+ return true;
+}
+
  function getUserRole() {
  if (isSupervisor) return 'supervisor';
  const email = (currentUser || '').toLowerCase();
@@ -981,21 +1030,8 @@ async function login() {
  isSupervisor = email.toLowerCase() === SUPERVISOR_EMAIL.toLowerCase();
  managerFilter = '';
  
- document.getElementById('loginScreen').style.display = 'none';
- document.getElementById('mainScreen').style.display = 'block';
- document.getElementById('userEmail').textContent = currentUser;
- const roleLabel = { supervisor: 'SUPERVISOR', sales: 'SALESPERSON', presales: 'PRESALES', purchase: 'PURCHASE' };
- document.getElementById('userRole').textContent = roleLabel[getUserRole()] || 'SALESPERSON';
- document.getElementById('fabBtn').style.display = 'block';
- const actions = document.getElementById('userActions');
- if (actions && !document.getElementById('changePwdBtn')) {
- const btn = document.createElement('button');
- btn.id = 'changePwdBtn';
- btn.className = 'btn';
- btn.textContent = 'Change Password';
- btn.onclick = openChangePassword;
- actions.insertBefore(btn, actions.firstChild);
- }
+ applyLoggedInUi();
+ persistSession();
 
  const statusEl = document.getElementById('status');
  if (statusEl) statusEl.textContent = 'Loading accounts and activities...';
@@ -1018,6 +1054,7 @@ async function login() {
  currentUser = '';
  isSupervisor = false;
  managerFilter = '';
+ clearSession();
  if (slaTimer) {
   clearInterval(slaTimer);
   slaTimer = null;
@@ -2125,6 +2162,7 @@ function getTeamUsers(role) {
  });
  if (role === 'presales') users.add(PRESALES_OWNER);
  if (role === 'purchase') {
+  users.add('purchase@company.com');
   users.add(PURCHASE_OWNER);
  }
  return Array.from(users);
@@ -2466,6 +2504,11 @@ async function saveOpportunity(e, id) {
  function closeModal() {
  document.getElementById('modal').classList.remove('show');
  }
+
+
+window.addEventListener('load', () => {
+ restoreSessionIfAny().catch(err => console.error('session restore failed', err));
+});
  </script>
 </body>
 </html>
