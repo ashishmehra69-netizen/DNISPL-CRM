@@ -320,6 +320,21 @@ def send_presales_escalation_email(row, presales_due_iso: str) -> None:
     send_email_smtp(ESCALATION_EMAILS, subject, body)
 
 
+def send_presales_assignment_email(opportunity_name: str, opp_id: str, presales_email: str, presales_due_iso: str) -> None:
+    target = (presales_email or "").strip().lower()
+    if "@" not in target:
+        return
+    subject = f"[CRM] New Opportunity Assigned: {opportunity_name or opp_id}"
+    body = (
+        f"Opportunity: {opportunity_name or ''}\n"
+        f"Opportunity ID: {opp_id}\n"
+        f"Assigned To (Presales): {target}\n"
+        f"Presales Due At (72h SLA): {presales_due_iso}\n\n"
+        "Please review requirements and submit solution/proposal within SLA."
+    )
+    send_email_smtp([target], subject, body)
+
+
 def enforce_opportunity_sla(conn, rows):
     now = datetime.now(timezone.utc)
     changed = False
@@ -346,6 +361,12 @@ def enforce_opportunity_sla(conn, rows):
                 updates["presales_assigned_at"] = (
                     parse_iso_dt(row.get("presales_assigned_at")) or assignment_due
                 ).isoformat().replace("+00:00", "Z")
+                send_presales_assignment_email(
+                    row.get("name") or "",
+                    row.get("id") or "",
+                    updates["assigned_presales"],
+                    presales_due.isoformat().replace("+00:00", "Z"),
+                )
 
             has_proposal = bool((row.get("final_pricing_proposal") or "").strip())
             if has_proposal and workflow_stage != "Final Proposal Shared":
