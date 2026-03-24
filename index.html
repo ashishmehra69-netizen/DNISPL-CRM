@@ -2081,15 +2081,30 @@ async function deleteActivity(id) {
 
 function getTeamUsers(role) {
  const users = new Set();
+
  if (role === 'sales') {
- state.data.leads.forEach(l => l.owner && users.add(l.owner));
- state.data.accounts.forEach(a => a.owner && users.add(a.owner));
- state.data.contacts.forEach(c => c.owner && users.add(c.owner));
- state.data.opportunities.forEach(o => o.owner && users.add(o.owner));
- SALES_TEAM_USERS.forEach(u => users.add(u));
- users.add(currentUser || 'sales@company.com');
- return Array.from(users);
+  state.data.leads.forEach(l => l.owner && users.add(l.owner));
+  state.data.accounts.forEach(a => a.owner && users.add(a.owner));
+  state.data.contacts.forEach(c => c.owner && users.add(c.owner));
+  state.data.opportunities.forEach(o => o.owner && users.add(o.owner));
+  SALES_TEAM_USERS.forEach(u => users.add(u));
+  users.add(currentUser || 'sales@company.com');
+  return Array.from(users);
  }
+
+ if (role === 'presales') {
+  users.add(PRESALES_OWNER); // force correct default first
+  return Array.from(users);
+ }
+
+ if (role === 'purchase') {
+  users.add(PURCHASE_OWNER); // force correct default first
+  return Array.from(users);
+ }
+
+ return Array.from(users);
+}
+
  const opportunities = state.data.opportunities || [];
  opportunities.forEach(o => {
  if (role === 'presales' && o.assignedPresales) users.add(o.assignedPresales);
