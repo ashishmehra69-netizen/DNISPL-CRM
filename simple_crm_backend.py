@@ -1,6 +1,7 @@
 import csv
 import os
 import smtplib
+import threading
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from io import StringIO
@@ -59,6 +60,8 @@ def _strip_sslmode(url: str) -> str:
 DATABASE_URL = _strip_sslmode(DATABASE_URL)
 
 app = Flask(__name__)
+_db_init_done = False
+_db_init_lock = threading.Lock()
 
 
 @app.after_request
@@ -266,7 +269,20 @@ def init_db() -> None:
         conn.close()
 
 
-init_db()
+def ensure_db_initialized():
+    global _db_init_done
+    if _db_init_done:
+        return
+    with _db_init_lock:
+        if _db_init_done:
+            return
+        init_db()
+        _db_init_done = True
+
+
+@app.before_request
+def _ensure_init_once():
+    ensure_db_initialized()
 
 
 def compute_suspect_score(data: dict) -> int:
