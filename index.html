@@ -1,451 +1,2459 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sales CRM - Simple Version</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
-    body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; color: white; padding: 20px; }
-    .container { max-width: 1200px; margin: 0 auto; }
-    .header { text-align: center; padding: 30px 0; }
-    .header h1 { font-size: 2.5em; margin-bottom: 10px; }
-    .login-box { background: rgba(255,255,255,0.15); padding: 40px; border-radius: 15px; max-width: 420px; margin: 40px auto; text-align: center; }
-    .input, select, textarea { width: 100%; padding: 12px; margin: 10px 0; border-radius: 8px; border: none; font-size: 1em; }
-    textarea { min-height: 80px; }
-    .btn { background: white; color: #667eea; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; margin: 6px 4px; font-size: 1em; }
-    .btn:hover { transform: translateY(-1px); transition: all 0.2s; }
-    .btn-success { background: #4ade80; color: white; }
-    .btn-danger { background: #ff4757; color: white; }
-    .tabs { display: flex; gap: 10px; margin: 20px 0; overflow-x: auto; }
-    .tab { padding: 12px 20px; background: rgba(255,255,255,0.12); border: none; color: white; cursor: pointer; border-radius: 8px; white-space: nowrap; }
-    .tab.active { background: white; color: #667eea; font-weight: bold; }
-    .card { background: rgba(255,255,255,0.15); padding: 18px; border-radius: 12px; margin: 14px 0; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin: 16px 0; }
-    .item-card { background: rgba(255,255,255,0.1); padding: 14px; border-radius: 10px; cursor: pointer; }
-    .item-card:hover { background: rgba(255,255,255,0.2); }
-    .status { text-align: center; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 8px; margin: 10px 0; }
-    .tag { display: inline-block; padding: 4px 10px; background: rgba(255,255,255,0.2); border-radius: 12px; font-size: 0.85em; margin: 3px; }
-    .fab { position: fixed; bottom: 30px; right: 30px; width: 60px; height: 60px; background: white; color: #667eea; border: none; border-radius: 50%; font-size: 2em; cursor: pointer; box-shadow: 0 5px 20px rgba(0,0,0,0.3); }
-    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 9999; overflow-y: auto; padding: 20px; }
-    .modal.show { display: block; }
-    .modal-content { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 24px; border-radius: 14px; max-width: 680px; margin: 20px auto; }
-    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  </style>
+ <meta charset="UTF-8">
+ <title>Sales CRM - Simple Version</title>
+ <style>
+ * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
+ body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; color: white; padding: 20px; }
+ .container { max-width: 1200px; margin: 0 auto; }
+ .header { text-align: center; padding: 30px 0; }
+ .header h1 { font-size: 2.5em; margin-bottom: 10px; }
+ .login-box { background: rgba(255,255,255,0.15); padding: 40px; border-radius: 15px; max-width: 400px; margin: 50px auto; text-align: center; }
+ .input { width: 100%; padding: 12px; margin: 10px 0; border-radius: 8px; border: none; font-size: 1em; }
+ .btn { background: white; color: #667eea; border: none; padding: 12px 30px; border-radius: 8px; cursor: pointer; font-weight: bold; margin: 10px 5px; font-size: 1em; }
+ .btn:hover { transform: translateY(-2px); transition: all 0.3s; }
+ .btn-success { background: #4ade80; color: white; }
+ .btn-danger { background: #ff4757; color: white; }
+ .tabs { display: flex; gap: 10px; margin: 20px 0; overflow-x: auto; }
+ .tab { padding: 12px 24px; background: rgba(255,255,255,0.1); border: none; color: white; cursor: pointer; border-radius: 8px; }
+ .tab.active { background: white; color: #667eea; font-weight: bold; }
+ .card { background: rgba(255,255,255,0.15); padding: 20px; border-radius: 12px; margin: 15px 0; }
+ .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; margin: 20px 0; }
+ .item-card { background: rgba(255,255,255,0.1); padding: 15px; border-radius: 10px; cursor: pointer; }
+ .item-card:hover { background: rgba(255,255,255,0.2); }
+ .fab { position: fixed; bottom: 30px; right: 30px; width: 60px; height: 60px; background: white; color: #667eea; border: none; border-radius: 50%; font-size: 2em; cursor: pointer; box-shadow: 0 5px 20px rgba(0,0,0,0.3); }
+ .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; overflow-y: auto; padding: 20px; }
+ .modal.show { display: block; }
+ .modal-content { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 15px; max-width: 600px; margin: 20px auto; }
+ .status { text-align: center; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 8px; margin: 10px 0; }
+ .tag { display: inline-block; padding: 4px 10px; background: rgba(255,255,255,0.2); border-radius: 12px; font-size: 0.85em; margin: 3px; }
+ .metric { background: rgba(255,255,255,0.1); padding: 20px; border-radius: 10px; text-align: center; }
+ .metric-value { font-size: 2em; font-weight: bold; margin: 10px 0; }
+ textarea { width: 100%; padding: 10px; margin: 10px 0; border-radius: 8px; border: none; min-height: 80px; }
+ select { width: 100%; padding: 12px; margin: 10px 0; border-radius: 8px; border: none; }
+ </style>
 </head>
 <body>
-  <div class="container">
-    <div class="header">
-      <h1>🚀 Sales CRM</h1>
-      <p>Simple & Reliable</p>
-    </div>
+ <div class="container">
+ <div class="header">
+ <h1>🚀 Sales CRM</h1>
+ <p>Simple & Reliable</p>
+ </div>
+ 
+ <div id="loginScreen" style="display:block">
+ <div class="login-box">
+ <h2 style="margin-bottom:20px">Sign In</h2>
+ <input type="email" class="input" id="emailInput" placeholder="Your Email" value="">
+ <input type="password" class="input" id="passwordInput" placeholder="Password" value="crm2026">
+ <button class="btn btn-success" onclick="login()">Sign In</button>
+ <div style="margin-top:20px; font-size:0.9em; opacity:0.8">
+ Password: crm2026<br>
+ Supervisor: ashish.mehra@dnispl.com
+ </div>
+ </div>
+ </div>
 
-    <div id="loginScreen" style="display:block">
-      <div class="login-box">
-        <h2 style="margin-bottom:20px">Sign In</h2>
-        <input type="email" class="input" id="emailInput" placeholder="Your Email" />
-        <input type="password" class="input" id="passwordInput" placeholder="Password" value="crm2026" />
-        <button class="btn btn-success" onclick="login()">Sign In</button>
-        <div style="margin-top:18px; font-size:0.9em; opacity:0.85">
-          Password: crm2026<br />
-          Supervisor: ashish.mehra@dnispl.com
-        </div>
-      </div>
-    </div>
+ <div id="mainScreen" style="display:none">
+ <div class="status" id="status">Loading...</div>
+ <div class="card">
+ <div style="display:flex; justify-content:space-between; align-items:center">
+ <div>👤 <strong id="userEmail"></strong> <span class="tag" id="userRole"></span></div>
+ <div id="userActions" style="display:flex; gap:8px; align-items:center">
+ <button class="btn" onclick="logout()">Logout</button>
+ </div>
+ </div>
+ </div>
+ <div class="tabs" id="tabs"></div>
+ <div id="content"></div>
+ </div>
+ </div>
+ 
+ <button class="fab" id="fabBtn" onclick="openAddModal()" style="display:none">+</button>
+ <div class="modal" id="modal"></div>
+ <input type="file" id="leadsCsvInput" accept=".csv" style="display:none" onchange="handleLeadsCsv(event)">
+ <input type="file" id="oppsCsvInput" accept=".csv" style="display:none" onchange="handleOppsCsv(event)">
 
-    <div id="mainScreen" style="display:none">
-      <div class="status" id="status">Loading...</div>
-      <div class="card">
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap">
-          <div>👤 <strong id="userEmail"></strong> <span class="tag" id="userRole"></span></div>
-          <div id="userActions" class="row">
-            <button class="btn" onclick="logout()">Logout</button>
-          </div>
-        </div>
-      </div>
-      <div class="tabs" id="tabs"></div>
-      <div id="content"></div>
-    </div>
-  </div>
+ <script>
+ // ═══════════════════════════════════════════════════════════════
+ // CONFIGURATION - SIMPLE GOOGLE SHEETS BACKEND
+ // ═══════════════════════════════════════════════════════════════
+ 
+ const SPREADSHEET_ID = 'YOUR_GOOGLE_SHEET_ID_HERE';
+ const API_KEY = 'YOUR_GOOGLE_API_KEY_HERE';
+const SUPERVISOR_EMAIL = 'ashish.mehra@dnispl.com';
+const PASSWORD = 'crm2026'; // Simple password for demo
+const PRESALES_OWNER = 'vinod.v@dnispl.com';
+const PURCHASE_OWNER = 'narendra.singh@dnispl.com';
+const ESCALATION_EMAILS = ['ashish.mehra@dnispl.com', 'a.gupta@dnispl.com'];
+const OPPORTUNITY_INTAKE_REQUIRED_FIELDS = [
+ { key: 'intakeProblemStatement', label: 'Problem Statement' },
+ { key: 'intakeWhyNow', label: 'Why Now (Trigger Event)' },
+ { key: 'intakeBusinessImpact', label: 'Business Impact' },
+ { key: 'intakeCurrentState', label: 'Current State Summary' },
+ { key: 'intakeBudgetRange', label: 'Budget Range' },
+ { key: 'intakeDecisionTimeline', label: 'Decision Timeline' }
+];
+const SALES_TEAM_USERS = ['rakesh.uniyal@dnispl.com'];
+const BUILD_VERSION = '2026-03-10-01';
+const SUSPECT_QUESTIONS = [
+ 'What is your organization primary line of business?',
+ 'What is your approximate annual turnover?',
+ 'How many employees do you have?',
+ 'How many locations / branches / plants do you operate?',
+ 'Is your IT centralized or distributed today?',
+ 'Do you have an in-house IT team? If yes, what is its size?',
+ 'Who currently manages your IT infrastructure?',
+ 'What major platforms are you currently using?',
+ 'When was your infrastructure last upgraded?',
+ 'What recurring IT challenges are you facing today?'
+];
+const ACCOUNT_OWNER_MAP = {
+  'Satin Credit care': 'shasank.raturi@dnispl.com',
+  'haier': 'shasank.raturi@dnispl.com',
+  'paytm': 'shasank.raturi@dnispl.com',
+  'vedanta': 'shasank.raturi@dnispl.com',
+  'haldiram': 'shasank.raturi@dnispl.com',
+  'india tv': 'shasank.raturi@dnispl.com',
+  'yum restaurant': 'shasank.raturi@dnispl.com',
+  'LG': 'shasank.raturi@dnispl.com',
+  'Samsung E& A': 'shasank.raturi@dnispl.com',
+  'Avaada Energy': 'shasank.raturi@dnispl.com',
+  'Provana': 'shasank.raturi@dnispl.com',
+  'Policy Bazaar': 'shasank.raturi@dnispl.com',
+  'DS Group': 'shasank.raturi@dnispl.com',
+  'Uflex Ltd': 'shasank.raturi@dnispl.com',
+  'NDTV': 'shasank.raturi@dnispl.com',
+  'AAJ TAK': 'shasank.raturi@dnispl.com',
+  'ABVP NEWS': 'shasank.raturi@dnispl.com',
+  'DIXON': 'shasank.raturi@dnispl.com',
+  'AIR India': 'shasank.raturi@dnispl.com',
+  'RSPL': 'shasank.raturi@dnispl.com',
+  'Indian Express': 'shasank.raturi@dnispl.com',
+  'D B Corp ltd': 'shasank.raturi@dnispl.com',
+  'Compunnel': 'shasank.raturi@dnispl.com',
+  'Dabur': 'shasank.raturi@dnispl.com',
+  'Kent RO': 'shasank.raturi@dnispl.com',
+  'Sleepwell': 'shasank.raturi@dnispl.com',
+  'IMT Ghaziabad': 'shasank.raturi@dnispl.com',
+  'Naukri.com': 'shasank.raturi@dnispl.com',
+  'Sar televenture': 'shasank.raturi@dnispl.com',
+  'Rategain': 'shasank.raturi@dnispl.com',
+  'Innovative view': 'shasank.raturi@dnispl.com',
+  'Jubiliant Foodworks': 'shasank.raturi@dnispl.com',
+  'Birla Soft': 'shasank.raturi@dnispl.com',
+  'Amar ujala': 'shasank.raturi@dnispl.com',
+  'Yamaha': 'shasank.raturi@dnispl.com',
+  'Subros': 'shasank.raturi@dnispl.com',
+  'Cube highways': 'shasank.raturi@dnispl.com',
+  'sinch mobile': 'shasank.raturi@dnispl.com',
+  'Religare': 'shasank.raturi@dnispl.com',
+  'Novel pattern': 'shasank.raturi@dnispl.com',
+  'successive digital': 'shasank.raturi@dnispl.com',
+  'Yum Restaurants india pvt Ltd': 'tba@local.crm',
+  'YUM BRANDS (KFC/Pizza Hut)': 'tba@local.crm',
+  'YKK INDIA PRIVATE LIMITED': 'tba@local.crm',
+  'XEROX INDIA LTD': 'tba@local.crm',
+  'UNISTONI': 'tba@local.crm',
+  'Sierentz': 'tba@local.crm',
+  'SCENARIO INDIA': 'tba@local.crm',
+  'Richemont Group': 'tba@local.crm',
+  'Realistic Realtors Pvt Ltd': 'tba@local.crm',
+  'QUALFON TECHNOLOGY SUPPORT': 'tba@local.crm',
+  'PLANET EDU EXAMS Private Limited': 'tba@local.crm',
+  'PASONA INDIA Private Limited': 'tba@local.crm',
+  'PANAMOURE INDIA Private Limited': 'tba@local.crm',
+  'NAV BACKOFFICE': 'tba@local.crm',
+  'MUNJAL HOLDINGS': 'tba@local.crm',
+  'MOGLIX (Business Buy Private Limited)': 'tba@local.crm',
+  'LOUIS DREYFUS COMMODITIES': 'tba@local.crm',
+  'J T INFOTECH': 'tba@local.crm',
+  'INDIAN HEALTH ORGANISATION': 'tba@local.crm',
+  'AMERISAFE NIDHI LIMITED': 'tba@local.crm',
+  'Hellmann Worldwide Logistics': 'tba@local.crm',
+  'GRASS VALLEY INDIA': 'tba@local.crm',
+  'Fujifilm India Pvt. Ltd.': 'tba@local.crm',
+  'Elan Limited': 'tba@local.crm',
+  'EHL (EuroHealth)': 'tba@local.crm',
+  'DUNAR FOODS LTD': 'tba@local.crm',
+  'Denkei (Nihon Denkei India)': 'tba@local.crm',
+  'CROWDSTRIKE INDIA Private Limited': 'tba@local.crm',
+  'Whirlpool Corporation': 'tba@local.crm',
+  'VARUN GROUP (Varun Beverages)': 'tba@local.crm',
+  'VALUEFIRST DIGITAL MEDIA': 'tba@local.crm',
+  'VAAAN INFRA PVT LTD': 'tba@local.crm',
+  'SKYLARK INFRA ENGINEERING': 'tba@local.crm',
+  'SISL INFOTECH Private Limited': 'tba@local.crm',
+  'SHUTTL (Super Highway Labs)': 'tba@local.crm',
+  'SANDHAR TECHNOLOGIES LTD': 'tba@local.crm',
+  'Redcliffe Labs': 'tba@local.crm',
+  'POLICY BAZAAR': 'tba@local.crm',
+  'LIME ROAD (A M Market)': 'tba@local.crm',
+  'KNOWLARITY COMMUNICATIONS': 'tba@local.crm',
+  'KCC BUILDCON Private Limited': 'tba@local.crm',
+  'JBM Group': 'tba@local.crm',
+  'IDP EDUCATION INDIA': 'tba@local.crm',
+  'HeidelbergCement India': 'tba@local.crm',
+  'GIRNARSOFT (CarDekho)': 'tba@local.crm',
+  'FUSION MICRO FINANCE LTD': 'tba@local.crm',
+  'Flukesys Global Private Limited': 'tba@local.crm',
+  'ElitePro Infra': 'tba@local.crm',
+  'Dr.Lime (LimeRoad)': 'tba@local.crm',
+  'COLOURTEX INDUSTRIES': 'tba@local.crm',
+  'CARDEKHO (GIRNARSOFT)': 'tba@local.crm',
+  'BINARY SEMANTICS LTD': 'tba@local.crm',
+  'Vishal Pipes Limited': 'Om.prakash@dnispl.com',
+  'Uflex': 'Om.prakash@dnispl.com',
+  'TECHBOOKS INTERNATIONAL (Aptara)': 'Om.prakash@dnispl.com',
+  'SIMPA ENERGY INDIA PVT LTD': 'Om.prakash@dnispl.com',
+  'SANSPAREILS GREENLANDS (SG)': 'Om.prakash@dnispl.com',
+  'SANGAM INDIA LTD': 'Om.prakash@dnispl.com',
+  'Rose IT Solutions': 'Om.prakash@dnispl.com',
+  'AGNISYS TECHNOLOGY Private Limited': 'Om.prakash@dnispl.com',
+  'RMSI PRIVATE LTD': 'Om.prakash@dnispl.com',
+  'R SYSTEMS INTERNATIONAL': 'Om.prakash@dnispl.com',
+  'R SYSTEMS': 'Om.prakash@dnispl.com',
+  'PPAP Automotive Ltd': 'Om.prakash@dnispl.com',
+  'PHYSICS WALLAH PVT LTD': 'Om.prakash@dnispl.com',
+  'PGS (PEPO GLOBAL SOURCING)': 'Om.prakash@dnispl.com',
+  'Metro Hospitals & Heart Inst.': 'Om.prakash@dnispl.com',
+  'Manav Rachna Institutions': 'Om.prakash@dnispl.com',
+  'MAHAVIR COLLEGE': 'Om.prakash@dnispl.com',
+  'MAGICBRICKS.COM (Times Internet)': 'Om.prakash@dnispl.com',
+  'MACCAFERRI (India)': 'Om.prakash@dnispl.com',
+  'LOGIX GROUP': 'Om.prakash@dnispl.com',
+  'LENSKART SOLUTIONS Private Limited': 'Om.prakash@dnispl.com',
+  'KRIBHCO': 'Om.prakash@dnispl.com',
+  'K.L. INTERNATIONAL SCHOOL': 'Om.prakash@dnispl.com',
+  'JIL Information Technology (Jaypee)': 'Om.prakash@dnispl.com',
+  'JAIPRAKASH POWER VENTURES': 'Om.prakash@dnispl.com',
+  'INTERARCH BUILDING PRODUCTS': 'Om.prakash@dnispl.com',
+  'INOX WIND LTD': 'Om.prakash@dnispl.com',
+  'INDIA GLYCOLS LTD': 'Om.prakash@dnispl.com',
+  'Honda Cars India Ltd': 'Om.prakash@dnispl.com',
+  'HAVELLS INDIA LIMITED': 'Om.prakash@dnispl.com',
+  'Dharampal Satyapal Limited': 'Om.prakash@dnispl.com',
+  'CTA APPARELS': 'Om.prakash@dnispl.com',
+  'BROOKFIELD INDIA OFFICE PARKS': 'Om.prakash@dnispl.com',
+  'BIBA APPARELS': 'Om.prakash@dnispl.com',
+  'Yashoda Hospital': 'Om.prakash@dnispl.com',
+  'MAHAGUN INDIA Private Limited': 'Om.prakash@dnispl.com',
+  'LAND CRAFT DEVELOPERS Private Limited': 'Om.prakash@dnispl.com',
+  'Institute of Tech & Science (I.T.S)': 'Om.prakash@dnispl.com',
+  'DABUR RESEARCH FOUNDATION': 'Om.prakash@dnispl.com',
+  'Terumo India Private Limited': 'Om.prakash@dnispl.com',
+  'STERLING TOOLS LIMITED': 'Om.prakash@dnispl.com',
+  'SHIVALIK PRINTS LTD': 'Om.prakash@dnispl.com',
+  'SHAHI EXPORTS PRIVATE LIMITED': 'Om.prakash@dnispl.com',
+  'SARVODAYA HOSPITAL & RESEARCH CENTRE': 'Om.prakash@dnispl.com',
+  'RAKSHA TPA Private Limited': 'Om.prakash@dnispl.com',
+  'NHPC LTD': 'Om.prakash@dnispl.com',
+  'Marathon Electric Motors': 'Om.prakash@dnispl.com',
+  'LENSKART': 'Om.prakash@dnispl.com',
+  'YOKOHAMA INDIA': 'Om.prakash@dnispl.com',
+  'TALBRO FORGINGS': 'Om.prakash@dnispl.com',
+  'MITHILA PLYWOOD Private Limited': 'Om.prakash@dnispl.com',
+  'LIBERTY SHOES LIMITED': 'Om.prakash@dnispl.com',
+  'I B COLLEGE': 'Om.prakash@dnispl.com',
+  'BEST FOOD INTERNATIONAL': 'Om.prakash@dnispl.com',
+  'ASIAN INSTITUTE': 'Om.prakash@dnispl.com',
+  'JAKSON ENGINEERS LIMITED': 'Om.prakash@dnispl.com',
+  'ANANT RAJ LIMITED': 'vikrant.tolumbia@dnispl.com',
+  'BIO-MED HEALTH CARE PRODUCTS': 'vikrant.tolumbia@dnispl.com',
+  'DEGANIA MEDICAL DEVICES': 'vikrant.tolumbia@dnispl.com',
+  'Denso International India': 'vikrant.tolumbia@dnispl.com',
+  'DSY Creations': 'vikrant.tolumbia@dnispl.com',
+  'HL Mando Anand': 'vikrant.tolumbia@dnispl.com',
+  'Joyson Anand Abhishek Safety': 'vikrant.tolumbia@dnispl.com',
+  'MUNJAL KIRIU INDUSTRIES': 'vikrant.tolumbia@dnispl.com',
+  'Airtel': 'soumya.m@dnispl.com',
+  'NTT': 'soumya.m@dnispl.com',
+  'Sify': 'soumya.m@dnispl.com',
+  'Yotta': 'soumya.m@dnispl.com',
+  'Ctrl S': 'soumya.m@dnispl.com',
+  'Crest': 'soumya.m@dnispl.com',
+  'Huges': 'soumya.m@dnispl.com',
+  'Altius': 'soumya.m@dnispl.com',
+  'Tikona': 'soumya.m@dnispl.com',
+  'Den': 'soumya.m@dnispl.com',
+  'Exitel': 'soumya.m@dnispl.com',
+  'Hathway': 'soumya.m@dnispl.com',
+  'Tata': 'soumya.m@dnispl.com',
+  'LIFE INSURANCE CORP (LIC)': 'a.gupta@dnispl.com',
+  'Dalmia Refractories Limited': 'a.gupta@dnispl.com',
+  'Air India Limited': 'a.gupta@dnispl.com',
+  'SANSPAREILS GREENLANDS (SG)': 'a.gupta@dnispl.com',
+  'Manav Rachna Institutions': 'a.gupta@dnispl.com',
+  'MAHAVIR COLLEGE': 'a.gupta@dnispl.com',
+  'MACCAFERRI (India)': 'a.gupta@dnispl.com',
+  'LENSKART SOLUTIONS Private Limited': 'a.gupta@dnispl.com',
+  'K.L. INTERNATIONAL SCHOOL': 'a.gupta@dnispl.com',
+  'Yashoda Hospital': 'a.gupta@dnispl.com',
+  'MAHAGUN INDIA Private Limited': 'a.gupta@dnispl.com',
+  'LAND CRAFT DEVELOPERS Private Limited': 'a.gupta@dnispl.com',
+  'Institute of Tech & Science (I.T.S)': 'a.gupta@dnispl.com',
+  'DABUR RESEARCH FOUNDATION': 'a.gupta@dnispl.com',
+  'Terumo India Private Limited': 'a.gupta@dnispl.com',
+  'STERLING TOOLS LIMITED': 'a.gupta@dnispl.com',
+  'SHIVALIK PRINTS LTD': 'a.gupta@dnispl.com',
+  'SHAHI EXPORTS PRIVATE LIMITED': 'a.gupta@dnispl.com',
+  'SARVODAYA HOSPITAL & RESEARCH CENTRE': 'a.gupta@dnispl.com',
+  'RAKSHA TPA Private Limited': 'a.gupta@dnispl.com',
+  'NHPC LTD': 'a.gupta@dnispl.com',
+  'Marathon Electric Motors': 'a.gupta@dnispl.com',
+  'LENSKART': 'a.gupta@dnispl.com',
+  'YOKOHAMA INDIA': 'a.gupta@dnispl.com',
+  'TALBRO FORGINGS': 'a.gupta@dnispl.com',
+  'LIBERTY SHOES LIMITED': 'a.gupta@dnispl.com',
+  'I B COLLEGE': 'a.gupta@dnispl.com',
+  'BEST FOOD INTERNATIONAL': 'a.gupta@dnispl.com',
+  'ASIAN INSTITUTE': 'a.gupta@dnispl.com',
+  'JCB INDIA LIMITED': 'a.gupta@dnispl.com',
+  'GARDEN REACH SHIPBUILDERS': 'a.gupta@dnispl.com',
+  'MAYFAIR': 'a.gupta@dnispl.com',
+  'MAHINDRA LOGISTICS LTD': 'a.gupta@dnispl.com',
+  'MAHINDRA & MAHINDRA LTD': 'a.gupta@dnispl.com',
+  'KOTHARI INDUSTRIES LIMITED': 'a.gupta@dnispl.com',
+  'ICRA ONLINE LIMITED': 'a.gupta@dnispl.com',
+  'POLICY BAZAAR': 'a.gupta@dnispl.com'
+};
 
-  <button class="fab" id="fabBtn" onclick="openAddModal()" style="display:none">+</button>
-  <div class="modal" id="modal"></div>
+function getWinProbSafe(opp) {
+ try {
+  if (typeof calculateWinProb === 'function') return calculateWinProb(opp);
+ } catch (e) {}
+ return Number(opp?.winProbability || 0);
+}
+ const CRM_API_BASE = '';
+ 
+ // ═══════════════════════════════════════════════════════════════
+ 
+let currentUser = '';
+let isSupervisor = false;
+let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] } };
+let activityFilter = { mode: 'today', from: '', to: '' };
+let managerFilter = '';
+let slaEngineRunning = false;
+let slaTimer = null;
 
-  <script>
-    const SUPERVISOR_EMAIL = 'ashish.mehra@dnispl.com';
-    const PASSWORD = 'crm2026';
-    const PRESALES_OWNER = 'vinod.v@dnispl.com';
-    const PURCHASE_OWNER = 'narendra.singh@dnispl.com';
-    const CRM_API_BASE = '';
-    const BUILD_VERSION = '2026-03-24-clean-01';
+ function getUserRole() {
+ if (isSupervisor) return 'supervisor';
+ const email = (currentUser || '').toLowerCase();
+ if (email.includes('presales') || email.includes('pre.sales') || email.includes('solutions')) return 'presales';
+ if (email.includes('purchase') || email.includes('procurement') || email.includes('sourcing')) return 'purchase';
+ return 'sales';
+ }
 
-    const OPPORTUNITY_INTAKE_REQUIRED_FIELDS = [
-      { key: 'intakeProblemStatement', label: 'Problem Statement' },
-      { key: 'intakeWhyNow', label: 'Why Now (Trigger Event)' },
-      { key: 'intakeBusinessImpact', label: 'Business Impact' },
-      { key: 'intakeCurrentState', label: 'Current State Summary' },
-      { key: 'intakeBudgetRange', label: 'Budget Range' },
-      { key: 'intakeDecisionTimeline', label: 'Decision Timeline' }
-    ];
 
-    let currentUser = '';
-    let isSupervisor = false;
-    let slaTimer = null;
+function getViewerRoleForApi() {
+ return isSupervisor ? 'supervisor' : 'account_manager';
+}
 
-    const state = {
-      activeTab: 'leads',
-      data: { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] }
-    };
+function normalizeEmail(value) {
+ return String(value || '').trim().toLowerCase();
+}
 
-    function normalizeEmail(v) { return String(v || '').trim().toLowerCase(); }
-    function getViewerRoleForApi() { return isSupervisor ? 'supervisor' : 'account_manager'; }
-    function fmtDate(v) { const d = new Date(v); return isNaN(d.getTime()) ? 'NA' : d.toLocaleDateString(); }
-    function fmtDateTime(v) { const d = new Date(v); return isNaN(d.getTime()) ? 'NA' : d.toLocaleString(); }
-    function toISOOrBlank(v) { if (!v) return ''; const d = new Date(v); return isNaN(d.getTime()) ? '' : d.toISOString(); }
-    function addHours(baseIso, hours) { const d = baseIso ? new Date(baseIso) : new Date(); d.setHours(d.getHours() + hours); return d.toISOString(); }
+function getAccountManagerEmailByAccountId(accountId) {
+ const account = state.data.accounts.find(a => String(a.id) === String(accountId));
+ if (!account) return '';
+ return normalizeEmail(account.accountManager || account.account_manager || account.owner);
+}
 
-    function getUserRole() {
-      if (isSupervisor) return 'supervisor';
-      const e = normalizeEmail(currentUser);
-      if (e.includes('presales') || e.includes('solutions')) return 'presales';
-      if (e.includes('purchase') || e.includes('procurement')) return 'purchase';
-      return 'sales';
+function getLeadManagerEmail(lead) {
+ return normalizeEmail(lead.owner || lead.accountManager || lead.account_manager);
+}
+
+function getAccountManagerEmail(account) {
+ return normalizeEmail(account.accountManager || account.account_manager || account.owner);
+}
+
+function getContactManagerEmail(contact) {
+ return getAccountManagerEmailByAccountId(contact.accountId) || normalizeEmail(contact.owner);
+}
+
+function getOpportunityManagerEmail(opp) {
+ return getAccountManagerEmailByAccountId(opp.accountId) || normalizeEmail(opp.salesOwner || opp.owner);
+}
+
+function getActivityManagerEmail(activity) {
+ return getAccountManagerEmailByAccountId(activity.accountId) || normalizeEmail(activity.owner);
+}
+
+function getManagerFilterOptions(filtered) {
+ const seen = new Set();
+ const values = [];
+ [
+  ...(filtered.accounts || []).map(getAccountManagerEmail),
+  ...(filtered.leads || []).map(getLeadManagerEmail),
+  ...(filtered.contacts || []).map(getContactManagerEmail),
+  ...(filtered.opportunities || []).map(getOpportunityManagerEmail),
+  ...(filtered.activities || []).map(getActivityManagerEmail)
+ ].forEach(email => {
+  if (!email || seen.has(email)) return;
+  seen.add(email);
+  values.push(email);
+ });
+ return values.sort();
+}
+
+function formatManagerLabel(email) {
+ if (!email) return 'Unassigned';
+ if (normalizeEmail(email) === 'tba@local.crm') return 'TBA';
+ return email;
+}
+
+function formatUserLabel(email) {
+ return formatManagerLabel(email);
+}
+
+function getAccountSuspectScore(account) {
+ const explicit = Number(account?.suspectScore || account?.suspect_score);
+ if (!Number.isNaN(explicit) && explicit > 0) return explicit;
+ let score = 0;
+ for (let i = 1; i <= 10; i++) {
+  const value = String(account?.[`suspect_q${i}`] || '').trim();
+  if (value) score += 1;
+ }
+ return score;
+}
+
+function getAccountQuestionnaireCompletion(account) {
+ const score = getAccountSuspectScore(account);
+ return Math.round((score / 10) * 100);
+}
+
+function renderManagerFilterControls(filtered) {
+ const options = getManagerFilterOptions(filtered);
+ if (!isSupervisor) return '';
+ return `
+ <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px">
+ <label style="font-size:0.9em; font-weight:600">Account Manager</label>
+ <select class="input" style="width:auto; min-width:280px" onchange="setManagerFilter(this.value)">
+ <option value="">All Managers</option>
+ ${options.map(email => `<option value="${email}" ${managerFilter === email ? 'selected' : ''}>${formatManagerLabel(email)}</option>`).join('')}
+ </select>
+ ${managerFilter ? '<button class="btn" type="button" onclick="setManagerFilter(\'\')">Clear</button>' : ''}
+ </div>
+ `;
+}
+
+function setManagerFilter(value) {
+ managerFilter = normalizeEmail(value);
+ render();
+}
+
+function openTab(tab, opts = {}) {
+ state.activeTab = tab;
+ if (opts.activityMode) {
+  activityFilter.mode = opts.activityMode;
+ }
+ render();
+}
+
+function normalizeActivityFromApi(a) {
+ const created = a.created_at || a.createdDate || a.date || new Date().toISOString();
+ const modified = a.updated_at || a.modifiedDate || created;
+ return {
+ id: String(a.id || Date.now()),
+ type: a.type || 'Note',
+ subject: a.subject || '',
+ notes: a.notes || '',
+ date: a.date || created,
+ owner: a.owner || '',
+ accountId: a.account_id || a.accountId || '',
+ accountName: a.account_name || a.accountName || '',
+ createdDate: created,
+ modifiedDate: modified,
+ };
+}
+
+function normalizeAccountFromApi(a) {
+ const created = a.created_at || a.createdDate || new Date().toISOString();
+ const modified = a.updated_at || a.modifiedDate || created;
+ return {
+   id: String(a.id || Date.now()),
+   name: a.account_name || a.name || '',
+   industry: a.industry || '',
+   tier: a.tier || 'B',
+   location: a.location || '',
+   companySize: a.companySize || a.company_size || '',
+   annualSpend: a.annualSpend || a.annual_spend || '',
+   mode: a.mode || '',
+   suspectScore: Number(a.suspect_score || a.suspectScore || 0),
+   suspect_q1: a.suspect_q1 || '',
+   suspect_q2: a.suspect_q2 || '',
+   suspect_q3: a.suspect_q3 || '',
+   suspect_q4: a.suspect_q4 || '',
+   suspect_q5: a.suspect_q5 || '',
+   suspect_q6: a.suspect_q6 || '',
+   suspect_q7: a.suspect_q7 || '',
+   suspect_q8: a.suspect_q8 || '',
+   suspect_q9: a.suspect_q9 || '',
+   suspect_q10: a.suspect_q10 || '',
+   accountManager: a.account_manager_email || a.accountManager || '',
+   owner: a.account_manager_email || a.owner || '',
+   createdDate: created,
+   modifiedDate: modified
+ };
+}
+
+function normalizeLeadFromApi(l) {
+ const created = l.created_at || l.createdDate || new Date().toISOString();
+ const modified = l.updated_at || l.modifiedDate || created;
+ return {
+  id: String(l.id || Date.now()),
+  name: l.name || '',
+  company: l.company || '',
+  email: l.email || '',
+  phone: l.phone || '',
+  source: l.source || 'Referral',
+  status: l.status || 'New',
+  notes: l.notes || '',
+  owner: l.owner || '',
+  createdDate: created,
+  modifiedDate: modified,
+ };
+}
+
+function normalizeContactFromApi(c) {
+ const created = c.created_at || c.createdDate || new Date().toISOString();
+ const modified = c.updated_at || c.modifiedDate || created;
+ return {
+  id: String(c.id || Date.now()),
+  name: c.name || '',
+  title: c.title || '',
+  email: c.email || '',
+  phone: c.phone || '',
+  roleType: c.role_type || c.roleType || '',
+  influenceLevel: c.influence_level || c.influenceLevel || '',
+  emotion: c.emotion || '',
+  accountId: c.account_id || c.accountId || '',
+  owner: c.owner || '',
+  createdDate: created,
+  modifiedDate: modified,
+ };
+}
+
+function normalizeOpportunityFromApi(o) {
+ const created = o.created_at || o.createdDate || new Date().toISOString();
+ const modified = o.updated_at || o.modifiedDate || created;
+ return {
+  id: String(o.id || Date.now()),
+  name: o.name || '',
+  accountId: o.account_id || o.accountId || '',
+  value: Number(o.value || 0),
+  stage: o.stage || 'Discovery',
+  owner: o.owner || '',
+  salesOwner: o.sales_owner || o.salesOwner || o.owner || '',
+  workflowStage: o.workflow_stage || o.workflowStage || 'Sales Review',
+  assignedPresales: o.assigned_presales || o.assignedPresales || '',
+  assignedPurchase: o.assigned_purchase || o.assignedPurchase || '',
+  salesComments: o.sales_comments || o.salesComments || '',
+  requirements: o.requirements || '',
+  presalesArchitecture: o.presales_architecture || o.presalesArchitecture || '',
+  presalesQuestions: o.presales_questions || o.presalesQuestions || '',
+  boq: o.boq || '',
+  purchaseCosting: o.purchase_costing || o.purchaseCosting || '',
+  costingTat: o.costing_tat || o.costingTat || '',
+  finalPricingProposal: o.final_pricing_proposal || o.finalPricingProposal || '',
+  presalesAssignedAt: o.presales_assigned_at || o.presalesAssignedAt || '',
+  presalesDueAt: o.presales_due_at || o.presalesDueAt || '',
+  purchaseAssignedAt: o.purchase_assigned_at || o.purchaseAssignedAt || '',
+  purchaseDueAt: o.purchase_due_at || o.purchaseDueAt || '',
+  costingReturnedAt: o.costing_returned_at || o.costingReturnedAt || '',
+  finalProposalAt: o.final_proposal_at || o.finalProposalAt || '',
+  assignmentDueAt: o.assignment_due_at || o.assignmentDueAt || '',
+  salesSubmittedAt: o.sales_submitted_at || o.salesSubmittedAt || '',
+  presalesEscalatedAt: o.presales_escalated_at || o.presalesEscalatedAt || '',
+  intakeProblemStatement: o.intake_problem_statement || o.intakeProblemStatement || '',
+  intakeWhyNow: o.intake_why_now || o.intakeWhyNow || '',
+  intakeBusinessImpact: o.intake_business_impact || o.intakeBusinessImpact || '',
+  intakeCurrentState: o.intake_current_state || o.intakeCurrentState || '',
+  intakeBudgetRange: o.intake_budget_range || o.intakeBudgetRange || '',
+  intakeDecisionTimeline: o.intake_decision_timeline || o.intakeDecisionTimeline || '',
+  intakeRiskIfNotSolved: o.intake_risk_if_not_solved || o.intakeRiskIfNotSolved || '',
+  intakeKeyStakeholders: o.intake_key_stakeholders || o.intakeKeyStakeholders || '',
+  intakeInScope: o.intake_in_scope || o.intakeInScope || '',
+  intakeOutOfScope: o.intake_out_of_scope || o.intakeOutOfScope || '',
+  intakeCurrentEnvironment: o.intake_current_environment || o.intakeCurrentEnvironment || '',
+  intakePainPoints: o.intake_pain_points || o.intakePainPoints || '',
+  intakeComplianceRequirements: o.intake_compliance_requirements || o.intakeComplianceRequirements || '',
+  intakeIntegrationRequirements: o.intake_integration_requirements || o.intakeIntegrationRequirements || '',
+  intakeCompetitors: o.intake_competitors || o.intakeCompetitors || '',
+  intakeWinStrategy: o.intake_win_strategy || o.intakeWinStrategy || '',
+  createdDate: created,
+  modifiedDate: modified,
+ };
+}
+
+async function fetchAccountsFromApi() {
+ const url = `${CRM_API_BASE}/api/accounts?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url);
+ if (!resp.ok) throw new Error(`accounts fetch failed (${resp.status})`);
+ const data = await resp.json();
+ return Array.isArray(data) ? data.map(normalizeAccountFromApi) : [];
+}
+
+async function fetchLeadsFromApi() {
+ const url = `${CRM_API_BASE}/api/leads?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url);
+ if (!resp.ok) throw new Error(`leads fetch failed (${resp.status})`);
+ const data = await resp.json();
+ return Array.isArray(data) ? data.map(normalizeLeadFromApi) : [];
+}
+
+async function fetchContactsFromApi() {
+ const url = `${CRM_API_BASE}/api/contacts?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url);
+ if (!resp.ok) throw new Error(`contacts fetch failed (${resp.status})`);
+ const data = await resp.json();
+ return Array.isArray(data) ? data.map(normalizeContactFromApi) : [];
+}
+
+async function fetchOpportunitiesFromApi() {
+ const url = `${CRM_API_BASE}/api/opportunities?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url);
+ if (!resp.ok) throw new Error(`opportunities fetch failed (${resp.status})`);
+ const data = await resp.json();
+ return Array.isArray(data) ? data.map(normalizeOpportunityFromApi) : [];
+}
+
+async function upsertAccountToApi(accountPayload) {
+ const resp = await fetch(`${CRM_API_BASE}/api/accounts`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(accountPayload)
+ });
+ if (!resp.ok) {
+  const msg = await resp.text();
+  throw new Error(`account save failed (${resp.status}): ${msg}`);
+ }
+ return resp.json();
+}
+
+async function upsertLeadToApi(payload) {
+ const resp = await fetch(`${CRM_API_BASE}/api/leads`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload)
+ });
+ if (!resp.ok) throw new Error(await resp.text() || `lead save failed (${resp.status})`);
+ return resp.json();
+}
+
+async function upsertContactToApi(payload) {
+ const resp = await fetch(`${CRM_API_BASE}/api/contacts`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload)
+ });
+ if (!resp.ok) throw new Error(await resp.text() || `contact save failed (${resp.status})`);
+ return resp.json();
+}
+
+async function upsertOpportunityToApi(payload) {
+ const resp = await fetch(`${CRM_API_BASE}/api/opportunities`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload)
+ });
+ if (!resp.ok) throw new Error(await resp.text() || `opportunity save failed (${resp.status})`);
+ return resp.json();
+}
+
+async function deleteLeadFromApi(id) {
+ const url = `${CRM_API_BASE}/api/leads/${encodeURIComponent(id)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url, { method: 'DELETE' });
+ if (!resp.ok) throw new Error(await resp.text() || `lead delete failed (${resp.status})`);
+ return resp.json();
+}
+
+async function deleteContactFromApi(id) {
+ const url = `${CRM_API_BASE}/api/contacts/${encodeURIComponent(id)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url, { method: 'DELETE' });
+ if (!resp.ok) throw new Error(await resp.text() || `contact delete failed (${resp.status})`);
+ return resp.json();
+}
+
+async function deleteOpportunityFromApi(id) {
+ const url = `${CRM_API_BASE}/api/opportunities/${encodeURIComponent(id)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url, { method: 'DELETE' });
+ if (!resp.ok) throw new Error(await resp.text() || `opportunity delete failed (${resp.status})`);
+ return resp.json();
+}
+
+async function fetchUserPassword(email) {
+ try {
+ const url = `${CRM_API_BASE}/api/passwords/${encodeURIComponent(email)}?viewer_email=${encodeURIComponent(email)}&viewer_role=account_manager`;
+ const resp = await fetch(url);
+ if (!resp.ok) return null;
+ const data = await resp.json();
+ return data.password || null;
+ } catch (e) {
+ return null;
+ }
+}
+
+async function setUserPassword(email, password) {
+ const payload = { email, password, viewer_role: 'account_manager', viewer_email: currentUser };
+ const resp = await fetch(`${CRM_API_BASE}/api/passwords`, {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify(payload)
+ });
+ if (!resp.ok) {
+ const msg = await resp.text();
+ throw new Error(msg || 'failed to set password');
+ }
+ return resp.json();
+}
+
+function openChangePassword() {
+ const email = currentUser;
+ if (!email) return;
+ const pwd = prompt('Enter your new password:');
+ if (!pwd) return;
+ setUserPassword(email, pwd)
+ .then(() => alert('Password updated'))
+ .catch(err => alert(`Failed: ${err.message}`));
+}
+async function fetchActivitiesFromApi() {
+ const url = `${CRM_API_BASE}/api/activities?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url);
+ if (!resp.ok) throw new Error(`activities fetch failed (${resp.status})`);
+ const data = await resp.json();
+ return Array.isArray(data) ? data.map(normalizeActivityFromApi) : [];
+}
+
+async function upsertActivityToApi(activity) {
+ const resp = await fetch(`${CRM_API_BASE}/api/activities`, {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify(activity)
+ });
+ if (!resp.ok) {
+ const msg = await resp.text();
+ throw new Error(`activity save failed (${resp.status}): ${msg}`);
+ }
+ return resp.json();
+}
+
+async function deleteActivityFromApi(activityId) {
+ const url = `${CRM_API_BASE}/api/activities/${encodeURIComponent(activityId)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url, { method: 'DELETE' });
+ if (!resp.ok) {
+ const msg = await resp.text();
+ throw new Error(`activity delete failed (${resp.status}): ${msg}`);
+ }
+ return resp.json();
+}
+
+function fmtDate(v) {
+ if (!v) return 'NA';
+ const d = new Date(v);
+ return isNaN(d.getTime()) ? 'NA' : d.toLocaleDateString();
+}
+
+function fmtDateTime(v) {
+ if (!v) return 'NA';
+ const d = new Date(v);
+ return isNaN(d.getTime()) ? 'NA' : d.toLocaleString();
+}
+
+function toISOOrBlank(v) {
+ if (!v) return '';
+ const d = new Date(v);
+ return isNaN(d.getTime()) ? '' : d.toISOString();
+}
+
+function withTimeout(promise, ms, label = 'request') {
+ return Promise.race([
+  promise,
+  new Promise((_, reject) =>
+   setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms)
+  )
+ ]);
+}
+
+
+function parseCSV(csvText) {
+ const lines = csvText.split(/\\r?\\n/).filter(l => l.trim().length);
+ if (!lines.length) return [];
+ const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+ const rows = [];
+ for (let i = 1; i < lines.length; i++) {
+ const parts = lines[i].split(',');
+ const row = {};
+ headers.forEach((h, idx) => row[h] = (parts[idx] || '').trim());
+ rows.push(row);
+ }
+ return rows;
+}
+
+function downloadCSV(filename, rows) {
+ const csv = rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\\n');
+ const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+ const url = URL.createObjectURL(blob);
+ const a = document.createElement('a');
+ a.href = url;
+ a.download = filename;
+ a.click();
+ URL.revokeObjectURL(url);
+}
+
+function hoursUntil(dueIso) {
+ if (!dueIso) return null;
+ const d = new Date(dueIso);
+ if (isNaN(d.getTime())) return null;
+ return Math.ceil((d.getTime() - Date.now()) / 3600000);
+}
+
+function dueSoon(dueIso, hours) {
+ const h = hoursUntil(dueIso);
+ return h !== null && h >= 0 && h <= hours;
+}
+
+function toDateSafe(v) {
+ if (!v) return null;
+ const d = new Date(v);
+ return Number.isNaN(d.getTime()) ? null : d;
+}
+
+
+function addHours(baseIso, hours) {
+ const d = baseIso ? new Date(baseIso) : new Date();
+ if (isNaN(d.getTime())) return '';
+ d.setHours(d.getHours() + hours);
+ return d.toISOString();
+}
+
+async function runSLAEngine() {
+ if (slaEngineRunning || !currentUser) return;
+ slaEngineRunning = true;
+ try {
+  const now = new Date();
+  let changed = false;
+  const opps = state.data.opportunities || [];
+
+  for (const opp of opps) {
+   const salesSubmitted = toDateSafe(opp.salesSubmittedAt || opp.createdDate) || now;
+   const assignmentDue = toDateSafe(opp.assignmentDueAt) || new Date(salesSubmitted.getTime() + 4 * 3600000);
+   const presalesDue = toDateSafe(opp.presalesDueAt) || new Date(salesSubmitted.getTime() + 72 * 3600000);
+
+   if (!opp.assignmentDueAt) opp.assignmentDueAt = assignmentDue.toISOString();
+   if (!opp.presalesDueAt) opp.presalesDueAt = presalesDue.toISOString();
+   if (!opp.salesSubmittedAt) opp.salesSubmittedAt = salesSubmitted.toISOString();
+
+   // Auto move Sales -> Presales after 4h
+   if ((opp.workflowStage || 'Sales Review') === 'Sales Review' && now >= assignmentDue) {
+    opp.workflowStage = 'Assigned to Presales';
+    opp.assignedPresales = opp.assignedPresales || PRESALES_OWNER;
+    opp.presalesAssignedAt = opp.presalesAssignedAt || assignmentDue.toISOString();
+    opp.presalesDueAt = presalesDue.toISOString();
+    opp.modifiedDate = now.toISOString();
+    changed = true;
+   }
+
+   // SLA enforcement: 72h window for presales response/proposal
+   const presalesActiveStages = ['Assigned to Presales', 'Awaiting Purchase Costing', 'Costing Returned'];
+   const hasProposal = !!(opp.finalPricingProposal || '').trim();
+   if (hasProposal && opp.workflowStage !== 'Final Proposal Shared') {
+    opp.workflowStage = 'Final Proposal Shared';
+    opp.finalProposalAt = opp.finalProposalAt || now.toISOString();
+    opp.modifiedDate = now.toISOString();
+    changed = true;
+   } else if (!hasProposal && presalesActiveStages.includes(opp.workflowStage || '') && now > presalesDue) {
+    if (!opp.presalesEscalatedAt) {
+     opp.presalesEscalatedAt = now.toISOString();
+     opp.workflowStage = 'Presales Overdue';
+     opp.modifiedDate = now.toISOString();
+     changed = true;
     }
+   }
+  }
 
-    function getWinProbSafe(opp) {
-      const stageProb = { Discovery: 25, Proposal: 60, Negotiation: 85, 'Closed Won': 100, 'Closed Lost': 0 };
-      return stageProb[opp.stage] || 25;
-    }
+  if (changed) {
+   for (const opp of opps) {
+    await upsertOpportunityToApi(opp);
+   }
+   state.data.opportunities = await fetchOpportunitiesFromApi();
+   saveData();
+   render();
+  }
+ } catch (err) {
+  console.warn('SLA engine warning:', err);
+ } finally {
+  slaEngineRunning = false;
+ }
+}
 
-    function getTeamUsers(role) {
-      if (role === 'sales') {
-        const users = new Set();
-        state.data.leads.forEach(x => x.owner && users.add(x.owner));
-        state.data.accounts.forEach(x => x.owner && users.add(x.owner));
-        state.data.contacts.forEach(x => x.owner && users.add(x.owner));
-        state.data.opportunities.forEach(x => x.owner && users.add(x.owner));
-        users.add('rakesh.uniyal@dnispl.com');
-        users.add(currentUser || 'sales@company.com');
-        return Array.from(users);
-      }
-      if (role === 'presales') return [PRESALES_OWNER];
-      if (role === 'purchase') return [PURCHASE_OWNER];
-      return [];
-    }
 
-    async function fetchApi(path) {
-      const url = `${CRM_API_BASE}${path}`;
-      const r = await fetch(url);
-      if (!r.ok) throw new Error(`${path} failed (${r.status})`);
-      return r.json();
-    }
+function escalationMailto(opp, stage, dueIso) {
+ const to = ESCALATION_EMAILS.join(',');
+ const subject = encodeURIComponent(`[CRM Escalation] ${stage} overdue: ${opp.name}`);
+ const body = encodeURIComponent(
+ `Opportunity: ${opp.name}
+Stage: ${stage}
+Owner: ${stage === 'Presales' ? opp.assignedPresales : opp.assignedPurchase}
+Due: ${dueIso}
+Current Status: ${opp.workflowStage}
+`
+ );
+ return `mailto:${to}?subject=${subject}&body=${body}`;
+}
 
-    async function postApi(path, body) {
-      const r = await fetch(`${CRM_API_BASE}${path}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-      });
-      if (!r.ok) throw new Error(await r.text() || `${path} failed (${r.status})`);
-      return r.json();
-    }
+function isOverdue(dueIso) {
+ if (!dueIso) return false;
+ const d = new Date(dueIso);
+ if (isNaN(d.getTime())) return false;
+ return d.getTime() < Date.now();
+}
 
-    async function deleteApi(path) {
-      const r = await fetch(`${CRM_API_BASE}${path}`, { method: 'DELETE' });
-      if (!r.ok) throw new Error(await r.text() || `${path} failed (${r.status})`);
-      return r.json();
-    }
+function slaBadge(label, dueIso) {
+ if (!dueIso) return '';
+ const due = new Date(dueIso);
+ if (isNaN(due.getTime())) return '';
+ const now = new Date();
+ const diffMs = due.getTime() - now.getTime();
+ const hrs = Math.ceil(Math.abs(diffMs) / 3600000);
+ const txt = diffMs < 0 ? `Overdue ${hrs}h` : `Due ${hrs}h`;
+ const color = diffMs < 0 ? '#ff6b6b' : 'rgba(255,255,255,0.25)';
+ return `<span class="tag" style="background:${color}">${label}: ${txt}</span>`;
+}
 
-    async function fetchUserPassword(email) {
-      try {
-        return (await fetchApi(`/api/passwords/${encodeURIComponent(email)}?viewer_email=${encodeURIComponent(email)}&viewer_role=account_manager`)).password || null;
-      } catch (_) { return null; }
-    }
+function recordActivity(type, subject, notes = '', ownerOverride = null) {
+ const now = new Date().toISOString();
+ state.data.activities.push({
+ id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
+ type,
+ subject,
+ notes,
+ date: now,
+ createdDate: now,
+ modifiedDate: now,
+ owner: ownerOverride || currentUser
+ });
+}
 
-    async function setUserPassword(email, password) {
-      return postApi('/api/passwords', { email, password, viewer_email: currentUser, viewer_role: 'account_manager' });
-    }
+async function login() {
+ const email = document.getElementById('emailInput').value.trim().toLowerCase();
+ const password = document.getElementById('passwordInput').value;
+ const loginBtn = document.querySelector('#loginScreen .btn.btn-success');
+ 
+ if (!email) {
+ alert('Please enter your email');
+ return;
+ }
 
-    async function login() {
-      const email = normalizeEmail(document.getElementById('emailInput').value);
-      const password = document.getElementById('passwordInput').value;
-      const loginBtn = document.querySelector('#loginScreen .btn.btn-success');
-      if (!email) return alert('Please enter your email');
+ if (loginBtn) {
+  loginBtn.disabled = true;
+  loginBtn.textContent = 'Signing In...';
+ }
+ 
+ let expected = PASSWORD;
+ try {
+  const fetched = await withTimeout(fetchUserPassword(email), 1200, 'password check');
+  if (fetched) expected = fetched;
+ } catch (_) {
+  // Keep default password fallback if password API is slow/unavailable.
+ }
+ if (password !== expected) {
+ if (loginBtn) {
+  loginBtn.disabled = false;
+  loginBtn.textContent = 'Sign In';
+ }
+ alert('Incorrect password');
+ return;
+ }
+ 
+ currentUser = email;
+ isSupervisor = email.toLowerCase() === SUPERVISOR_EMAIL.toLowerCase();
+ 
+ document.getElementById('loginScreen').style.display = 'none';
+ document.getElementById('mainScreen').style.display = 'block';
+ document.getElementById('userEmail').textContent = currentUser;
+ const roleLabel = { supervisor: 'SUPERVISOR', sales: 'SALESPERSON', presales: 'PRESALES', purchase: 'PURCHASE' };
+ document.getElementById('userRole').textContent = roleLabel[getUserRole()] || 'SALESPERSON';
+ document.getElementById('fabBtn').style.display = 'block';
+ const actions = document.getElementById('userActions');
+ if (actions && !document.getElementById('changePwdBtn')) {
+ const btn = document.createElement('button');
+ btn.id = 'changePwdBtn';
+ btn.className = 'btn';
+ btn.textContent = 'Change Password';
+ btn.onclick = openChangePassword;
+ actions.insertBefore(btn, actions.firstChild);
+ }
 
-      if (loginBtn) { loginBtn.disabled = true; loginBtn.textContent = 'Signing In...'; }
+ const statusEl = document.getElementById('status');
+ if (statusEl) statusEl.textContent = 'Loading accounts and activities...';
 
-      let expected = PASSWORD;
-      try { const p = await fetchUserPassword(email); if (p) expected = p; } catch (_) {}
+ loadData().catch(err => {
+  console.error('loadData failed', err);
+  alert('Signed in, but data loading failed. Please refresh once.');
+ }).finally(() => {
+  runSLAEngine();
+  if (slaTimer) clearInterval(slaTimer);
+  slaTimer = setInterval(runSLAEngine, 60000);
+  if (loginBtn) {
+   loginBtn.disabled = false;
+   loginBtn.textContent = 'Sign In';
+  }
+ });
+ }
 
-      if (password !== expected) {
-        if (loginBtn) { loginBtn.disabled = false; loginBtn.textContent = 'Sign In'; }
-        return alert('Incorrect password');
-      }
+ function logout() {
+ currentUser = '';
+ isSupervisor = false;
+ if (slaTimer) {
+  clearInterval(slaTimer);
+  slaTimer = null;
+ }
+ document.getElementById('loginScreen').style.display = 'block';
+ document.getElementById('mainScreen').style.display = 'none';
+ document.getElementById('fabBtn').style.display = 'none';
+ }
 
-      currentUser = email;
-      isSupervisor = email === normalizeEmail(SUPERVISOR_EMAIL);
+async function loadData() {
+ // Use localStorage for now (replace with your backend later)
+ const savedData = localStorage.getItem('crmData');
+ if (savedData) {
+ state.data = JSON.parse(savedData);
+ } else {
+ state.data = { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] };
+ }
 
-      document.getElementById('loginScreen').style.display = 'none';
-      document.getElementById('mainScreen').style.display = 'block';
-      document.getElementById('fabBtn').style.display = 'block';
-      document.getElementById('userEmail').textContent = currentUser;
+ const [accountsResult, activitiesResult, leadsResult, contactsResult, oppsResult] = await Promise.allSettled([
+  withTimeout(fetchAccountsFromApi(), 7000, 'accounts'),
+  withTimeout(fetchActivitiesFromApi(), 7000, 'activities'),
+  withTimeout(fetchLeadsFromApi(), 7000, 'leads'),
+  withTimeout(fetchContactsFromApi(), 7000, 'contacts'),
+  withTimeout(fetchOpportunitiesFromApi(), 7000, 'opportunities')
+ ]);
 
-      const roleLabel = { supervisor: 'SUPERVISOR', sales: 'SALESPERSON', presales: 'PRESALES', purchase: 'PURCHASE' };
-      document.getElementById('userRole').textContent = roleLabel[getUserRole()] || 'SALESPERSON';
+ if (accountsResult.status === 'fulfilled') {
+  const remoteAccounts = accountsResult.value;
+  if (Array.isArray(remoteAccounts) && remoteAccounts.length) {
+   state.data.accounts = remoteAccounts;
+  }
+ } else {
+  console.warn('Backend accounts unavailable, using local accounts only', accountsResult.reason);
+ }
 
-      const actions = document.getElementById('userActions');
-      if (actions && !document.getElementById('changePwdBtn')) {
-        const btn = document.createElement('button');
-        btn.id = 'changePwdBtn'; btn.className = 'btn'; btn.textContent = 'Change Password';
-        btn.onclick = async () => {
-          const pwd = prompt('Enter your new password:');
-          if (!pwd) return;
-          try { await setUserPassword(currentUser, pwd); alert('Password updated'); }
-          catch (e) { alert(`Failed: ${e.message}`); }
-        };
-        actions.insertBefore(btn, actions.firstChild);
-      }
+ if (activitiesResult.status === 'fulfilled') {
+  state.data.activities = activitiesResult.value;
+ } else {
+  console.warn('Backend activities unavailable, using local activities only', activitiesResult.reason);
+ }
 
-      const statusEl = document.getElementById('status');
-      if (statusEl) statusEl.textContent = 'Loading data...';
+ if (leadsResult.status === 'fulfilled') {
+  state.data.leads = leadsResult.value;
+ } else {
+  console.warn('Backend leads unavailable, using local leads only', leadsResult.reason);
+ }
 
-      try {
-        await loadData();
-      } catch (err) {
-        console.error(err);
-        alert('Signed in, but data loading failed. Please refresh once.');
-      } finally {
-        if (slaTimer) clearInterval(slaTimer);
-        slaTimer = setInterval(runSLAEngine, 60000);
-        if (loginBtn) { loginBtn.disabled = false; loginBtn.textContent = 'Sign In'; }
-      }
-    }
+ if (contactsResult.status === 'fulfilled') {
+  state.data.contacts = contactsResult.value;
+ } else {
+  console.warn('Backend contacts unavailable, using local contacts only', contactsResult.reason);
+ }
 
-    function logout() {
-      currentUser = '';
-      isSupervisor = false;
-      if (slaTimer) { clearInterval(slaTimer); slaTimer = null; }
-      document.getElementById('loginScreen').style.display = 'block';
-      document.getElementById('mainScreen').style.display = 'none';
-      document.getElementById('fabBtn').style.display = 'none';
-    }
+ if (oppsResult.status === 'fulfilled') {
+  state.data.opportunities = oppsResult.value;
+ } else {
+  console.warn('Backend opportunities unavailable, using local opportunities only', oppsResult.reason);
+ }
 
-    function normalizeArray(arr) { return Array.isArray(arr) ? arr : []; }
+ // Normalize legacy records so dates always exist
 
-    async function loadData() {
-      const vr = getViewerRoleForApi();
-      const ve = encodeURIComponent(currentUser);
+function seedAccountsFromMap() {
+ if (state.data.accounts.length) return;
+ const now = new Date().toISOString();
+ Object.keys(ACCOUNT_OWNER_MAP).forEach(name => {
+   state.data.accounts.push({
+     id: Date.now().toString() + Math.random().toString().slice(2),
+     name,
+     industry: '',
+     tier: 'B',
+     location: '',
+     companySize: '',
+     annualSpend: '',
+     accountManager: ACCOUNT_OWNER_MAP[name],
+     owner: ACCOUNT_OWNER_MAP[name],
+     createdDate: now,
+     modifiedDate: now
+   });
+ });
+}
 
-      const [acc, act, lead, con, opp] = await Promise.allSettled([
-        fetchApi(`/api/accounts?viewer_email=${ve}&viewer_role=${vr}`),
-        fetchApi(`/api/activities?viewer_email=${ve}&viewer_role=${vr}`),
-        fetchApi(`/api/leads?viewer_email=${ve}&viewer_role=${vr}`),
-        fetchApi(`/api/contacts?viewer_email=${ve}&viewer_role=${vr}`),
-        fetchApi(`/api/opportunities?viewer_email=${ve}&viewer_role=${vr}`)
-      ]);
+ ['leads','accounts','contacts','opportunities','activities'].forEach(key => {
+ if (!Array.isArray(state.data[key])) state.data[key] = [];
+ state.data[key] = state.data[key].map(item => {
+ if (key === 'accounts') {
+   // normalize legacy field names
+   if (!item.name && item.account_name) item.name = item.account_name;
+   if (!item.owner && item.accountOwner) item.owner = item.accountOwner;
+   const mapKey = item.name || '';
+   const mapped = ACCOUNT_OWNER_MAP[mapKey] || ACCOUNT_OWNER_MAP[mapKey.toLowerCase()] || ACCOUNT_OWNER_MAP[mapKey.toUpperCase()];
+   if (mapped) {
+     item.accountManager = mapped;
+   }
+ }
+ const ts = new Date().toISOString();
+ const created = item.createdDate || item.date || ts;
+ const modified = item.modifiedDate || created;
+ const normalized = { ...item, createdDate: created, modifiedDate: modified };
+ if (key === 'opportunities') {
+ normalized.workflowStage = normalized.workflowStage || 'Sales Review';
+ normalized.salesOwner = normalized.salesOwner || normalized.owner || '';
+ normalized.assignedPresales = normalized.assignedPresales || '';
+ normalized.assignedPurchase = normalized.assignedPurchase || '';
+ normalized.salesComments = normalized.salesComments || '';
+ normalized.requirements = normalized.requirements || '';
+ normalized.presalesArchitecture = normalized.presalesArchitecture || '';
+ normalized.presalesQuestions = normalized.presalesQuestions || '';
+ normalized.boq = normalized.boq || '';
+ normalized.purchaseCosting = normalized.purchaseCosting || '';
+ normalized.costingTat = normalized.costingTat || '';
+ normalized.finalPricingProposal = normalized.finalPricingProposal || '';
+ normalized.presalesAssignedAt = normalized.presalesAssignedAt || '';
+ normalized.presalesDueAt = normalized.presalesDueAt || '';
+ normalized.purchaseAssignedAt = normalized.purchaseAssignedAt || '';
+ normalized.purchaseDueAt = normalized.purchaseDueAt || '';
+ normalized.costingReturnedAt = normalized.costingReturnedAt || '';
+ normalized.finalProposalAt = normalized.finalProposalAt || '';
+ normalized.assignmentDueAt = normalized.assignmentDueAt || '';
+ normalized.salesSubmittedAt = normalized.salesSubmittedAt || '';
+ }
+ return normalized;
+ });
+ });
 
-      state.data.accounts = acc.status === 'fulfilled' ? normalizeArray(acc.value) : [];
-      state.data.activities = act.status === 'fulfilled' ? normalizeArray(act.value) : [];
-      state.data.leads = lead.status === 'fulfilled' ? normalizeArray(lead.value) : [];
-      state.data.contacts = con.status === 'fulfilled' ? normalizeArray(con.value) : [];
-      state.data.opportunities = opp.status === 'fulfilled' ? normalizeArray(opp.value) : [];
+ seedAccountsFromMap();
+ saveData();
+ 
+function calculateWinProb(opp) {
+ // Base probability from stage
+ const stageProb = {
+ 'Discovery': 25,
+ 'Proposal': 60,
+ 'Negotiation': 85,
+ 'Closed Won': 100,
+ 'Closed Lost': 0
+ };
+ 
+ let base = stageProb[opp.stage] || 25;
+ 
+ // Get account for this opportunity
+ const account = state.data.accounts.find(a => a.id === opp.accountId);
+ 
+ // Get contacts for this account
+ const contacts = state.data.contacts.filter(c => c.accountId === opp.accountId);
+ 
+ if (!account) return base;
+ 
+ let adjustments = 0;
+ 
+ // 1. ICP Score adjustment (±15%)
+ const icpScore = calculateICPScore(account);
+ if (icpScore >= 45) adjustments += 15;
+ else if (icpScore >= 35) adjustments += 8;
+ else if (icpScore >= 25) adjustments += 0;
+ else adjustments -= 10;
+ 
+ // 2. Competition Position (±10%)
+ if (opp.competitionPosition === 'Strong') adjustments += 10;
+ else if (opp.competitionPosition === 'Favorable') adjustments += 5;
+ else if (opp.competitionPosition === 'Unfavorable') adjustments -= 8;
+ 
+ // 3. Buying Influence Coverage (±10%)
+ const hasMAS = contacts.some(c => c.roleType === 'MAS');
+ const hasCoach = contacts.some(c => c.roleType === 'Coach');
+ const hasHighInfluence = contacts.some(c => c.influenceLevel === 'High');
+ 
+ if (hasMAS && hasCoach && hasHighInfluence) adjustments += 10;
+ else if (hasMAS && hasHighInfluence) adjustments += 5;
+ else if (!hasMAS) adjustments -= 5;
+ 
+ // 4. Contact Sentiment (±5%)
+ const positiveEmotions = contacts.filter(c => c.emotion === 'Euphoria' || c.emotion === 'Great').length;
+ const negativeEmotions = contacts.filter(c => c.emotion === 'Worry').length;
+ 
+ if (positiveEmotions > negativeEmotions && positiveEmotions > 0) adjustments += 5;
+ else if (negativeEmotions > positiveEmotions && negativeEmotions > 0) adjustments -= 5;
+ 
+ // 5. Account Mode (±5%)
+ if (account.mode === 'Business Expansion') adjustments += 5;
+ else if (account.mode === 'Overcome Bottleneck') adjustments += 3;
+ else if (account.mode === 'Status Quo') adjustments -= 5;
 
-      document.getElementById('status').textContent = `${isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data'} | Build ${BUILD_VERSION}`;
-      render();
-    }
+ // 6. Suspect Discovery Completeness (0 to +10)
+ adjustments += getAccountSuspectScore(account);
+ 
+ return Math.min(100, Math.max(0, base + adjustments));
+}
 
-    function filteredData() {
-      if (isSupervisor) return state.data;
-      const me = normalizeEmail(currentUser);
-      const role = getUserRole();
-      const accountIds = new Set(state.data.accounts
-        .filter(a => normalizeEmail(a.account_manager_email || a.accountManager || a.owner) === me)
-        .map(a => String(a.id)));
+function calculateICPScore(account) {
+ let score = 0;
+ 
+ // Company Size (0-15 points)
+ const sizeRanges = {
+ '1000+': 15, '500-1000': 12, '100-500': 10,
+ '50-100': 7, '10-50': 4, '1-10': 2
+ };
+ score += sizeRanges[account.companySize] || 0;
+ 
+ // Industry (0-10 points)
+ const targetIndustries = ['Technology', 'Finance', 'Healthcare', 'Manufacturing'];
+ if (targetIndustries.includes(account.industry)) score += 10;
+ else if (account.industry) score += 5;
+ 
+ // Budget (0-15 points)
+ if (account.annualSpend) {
+ const spendNum = parseFloat(account.annualSpend.replace(/[^\d.]/g, ''));
+ if (spendNum >= 50) score += 15;
+ else if (spendNum >= 20) score += 12;
+ else if (spendNum >= 10) score += 8;
+ else if (spendNum >= 5) score += 5;
+ else score += 2;
+ }
+ 
+ // Location (0-5 points)
+ const tierOne = ['Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai', 'Pune'];
+ if (tierOne.some(city => account.location?.includes(city))) score += 5;
+ else if (account.location) score += 3;
+ 
+ // Tier (0-10 points)
+ const tierScores = { 'A': 10, 'B': 7, 'C': 4 };
+ score += tierScores[account.tier] || 0;
+ 
+ return Math.min(score, 60);
+}
 
-      return {
-        leads: state.data.leads.filter(x => normalizeEmail(x.owner) === me),
-        accounts: state.data.accounts.filter(a => accountIds.has(String(a.id))),
-        contacts: state.data.contacts.filter(x => normalizeEmail(x.owner) === me || accountIds.has(String(x.account_id || x.accountId))),
-        opportunities: state.data.opportunities.filter(o => {
-          const aid = String(o.account_id || o.accountId || '');
-          if (normalizeEmail(o.owner) === me) return true;
-          if (accountIds.has(aid)) return true;
-          if (role === 'presales') return normalizeEmail(o.assigned_presales || o.assignedPresales) === me;
-          if (role === 'purchase') return normalizeEmail(o.assigned_purchase || o.assignedPurchase) === me;
-          return false;
-        }),
-        activities: state.data.activities.filter(x => normalizeEmail(x.owner) === me)
-      };
-    }
+ document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
+ render();
+ }
 
-    function changeTab(tab) { state.activeTab = tab; render(); }
+ function saveData() {
+ localStorage.setItem('crmData', JSON.stringify(state.data));
+ document.getElementById('status').textContent = '💾 Saved';
+ setTimeout(() => {
+ const role = getUserRole();
+ const label = role === 'supervisor' ? 'Supervisor View' : `${role.toUpperCase()} View`;
+ document.getElementById('status').textContent = `✅ ${label}`;
+ }, 1000);
+ }
 
-    function render() {
-      const role = getUserRole();
-      const tabs = isSupervisor
-        ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'dashboard']
-        : (role === 'sales' ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities'] : ['opportunities', 'workflow', 'activities']);
-      if (!tabs.includes(state.activeTab)) state.activeTab = tabs[0];
+function getFilteredData() {
+ let baseData;
+ if (isSupervisor) {
+  baseData = state.data;
+ } else {
+  const role = getUserRole();
+  const myAccounts = state.data.accounts.filter(a => {
+   const mgr = normalizeEmail(a.accountManager || a.account_manager);
+   const owner = normalizeEmail(a.owner);
+   const me = normalizeEmail(currentUser);
+   return mgr === me || owner === me;
+  });
+  const myAccountIds = new Set(myAccounts.map(a => String(a.id)));
+  const opportunities = state.data.opportunities.filter(o => {
+   if (normalizeEmail(o.owner) === normalizeEmail(currentUser)) return true;
+   if (myAccountIds.has(String(o.accountId))) return true;
+   if (role === 'presales') return normalizeEmail(o.assignedPresales) === normalizeEmail(currentUser);
+   if (role === 'purchase') return normalizeEmail(o.assignedPurchase) === normalizeEmail(currentUser);
+   return false;
+  });
+  const contacts = state.data.contacts.filter(c => normalizeEmail(c.owner) === normalizeEmail(currentUser) || myAccountIds.has(String(c.accountId)));
+  baseData = {
+   leads: state.data.leads.filter(l => normalizeEmail(l.owner) === normalizeEmail(currentUser)),
+   accounts: myAccounts,
+   contacts,
+   opportunities,
+   activities: state.data.activities.filter(a => normalizeEmail(a.owner) === normalizeEmail(currentUser))
+  };
+ }
 
-      document.getElementById('tabs').innerHTML = tabs
-        .map(t => `<button class="tab ${state.activeTab === t ? 'active' : ''}" onclick="changeTab('${t}')">${t.toUpperCase()}</button>`)
-        .join('');
+ if (!managerFilter) return baseData;
 
-      const d = filteredData();
-      if (state.activeTab === 'leads') return renderLeads(d);
-      if (state.activeTab === 'accounts') return renderAccounts(d);
-      if (state.activeTab === 'contacts') return renderContacts(d);
-      if (state.activeTab === 'opportunities') return renderOpportunities(d);
-      if (state.activeTab === 'workflow') return renderWorkflow(d);
-      if (state.activeTab === 'activities') return renderActivities(d);
-      renderDashboard(d);
-    }
+ return {
+  leads: (baseData.leads || []).filter(l => getLeadManagerEmail(l) === managerFilter),
+  accounts: (baseData.accounts || []).filter(a => getAccountManagerEmail(a) === managerFilter),
+  contacts: (baseData.contacts || []).filter(c => getContactManagerEmail(c) === managerFilter),
+  opportunities: (baseData.opportunities || []).filter(o => getOpportunityManagerEmail(o) === managerFilter),
+  activities: (baseData.activities || []).filter(a => getActivityManagerEmail(a) === managerFilter)
+ };
+}
 
-    function renderLeads(d) {
-      document.getElementById('content').innerHTML = `<div class="card"><h2>🎯 Leads (${d.leads.length})</h2></div><div class="grid">${d.leads.map(l => `<div class="item-card"><h3>${l.name || ''}</h3><div>${l.company || ''}</div><div class="tag">${l.status || 'New'}</div></div>`).join('') || '<div class="card">No leads yet.</div>'}</div>`;
-    }
+ function render() {
+ const role = getUserRole();
+ const tabs = isSupervisor
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'dashboard']
+ : (role === 'sales'
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities']
+ : ['opportunities', 'workflow', 'activities']);
+ if (!tabs.includes(state.activeTab)) state.activeTab = tabs[0];
+ document.getElementById('tabs').innerHTML = tabs.map(t => 
+ `<button class="tab ${state.activeTab === t ? 'active' : ''}" onclick="changeTab('${t}')">${t.toUpperCase()}</button>`
+ ).join('');
+ 
+ const filtered = getFilteredData();
+ let content = '';
+ 
+ if (state.activeTab === 'leads') content = renderLeads(filtered);
+ else if (state.activeTab === 'accounts') content = renderAccounts(filtered);
+ else if (state.activeTab === 'contacts') content = renderContacts(filtered);
+ else if (state.activeTab === 'opportunities') content = renderOpportunities(filtered);
+ 	else if (state.activeTab === 'activities') content = 		renderActivities(filtered);
+ else if (state.activeTab === 'workflow') content = renderWorkflow(filtered);
+ else if (state.activeTab === 'dashboard') content = renderDashboard(filtered);
+ 
+ document.getElementById('content').innerHTML = content;
+ }
 
-    function renderAccounts(d) {
-      document.getElementById('content').innerHTML = `<div class="card"><h2>🏢 Accounts (${d.accounts.length})</h2></div><div class="grid">${d.accounts.map(a => `<div class="item-card"><h3>${a.account_name || a.name || ''}</h3><div>${a.industry || ''}</div><div class="tag">${a.location || ''}</div></div>`).join('') || '<div class="card">No accounts yet.</div>'}</div>`;
-    }
+function renderLeads(filtered) {
+ return `
+ <div class="card">
+ <h2>🎯 Leads (${filtered.leads.length})</h2>
+ ${renderManagerFilterControls(filtered)}
+ <button class="btn" type="button" onclick="document.getElementById('leadsCsvInput').click()">Import CSV</button>
+ </div>
+ <div class="grid">
+ ${filtered.leads.map(l => `
+ <div class="item-card" onclick="editLead('${l.id}')">
+ <h3>${l.name}</h3>
+ <div>${l.company}</div>
+ <div style="margin-top:10px">
+ <span class="tag">${l.source}</span>
+ <span class="tag">${l.status}</span>
+ </div>
+ <div style="font-size:0.9em; opacity:0.8; margin-top:10px">
+ ${l.email} | ${l.phone}
+ </div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
+ 📅 Created: ${fmtDate(l.createdDate)}<br>🕒 Updated: ${fmtDate(l.modifiedDate)}
+ </div>
+ <div style="margin-top:10px">
+ <button type="button" class="btn" onclick="event.stopPropagation();editLead('${l.id}')">Edit</button>
+ </div>
+ </div>
+ `).join('')}
+ ${filtered.leads.length === 0 ? '<div class="card">No leads yet. Click + to add one!</div>' : ''}
+ </div>
+ `;
+}
 
-    function renderContacts(d) {
-      document.getElementById('content').innerHTML = `<div class="card"><h2>👥 Contacts (${d.contacts.length})</h2></div><div class="grid">${d.contacts.map(c => `<div class="item-card"><h3>${c.name || ''}</h3><div>${c.title || ''}</div><div class="tag">${c.email || ''}</div></div>`).join('') || '<div class="card">No contacts yet.</div>'}</div>`;
-    }
+ 
+function handleLeadsCsv(e) {
+ const file = e.target.files[0];
+ if (!file) return;
+ const reader = new FileReader();
+ reader.onload = () => {
+ const rows = parseCSV(reader.result);
+ const now = new Date().toISOString();
+ rows.forEach(r => {
+ const lead = {
+ id: Date.now().toString() + Math.random().toString().slice(2),
+ name: r.name || r.lead || 'Unnamed Lead',
+ company: r.company || r.account || '',
+ email: r.email || '',
+ phone: r.phone || '',
+ source: r.source || 'CSV',
+ status: r.status || 'New',
+ notes: r.notes || '',
+ owner: r.owner || currentUser,
+ createdDate: now,
+ modifiedDate: now
+ };
+ state.data.leads.push(lead);
+ });
+ saveData();
+ render();
+ alert(`Imported ${rows.length} leads.`);
+ };
+ reader.readAsText(file);
+ e.target.value = '';
+}
 
-    function renderOpportunities(d) {
-      document.getElementById('content').innerHTML = `
-        <div class="card">
-          <h2>💰 Opportunities (${d.opportunities.length})</h2>
-          <button class="btn btn-success" onclick="openOpportunityModal()">Add Opportunity</button>
-        </div>
-        <div class="grid">
-          ${d.opportunities.map(o => {
-            const p = getWinProbSafe(o);
-            return `<div class="item-card" onclick="openOpportunityModal('${o.id}')"><h3>${o.name || ''}</h3><div style="color:#4ade80;font-weight:bold">₹${Number(o.value || 0).toLocaleString('en-IN')}</div><div><span class="tag">${o.stage || 'Discovery'}</span><span class="tag">${o.workflow_stage || o.workflowStage || 'Sales Review'}</span><span class="tag">Win ${p}%</span></div><div style="margin-top:6px;font-size:0.9em">Presales: ${(o.assigned_presales || o.assignedPresales || 'Unassigned')}</div></div>`;
-          }).join('') || '<div class="card">No opportunities yet.</div>'}
-        </div>`;
-    }
+function handleOppsCsv(e) {
+ const file = e.target.files[0];
+ if (!file) return;
+ const reader = new FileReader();
+ reader.onload = () => {
+ const rows = parseCSV(reader.result);
+ const now = new Date().toISOString();
+ rows.forEach(r => {
+ let account = state.data.accounts.find(a => (a.name || '').toLowerCase() === (r.account || r.account_name || '').toLowerCase());
+ if (!account && (r.account || r.account_name)) {
+ account = { id: Date.now().toString() + Math.random().toString().slice(2), name: r.account || r.account_name, industry: r.industry || '', tier: r.tier || 'B', location: r.location || '', createdDate: now, modifiedDate: now };
+ state.data.accounts.push(account);
+ }
+ const opp = {
+ id: Date.now().toString() + Math.random().toString().slice(2),
+ name: r.name || r.opportunity || 'New Opportunity',
+ accountId: account ? account.id : '',
+ value: parseFloat(r.value || r.amount || '0') || 0,
+ stage: r.stage || 'Discovery',
+ owner: r.owner || currentUser,
+ createdDate: now,
+ modifiedDate: now,
+ workflowStage: 'Assigned to Presales',
+ assignedPresales: PRESALES_OWNER,
+ assignedPurchase: '',
+ presalesAssignedAt: now,
+ presalesDueAt: addHours(now, 72),
+ assignmentDueAt: addHours(now, 4),
+ salesSubmittedAt: now
+ };
+ state.data.opportunities.push(opp);
+ });
+ saveData();
+ render();
+ alert(`Imported ${rows.length} opportunities.`);
+ };
+ reader.readAsText(file);
+ e.target.value = '';
+}
 
-    function renderWorkflow(d) {
-      document.getElementById('content').innerHTML = `<div class="card"><h2>🔄 Workflow (${d.opportunities.length})</h2></div><div class="grid">${d.opportunities.map(o => `<div class="item-card"><h3>${o.name || ''}</h3><div class="tag">${o.workflow_stage || o.workflowStage || 'Sales Review'}</div><div>Presales: ${o.assigned_presales || o.assignedPresales || 'Unassigned'}</div><div>Purchase: ${o.assigned_purchase || o.assignedPurchase || 'Unassigned'}</div></div>`).join('') || '<div class="card">No workflow items.</div>'}</div>`;
-    }
+function renderAccounts(filtered) {
 
-    function renderActivities(d) {
-      document.getElementById('content').innerHTML = `<div class="card"><h2>📝 Activities (${d.activities.length})</h2></div><div class="grid">${d.activities.map(a => `<div class="item-card"><h3>${a.type || 'Note'}</h3><div>${a.subject || ''}</div><div class="tag">${fmtDateTime(a.date || a.created_at || a.createdDate)}</div></div>`).join('') || '<div class="card">No activities yet.</div>'}</div>`;
-    }
+ return `
+ <div class="card">
+ <h2>🏢 Accounts (${filtered.accounts.length})</h2>
+ ${renderManagerFilterControls(filtered)}
+ </div>
+ <div class="grid">
+${filtered.accounts.map(a => `
+<div class="item-card" onclick="editAccount('${a.id}')">
+<h3>${a.name}</h3>
+<div>${a.industry}</div>
+ <div style="margin-top:10px">
+ <span class="tag">Tier ${a.tier}</span>
+ <span class="tag">${a.location}</span>
+ <span class="tag" style="background:#4ade80; color:white">Suspect Score: ${getAccountSuspectScore(a)}/10</span>
+ <span class="tag" style="background:#22c55e; color:white">Questionnaire: ${getAccountQuestionnaireCompletion(a)}%</span>
+ </div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
+ 📅 Created: ${fmtDate(a.createdDate)}<br>🕒 Updated: ${fmtDate(a.modifiedDate)}
+ </div>
+ <div style="margin-top:10px">
+ <button type="button" class="btn" onclick="event.stopPropagation();editAccount('${a.id}')">Edit</button>
+ </div>
+ </div>
+ `).join('')}
+ ${filtered.accounts.length === 0 ? '<div class="card">No accounts yet. Click + to add one!</div>' : ''}
+ </div>
+ `;
+}
+ function renderContacts(filtered) {
+ return `
+ <div class="card">
+ <h2>👥 Contacts (${filtered.contacts.length})</h2>
+ ${renderManagerFilterControls(filtered)}
+ </div>
+ <div class="grid">
+ ${filtered.contacts.map(c => `
+ <div class="item-card" onclick="editContact('${c.id}')">
+ <h3>${c.name}</h3>
+ <div>${c.title}</div>
+ <div style="margin-top:10px">
+ <span class="tag">${c.roleType}</span>
+ <span class="tag">${c.emotion}</span>
+ </div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
+ 📅 Created: ${fmtDate(c.createdDate)}<br>🕒 Updated: ${fmtDate(c.modifiedDate)}
+ </div>
+ <div style="margin-top:10px">
+ <button type="button" class="btn" onclick="event.stopPropagation();editContact('${c.id}')">Edit</button>
+ </div>
+ </div>
+ `).join('')}
+ ${filtered.contacts.length === 0 ? '<div class="card">No contacts yet. Click + to add one!</div>' : ''}
+ </div>
+ `;
+}
+ function renderOpportunities(filtered) {
+ return `
+ <div class="card">
+ <h2>💰 Opportunities (${filtered.opportunities.length})</h2>
+ ${renderManagerFilterControls(filtered)}
+ <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
+ </div>
+ <div class="grid">
+ ${filtered.opportunities.map(o => {
+ const winProb = getWinProbSafe(o);
+ return `
+ <div class="item-card" onclick="editOpportunity('${o.id}')">
+ <h3>${o.name}</h3>
+ <div style="color:#4ade80; font-weight:bold; font-size:1.2em; margin:10px 0">
+ ₹${(o.value / 100000).toFixed(1)}L
+ </div>
+ <div>
+ <span class="tag">${o.stage}</span>
+ <span class="tag">${o.workflowStage || 'Sales Review'}</span>
+ <span class="tag" style="background:#4ade80; color:white">Win Probability: ${winProb}%</span>
+ </div>
+ <div style="margin-top:6px; font-size:0.9em; font-weight:bold">
+ Win Probability: ${winProb}%
+ </div>
+ <div style="font-size:0.85em; opacity:0.85; margin-top:10px">
+ Sales: ${formatUserLabel(o.salesOwner || o.owner || 'NA')}<br>
+ Presales: ${formatUserLabel(o.assignedPresales || 'Unassigned')}<br>
+ Purchase: ${formatUserLabel(o.assignedPurchase || 'Unassigned')}
+ </div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
+ 📅 Created: ${fmtDate(o.createdDate)}<br>🕒 Updated: ${fmtDate(o.modifiedDate)}
+ </div>
+ <div style="margin-top:10px">
+ <button type="button" class="btn" onclick="event.stopPropagation();editOpportunity('${o.id}')">Edit</button>
+ </div>
+ </div>
+ `;
+ }).join('')}
+ ${filtered.opportunities.length === 0 ? '<div class="card">No opportunities yet. Click + to add one!</div>' : ''}
+ </div>
+ `;
+}
 
-    function renderDashboard(d) {
-      const total = d.opportunities.reduce((s, o) => s + Number(o.value || 0), 0);
-      document.getElementById('content').innerHTML = `<div class="card"><h2>📊 Dashboard</h2></div><div class="grid"><div class="item-card"><h3>Leads</h3><div>${d.leads.length}</div></div><div class="item-card"><h3>Accounts</h3><div>${d.accounts.length}</div></div><div class="item-card"><h3>Contacts</h3><div>${d.contacts.length}</div></div><div class="item-card"><h3>Opportunities</h3><div>${d.opportunities.length}</div></div><div class="item-card"><h3>Pipeline</h3><div>₹${total.toLocaleString('en-IN')}</div></div></div>`;
-    }
+ function renderWorkflow(filtered) {
+ const role = getUserRole();
+ const list = filtered.opportunities;
+ return `
+ <div class="card">
+ <h2>🔄 Workflow Board (${list.length})</h2>
+ ${renderManagerFilterControls(filtered)}
+ <div style="opacity:0.85; margin-top:8px">Flow: Sales → Presales → Purchase → Presales → Sales</div>
+ </div>
+ <div class="grid">
+ ${list.map(o => `
+ <div class="item-card">
+ <h3>${o.name}</h3>
+ <div style="margin:8px 0">
+ <span class="tag">${o.workflowStage || 'Sales Review'}</span>
+ <span class="tag">${o.stage || 'Discovery'}</span>
+ <span class="tag" style="background:#4ade80; color:white">${getWinProbSafe(o)}% Win</span>
+ </div>
+ <div style="font-size:0.85em; line-height:1.5; opacity:0.9">
+ <b>Sales:</b> ${formatUserLabel(o.salesOwner || o.owner || 'NA')}<br>
+ <b>Presales:</b> ${formatUserLabel(o.assignedPresales || 'Unassigned')}<br>
+ <b>Purchase:</b> ${formatUserLabel(o.assignedPurchase || 'Unassigned')}<br>
+ <div style="margin-top:8px">${slaBadge('Presales', o.presalesDueAt)} ${slaBadge('Purchase', o.purchaseDueAt)}</div>
+ <div style="margin-top:8px">
+ ${isOverdue(o.presalesDueAt) ? `<a class=\"btn btn-danger\" style=\"text-decoration:none\" href=\"${escalationMailto(o, 'Presales', o.presalesDueAt)}\">Escalate Presales</a>` : ''}
+ ${isOverdue(o.purchaseDueAt) ? `<a class=\"btn btn-danger\" style=\"text-decoration:none\" href=\"${escalationMailto(o, 'Purchase', o.purchaseDueAt)}\">Escalate Purchase</a>` : ''}
+ </div>
+ <b>BOQ:</b> ${o.boq ? 'Yes' : 'No'} | <b>Costing:</b> ${o.purchaseCosting ? 'Yes' : 'No'}<br>
+ <b>TAT:</b> ${fmtDateTime(o.costingTat)}<br>
+ <b>Final Proposal:</b> ${o.finalPricingProposal ? 'Ready' : 'Pending'}
+ </div>
+ <div style="margin-top:10px">
+ ${renderWorkflowActions(o, role)}
+ <button type="button" class="btn" onclick="editOpportunity('${o.id}')">Open</button>
+ </div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:8px">
+ 📅 Created: ${fmtDate(o.createdDate)} | 🕒 Updated: ${fmtDate(o.modifiedDate)}
+ </div>
+ </div>
+ `).join('')}
+ ${list.length === 0 ? '<div class="card">No workflow items yet. Add opportunity first.</div>' : ''}
+ </div>
+ `;
+ }
 
-    function openAddModal() {
-      if (state.activeTab === 'opportunities' || state.activeTab === 'workflow') return openOpportunityModal();
-      alert('Use Opportunities tab to add new opportunity in this clean build.');
-    }
+ function renderWorkflowActions(o, role) {
+ if (role === 'sales' && (!o.salesOwner || o.salesOwner === currentUser) && (o.workflowStage || 'Sales Review') === 'Sales Review') {
+ const canDirectToPurchase = normalizeEmail(currentUser) === 'rakesh.uniyal@dnispl.com' || isSupervisor;
+ return `
+ <button type="button" class="btn btn-success" onclick="event.stopPropagation();assignToPresales('${o.id}')">Assign to Presales</button>
+ ${canDirectToPurchase ? `<button type="button" class="btn" onclick="event.stopPropagation();assignDirectToPurchase('${o.id}')">Assign Direct to Purchase</button>` : ''}
+ `;
+ }
+ if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Assigned to Presales') {
+ return `
+ <button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPresalesPack('${o.id}')">Send BOQ to Purchase</button>
+ <button type="button" class="btn" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Solution/Proposal to Sales</button>
+ `;
+ }
+ if (role === 'purchase' && o.assignedPurchase === currentUser && o.workflowStage === 'Awaiting Purchase Costing') {
+ return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPurchaseCosting('${o.id}')">Return Costing</button>`;
+ }
+ if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Costing Returned') {
+ return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Final Proposal</button>`;
+ }
+ if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Presales Overdue') {
+ return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Final Proposal (Overdue)</button>`;
+ }
+ return '';
+ }
+function renderActivities(filtered) {
+ const allActivities = [...filtered.activities].sort((a, b) =>
+ new Date(b.date || b.modifiedDate || b.createdDate) - new Date(a.date || a.modifiedDate || a.createdDate)
+ );
+ const today = new Date().toDateString();
+ const activities = allActivities.filter(a => {
+ const stamp = a.date || a.modifiedDate || a.createdDate;
+ if (!stamp) return false;
+ const d = new Date(stamp);
+ if (isNaN(d.getTime())) return false;
+ if (activityFilter.mode === 'all') return true;
+ if (activityFilter.mode === 'today') return d.toDateString() === today;
+ if (activityFilter.mode === 'range') {
+ const fromOK = !activityFilter.from || d >= new Date(activityFilter.from + 'T00:00:00');
+ const toOK = !activityFilter.to || d <= new Date(activityFilter.to + 'T23:59:59');
+ return fromOK && toOK;
+ }
+ return true;
+ });
+ 
+ return `
+ <div class="card">
+ <h2>📝 Activities (${activities.length})</h2>
+ ${renderManagerFilterControls(filtered)}
+ <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px">
+ <button class="btn" type="button" onclick="setActivityFilter('all')">All</button>
+ <button class="btn" type="button" onclick="setActivityFilter('today')">Today</button>
+ <label style="font-size:0.85em">From <input class="input" style="display:inline-block; width:auto" type="date" id="activityFromDate" value="${activityFilter.from || ''}"></label>
+ <label style="font-size:0.85em">To <input class="input" style="display:inline-block; width:auto" type="date" id="activityToDate" value="${activityFilter.to || ''}"></label>
+ <button class="btn btn-success" type="button" onclick="applyActivityDateRange()">Apply</button>
+ <button class="btn btn-danger" type="button" onclick="clearActivityDateRange()">Clear</button>
+ </div>
+ </div>
+ <div class="grid">
+ ${activities.map(a => `
+ <div class="item-card" onclick="editActivity('${a.id}')">
+ <div style="display:flex; justify-content:space-between">
+ <h3>${a.type}</h3>
+ <span class="tag">${fmtDateTime(a.date || a.modifiedDate || a.createdDate)}</span>
+ </div>
+ <div style="margin:10px 0; font-weight:bold">${a.subject}</div>
+ <div style="opacity:0.8">${a.notes || 'No notes'}</div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
+ By: ${formatUserLabel(a.owner || 'NA')}<br>🕒 Updated: ${fmtDateTime(a.modifiedDate || a.date || a.createdDate)}
+ </div>
+ <div style="margin-top:10px">
+ <button type="button" class="btn" onclick="event.stopPropagation();editActivity('${a.id}')">Edit</button>
+ </div>
+ </div>
+ `).join('')}
+ ${activities.length === 0 ? '<div class="card">No activities logged yet. Click + to add!</div>' : ''}
+ </div>
+ `;
+}
 
-    function getOppById(id) {
-      return state.data.opportunities.find(o => String(o.id) === String(id));
-    }
+function setActivityFilter(mode) {
+ activityFilter.mode = mode;
+ render();
+}
 
-    function closeModal() { document.getElementById('modal').classList.remove('show'); }
+function applyActivityDateRange() {
+ const from = document.getElementById('activityFromDate')?.value || '';
+ const to = document.getElementById('activityToDate')?.value || '';
+ activityFilter = { mode: 'range', from, to };
+ render();
+}
 
-    function openOpportunityModal(id = null) {
-      const opp = id ? getOppById(id) : null;
-      const accountOptions = filteredData().accounts
-        .map(a => `<option value="${a.id}" ${String(opp?.account_id || opp?.accountId || '') === String(a.id) ? 'selected' : ''}>${a.account_name || a.name}</option>`)
-        .join('');
+function clearActivityDateRange() {
+ activityFilter = { mode: 'all', from: '', to: '' };
+ render();
+}
 
-      document.getElementById('modal').innerHTML = `
-        <div class="modal-content">
-          <h2>${opp ? 'Edit' : 'Add'} Opportunity</h2>
-          <form onsubmit="saveOpportunity(event, ${opp ? `'${opp.id}'` : 'null'})">
-            <input class="input" required name="name" placeholder="Opportunity Name *" value="${opp?.name || ''}" />
-            <select class="input" required name="accountId"><option value="">Select Account *</option>${accountOptions}</select>
-            <input class="input" required type="number" name="value" placeholder="Value (₹) *" value="${opp?.value || ''}" />
-            <select class="input" required name="stage">
-              <option value="Discovery" ${opp?.stage === 'Discovery' ? 'selected' : ''}>Discovery</option>
-              <option value="Proposal" ${opp?.stage === 'Proposal' ? 'selected' : ''}>Proposal</option>
-              <option value="Negotiation" ${opp?.stage === 'Negotiation' ? 'selected' : ''}>Negotiation</option>
-              <option value="Closed Won" ${opp?.stage === 'Closed Won' ? 'selected' : ''}>Closed Won</option>
-              <option value="Closed Lost" ${opp?.stage === 'Closed Lost' ? 'selected' : ''}>Closed Lost</option>
-            </select>
-            <select class="input" name="assignedPresales"><option value="">Assign Presales</option>${getTeamUsers('presales').map(u => `<option value="${u}" ${u === (opp?.assigned_presales || opp?.assignedPresales || '') ? 'selected' : ''}>${u}</option>`).join('')}</select>
-            <select class="input" name="assignedPurchase"><option value="">Assign Purchase</option>${getTeamUsers('purchase').map(u => `<option value="${u}" ${u === (opp?.assigned_purchase || opp?.assignedPurchase || '') ? 'selected' : ''}>${u}</option>`).join('')}</select>
-            <textarea required name="intakeProblemStatement" placeholder="Problem Statement *">${opp?.intake_problem_statement || opp?.intakeProblemStatement || ''}</textarea>
-            <textarea required name="intakeWhyNow" placeholder="Why Now *">${opp?.intake_why_now || opp?.intakeWhyNow || ''}</textarea>
-            <textarea required name="intakeBusinessImpact" placeholder="Business Impact *">${opp?.intake_business_impact || opp?.intakeBusinessImpact || ''}</textarea>
-            <textarea required name="intakeCurrentState" placeholder="Current State *">${opp?.intake_current_state || opp?.intakeCurrentState || ''}</textarea>
-            <textarea required name="intakeBudgetRange" placeholder="Budget Range *">${opp?.intake_budget_range || opp?.intakeBudgetRange || ''}</textarea>
-            <textarea required name="intakeDecisionTimeline" placeholder="Decision Timeline *">${opp?.intake_decision_timeline || opp?.intakeDecisionTimeline || ''}</textarea>
-            <div class="row" style="margin-top:12px">
-              <button type="button" class="btn" onclick="closeModal()">Cancel</button>
-              <button type="submit" class="btn btn-success">Save</button>
-              ${opp ? `<button type="button" class="btn btn-danger" onclick="deleteOpportunity('${opp.id}')">Delete</button>` : ''}
-            </div>
-          </form>
-        </div>`;
-      document.getElementById('modal').classList.add('show');
-    }
+function renderDashboard(filtered) {
+ const role = getUserRole();
+ const totalPipeline = filtered.opportunities.reduce((sum, o) => sum + (o.value || 0), 0);
+ const avgWin = filtered.opportunities.length
+ ? Math.round(filtered.opportunities.reduce((sum, o) => sum + getWinProbSafe(o), 0) / filtered.opportunities.length)
+ : 0;
+ const lastUpdated = [
+ ...filtered.leads.map(x => x.modifiedDate || x.createdDate),
+ ...filtered.accounts.map(x => x.modifiedDate || x.createdDate),
+ ...filtered.contacts.map(x => x.modifiedDate || x.createdDate),
+ ...filtered.opportunities.map(x => x.modifiedDate || x.createdDate),
+ ...filtered.activities.map(x => x.modifiedDate || x.createdDate || x.date)
+ ].filter(Boolean).sort().reverse()[0];
 
-    async function saveOpportunity(e, id) {
-      e.preventDefault();
-      const existing = id ? getOppById(id) : null;
-      const nowIso = new Date().toISOString();
-      const data = Object.fromEntries(new FormData(e.target));
+ const presalesQueue = filtered.opportunities.filter(o => o.workflowStage === 'Assigned to Presales');
+ const purchaseQueue = filtered.opportunities.filter(o => o.workflowStage === 'Awaiting Purchase Costing');
+ const overduePresales = filtered.opportunities.filter(o => isOverdue(o.presalesDueAt));
+ const overduePurchase = filtered.opportunities.filter(o => isOverdue(o.purchaseDueAt));
+ const duePresalesSoon = filtered.opportunities.filter(o => dueSoon(o.presalesDueAt, 12));
+ const duePurchaseSoon = filtered.opportunities.filter(o => dueSoon(o.purchaseDueAt, 6));
 
-      const missing = OPPORTUNITY_INTAKE_REQUIRED_FIELDS
-        .filter(f => !String(data[f.key] || '').trim())
-        .map(f => f.label);
-      if (missing.length) return alert('Please fill mandatory fields:\n- ' + missing.join('\n- '));
+ const month = new Date().toISOString().slice(0,7);
+ const touchedAccountIds = new Set(
+   (filtered.activities || [])
+     .filter(a => a.accountId)
+     .map(a => a.accountId)
+ );
+ const accountTouchList = filtered.accounts.map(a => ({
+   id: a.id,
+   name: a.name,
+   touched: touchedAccountIds.has(a.id),
+ }));
 
-      const payload = {
-        id: id || undefined,
-        name: data.name,
-        accountId: data.accountId,
-        value: Number(data.value || 0),
-        stage: data.stage || 'Discovery',
-        owner: existing?.owner || currentUser,
-        salesOwner: existing?.salesOwner || currentUser,
-        workflowStage: existing?.workflowStage || 'Sales Review',
-        assignedPresales: data.assignedPresales || existing?.assignedPresales || PRESALES_OWNER,
-        assignedPurchase: data.assignedPurchase || existing?.assignedPurchase || '',
-        intakeProblemStatement: data.intakeProblemStatement,
-        intakeWhyNow: data.intakeWhyNow,
-        intakeBusinessImpact: data.intakeBusinessImpact,
-        intakeCurrentState: data.intakeCurrentState,
-        intakeBudgetRange: data.intakeBudgetRange,
-        intakeDecisionTimeline: data.intakeDecisionTimeline,
-        createdDate: existing?.createdDate || nowIso,
-        modifiedDate: nowIso,
-        salesSubmittedAt: existing?.salesSubmittedAt || nowIso,
-        assignmentDueAt: existing?.assignmentDueAt || addHours(nowIso, 4),
-        presalesDueAt: existing?.presalesDueAt || addHours(nowIso, 72)
-      };
+ return `
+ <div class="card">
+ <h2>📊 Dashboard</h2>
+ ${renderManagerFilterControls(filtered)}
+ <div style="font-size:0.9em; opacity:0.8; margin-top:8px">Last Update: ${fmtDateTime(lastUpdated)}</div>
+ <div style="margin-top:10px"><button class="btn" onclick="exportMonthlyPipeline('${month}')">Export Monthly Pipeline</button></div>
+ </div>
+ <div class="grid">
+ <div class="metric" style="cursor:pointer" onclick="openTab('leads')"><div>Leads</div><div class="metric-value">${filtered.leads.length}</div></div>
+ <div class="metric" style="cursor:pointer" onclick="openTab('accounts')"><div>Accounts</div><div class="metric-value">${filtered.accounts.length}</div></div>
+ <div class="metric" style="cursor:pointer" onclick="openTab('contacts')"><div>Contacts</div><div class="metric-value">${filtered.contacts.length}</div></div>
+ <div class="metric" style="cursor:pointer" onclick="openTab('opportunities')"><div>Opportunities</div><div class="metric-value">${filtered.opportunities.length}</div></div>
+ <div class="metric" style="cursor:pointer" onclick="openTab('opportunities')"><div>Pipeline Value</div><div class="metric-value">₹${(totalPipeline / 10000000).toFixed(1)}Cr</div></div>
+ <div class="metric" style="cursor:pointer" onclick="openTab('opportunities')"><div>Avg Win Probability</div><div class="metric-value">${avgWin}%</div></div>
+ </div>
 
-      try {
-        await postApi('/api/opportunities', payload);
-        await loadData();
-        closeModal();
-      } catch (err) {
-        alert(`Could not save opportunity: ${err.message}`);
-      }
-    }
+ <div class="card">
+ <h3>Reminders</h3>
+ <div style="margin-top:8px">Presales due soon (<=12h): ${duePresalesSoon.length} | Purchase due soon (<=6h): ${duePurchaseSoon.length}</div>
+ <div style="margin-top:8px">Overdue Presales: ${overduePresales.length} | Overdue Purchase: ${overduePurchase.length}</div>
+ </div>
 
-    async function deleteOpportunity(id) {
-      if (!confirm('Delete this opportunity?')) return;
-      try {
-        await deleteApi(`/api/opportunities/${encodeURIComponent(id)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`);
-        await loadData();
-        closeModal();
-      } catch (err) {
-        alert(`Could not delete opportunity: ${err.message}`);
-      }
-    }
+ <div class="card">
+ <h3>Account Touch Status</h3>
+ <div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:8px">
+ ${accountTouchList.length ? accountTouchList.map(a => `
+  <span class="tag" style="background:${a.touched ? '#22c55e' : '#ef4444'}; color:white; cursor:pointer" onclick="editAccount('${a.id}')">${a.name}</span>
+ `).join('') : 'No accounts available.'}
+ </div>
+ </div>
 
-    async function runSLAEngine() {
-      // lightweight placeholder to avoid parser/runtime breaks
-      // your backend handles most workflow timings
-    }
-  </script>
+ ${role === 'presales' ? `
+ <div class="card"><h3>Presales Queue</h3>${presalesQueue.length ? presalesQueue.map(o => `<div class="opp-card" onclick="editOpportunity('${o.id}')">${o.name} — Due: ${fmtDateTime(o.presalesDueAt)}</div>`).join('') : 'No items.'}</div>
+ ` : ''}
+ ${role === 'purchase' ? `
+ <div class="card"><h3>Purchase Queue</h3>${purchaseQueue.length ? purchaseQueue.map(o => `<div class="opp-card" onclick="editOpportunity('${o.id}')">${o.name} — Due: ${fmtDateTime(o.purchaseDueAt)}</div>`).join('') : 'No items.'}</div>
+ ` : ''}
+ <div class="card">
+ <h3>Quick Open</h3>
+ <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap">
+ <button class="btn" type="button" onclick="openTab('accounts')">Accounts</button>
+ <button class="btn" type="button" onclick="openTab('contacts')">Contacts</button>
+ <button class="btn" type="button" onclick="openTab('opportunities')">Opportunities</button>
+ <button class="btn" type="button" onclick="openTab('activities', { activityMode: 'all' })">Activities</button>
+ </div>
+ </div>
+ `;
+ }
+
+function exportMonthlyPipeline(month) {
+ const m = month || prompt('Enter month (YYYY-MM):', new Date().toISOString().slice(0,7));
+ if (!m) return;
+ const rows = state.data.opportunities
+ .filter(o => (o.createdDate || '').startsWith(m))
+ .map(o => {
+ const account = state.data.accounts.find(a => a.id === o.accountId);
+ const win = getWinProbSafe(o);
+ const weighted = (o.value || 0) * win / 100;
+ return [o.name, account?.name || '', o.owner || '', o.stage || '', o.workflowStage || '', o.value || 0, win, weighted, o.createdDate || ''];
+ });
+ rows.unshift(['Opportunity','Account','Owner','Stage','Workflow Stage','Value','Win %','Weighted Value','Created']);
+ downloadCSV(`pipeline_${m}.csv`, rows);
+}
+
+function changeTab(tab) {
+
+ state.activeTab = tab;
+ render();
+ }
+
+
+function openAddModal() {
+ switch (state.activeTab) {
+ case 'leads':
+ openLeadModal();
+ break;
+ case 'accounts':
+ openAccountModal();
+ break;
+ case 'contacts':
+ openContactModal();
+ break;
+ case 'opportunities':
+ openOpportunityModal();
+ break;
+ case 'workflow':
+ openOpportunityModal();
+ break;
+ case 'activities':
+ openActivityModal();
+ break;
+ default:
+ openLeadModal();
+ }
+}
+
+ function openOpportunityModal(opp = null) {
+ const filtered = getFilteredData();
+ document.getElementById('modal').innerHTML = `
+ <div class="modal-content">
+ <h2>${opp ? 'Edit' : 'Add'} Opportunity</h2>
+ <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(opp?.createdDate || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(opp?.modifiedDate || new Date().toISOString())}</div>
+ <form onsubmit="saveOpportunity(event, ${opp ? `'${opp.id}'` : 'null'})">
+ <input class="input" required name="name" placeholder="Opportunity Name *" value="${opp?.name || ''}">
+ 
+ <select class="input" required name="accountId">
+ <option value="">Select Account *</option>
+ ${filtered.accounts.map(a => `<option value="${a.id}" ${opp?.accountId === a.id ? 'selected' : ''}>${a.name}</option>`).join('')}
+ </select>
+ 
+ <input class="input" required type="number" name="value" placeholder="Value (₹) *" value="${opp?.value || ''}">
+ 
+ <select class="input" required name="stage">
+ <option value="">Select Stage *</option>
+ <option value="Discovery" ${opp?.stage === 'Discovery' ? 'selected' : ''}>Discovery</option>
+ <option value="Proposal" ${opp?.stage === 'Proposal' ? 'selected' : ''}>Proposal</option>
+ <option value="Negotiation" ${opp?.stage === 'Negotiation' ? 'selected' : ''}>Negotiation</option>
+ <option value="Closed Won" ${opp?.stage === 'Closed Won' ? 'selected' : ''}>Closed Won</option>
+ <option value="Closed Lost" ${opp?.stage === 'Closed Lost' ? 'selected' : ''}>Closed Lost</option>
+ </select>
+ 
+ <select class="input" name="competitionPosition">
+ <option value="">Competition Position</option>
+ <option value="Strong" ${opp?.competitionPosition === 'Strong' ? 'selected' : ''}>Strong</option>
+ <option value="Favorable" ${opp?.competitionPosition === 'Favorable' ? 'selected' : ''}>Favorable</option>
+ <option value="Neutral" ${opp?.competitionPosition === 'Neutral' ? 'selected' : ''}>Neutral</option>
+ <option value="Unfavorable" ${opp?.competitionPosition === 'Unfavorable' ? 'selected' : ''}>Unfavorable</option>
+ </select>
+
+ <select class="input" name="assignedPresales">
+ <option value="">Assign Presales</option>
+ ${getTeamUsers('presales').map(u => `<option value="${u}" ${opp?.assignedPresales === u ? 'selected' : ''}>${u}</option>`).join('')}
+ </select>
+ <select class="input" name="assignedPurchase">
+ <option value="">Assign Purchase</option>
+ ${getTeamUsers('purchase').map(u => `<option value="${u}" ${opp?.assignedPurchase === u ? 'selected' : ''}>${u}</option>`).join('')}
+ </select>
+ <textarea name="salesComments" placeholder="Sales Comments">${opp?.salesComments || ''}</textarea>
+ <textarea name="requirements" placeholder="Customer Requirements">${opp?.requirements || ''}</textarea>
+ <div style="margin:12px 0 6px; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.14); font-size:0.9em;">
+ 🧩 <strong>Presales Intake (Filled by Sales)</strong><br>
+ <span style="opacity:0.9">Mandatory before save: Problem Statement, Why Now, Business Impact, Current State, Budget Range, Decision Timeline.</span>
+ </div>
+ <textarea required name="intakeProblemStatement" placeholder="Problem Statement *">${opp?.intakeProblemStatement || ''}</textarea>
+ <textarea required name="intakeWhyNow" placeholder="Why Now (Trigger Event) *">${opp?.intakeWhyNow || ''}</textarea>
+ <textarea required name="intakeBusinessImpact" placeholder="Business Impact *">${opp?.intakeBusinessImpact || ''}</textarea>
+ <textarea required name="intakeCurrentState" placeholder="Current State Summary *">${opp?.intakeCurrentState || ''}</textarea>
+ <textarea required name="intakeBudgetRange" placeholder="Budget Range *">${opp?.intakeBudgetRange || ''}</textarea>
+ <textarea required name="intakeDecisionTimeline" placeholder="Decision Timeline *">${opp?.intakeDecisionTimeline || ''}</textarea>
+ <textarea name="intakeRiskIfNotSolved" placeholder="Risk if Not Solved">${opp?.intakeRiskIfNotSolved || ''}</textarea>
+ <textarea name="intakeKeyStakeholders" placeholder="Key Stakeholders">${opp?.intakeKeyStakeholders || ''}</textarea>
+ <textarea name="intakeInScope" placeholder="In Scope">${opp?.intakeInScope || ''}</textarea>
+ <textarea name="intakeOutOfScope" placeholder="Out of Scope">${opp?.intakeOutOfScope || ''}</textarea>
+ <textarea name="intakeCurrentEnvironment" placeholder="Current Environment (OEM/Cloud/Security)">${opp?.intakeCurrentEnvironment || ''}</textarea>
+ <textarea name="intakePainPoints" placeholder="Pain Points">${opp?.intakePainPoints || ''}</textarea>
+ <textarea name="intakeComplianceRequirements" placeholder="Compliance Requirements">${opp?.intakeComplianceRequirements || ''}</textarea>
+ <textarea name="intakeIntegrationRequirements" placeholder="Integration Requirements">${opp?.intakeIntegrationRequirements || ''}</textarea>
+ <textarea name="intakeCompetitors" placeholder="Competitors / Incumbent">${opp?.intakeCompetitors || ''}</textarea>
+ <textarea name="intakeWinStrategy" placeholder="Why Should We Win">${opp?.intakeWinStrategy || ''}</textarea>
+ <textarea name="presalesArchitecture" placeholder="Presales Architecture Notes">${opp?.presalesArchitecture || ''}</textarea>
+ <textarea name="presalesQuestions" placeholder="Presales Questions">${opp?.presalesQuestions || ''}</textarea>
+ <textarea name="boq" placeholder="BOQ">${opp?.boq || ''}</textarea>
+ <textarea name="purchaseCosting" placeholder="Purchase Costing">${opp?.purchaseCosting || ''}</textarea>
+ <input class="input" type="datetime-local" name="costingTat" value="${opp?.costingTat ? opp.costingTat.slice(0,16) : ''}">
+ <textarea name="finalPricingProposal" placeholder="Final Pricing Proposal">${opp?.finalPricingProposal || ''}</textarea>
+ <select class="input" name="workflowStage">
+ <option value="Sales Review" ${opp?.workflowStage === 'Sales Review' ? 'selected' : ''}>Sales Review</option>
+ <option value="Assigned to Presales" ${opp?.workflowStage === 'Assigned to Presales' ? 'selected' : ''}>Assigned to Presales</option>
+ <option value="Awaiting Purchase Costing" ${opp?.workflowStage === 'Awaiting Purchase Costing' ? 'selected' : ''}>Awaiting Purchase Costing</option>
+ <option value="Costing Returned" ${opp?.workflowStage === 'Costing Returned' ? 'selected' : ''}>Costing Returned</option>
+ <option value="Presales Overdue" ${opp?.workflowStage === 'Presales Overdue' ? 'selected' : ''}>Presales Overdue</option>
+ <option value="Final Proposal Shared" ${opp?.workflowStage === 'Final Proposal Shared' ? 'selected' : ''}>Final Proposal Shared</option>
+ </select>
+ 
+ <div style="margin-top:20px">
+ <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+ <button type="submit" class="btn btn-success">Save</button>
+ ${opp ? `<button type="button" class="btn btn-danger" onclick="deleteOpportunity('${opp.id}')">Delete</button>` : ''}
+ </div>
+ </form>
+ </div>
+ `;
+ document.getElementById('modal').classList.add('show');
+}
+
+ function openLeadModal(lead = null) {
+ document.getElementById('modal').innerHTML = `
+ <div class="modal-content">
+ <h2>${lead ? 'Edit' : 'Add'} Lead</h2>
+ <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(lead?.createdDate || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(lead?.modifiedDate || new Date().toISOString())}</div>
+ <form onsubmit="saveLead(event, ${lead ? `'${lead.id}'` : 'null'})">
+ <input class="input" required name="name" placeholder="Name *" value="${lead?.name || ''}">
+ <input class="input" required name="company" placeholder="Company *" value="${lead?.company || ''}">
+ <input class="input" required type="email" name="email" placeholder="Email *" value="${lead?.email || ''}">
+ <input class="input" required name="phone" placeholder="Phone *" value="${lead?.phone || ''}">
+ <label style="display:block; margin:8px 0 6px 2px; font-size:0.9em; opacity:0.9;">Assign To *</label>
+ <select class="input" required name="owner">
+ <option value="" ${lead?.owner ? '' : 'selected'} disabled>Select Assignee *</option>
+ ${getTeamUsers('sales').map(u => `<option value="${u}" ${(lead?.owner || '') === u ? 'selected' : ''}>${u}</option>`).join('')}
+ </select>
+ <select class="input" required name="source">
+ <option value="">Select Source *</option>
+ <option value="Referral" ${lead?.source === 'Referral' ? 'selected' : ''}>Referral</option>
+ <option value="Website" ${lead?.source === 'Website' ? 'selected' : ''}>Website</option>
+ <option value="LinkedIn" ${lead?.source === 'LinkedIn' ? 'selected' : ''}>LinkedIn</option>
+ <option value="Cold Call" ${lead?.source === 'Cold Call' ? 'selected' : ''}>Cold Call</option>
+ </select>
+ <select class="input" required name="status">
+ <option value="">Select Status *</option>
+ <option value="New" ${lead?.status === 'New' ? 'selected' : ''}>New</option>
+ <option value="Contacted" ${lead?.status === 'Contacted' ? 'selected' : ''}>Contacted</option>
+ <option value="Qualified" ${lead?.status === 'Qualified' ? 'selected' : ''}>Qualified</option>
+ </select>
+ <textarea name="notes" placeholder="Notes">${lead?.notes || ''}</textarea>
+ <div style="margin-top:20px">
+ <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+ <button type="submit" class="btn btn-success">Save</button>
+ ${lead ? `<button type="button" class="btn btn-danger" onclick="deleteLead('${lead.id}')">Delete</button>` : ''}
+ </div>
+ </form>
+ </div>
+ `;
+ document.getElementById('modal').classList.add('show');
+ }
+
+ function openAccountModal(account = null) {
+ document.getElementById('modal').innerHTML = `
+ <div class="modal-content">
+ <h2>${account ? 'Edit' : 'Add'} Account</h2>
+ <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(account?.createdDate || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(account?.modifiedDate || new Date().toISOString())}</div>
+ <form onsubmit="saveAccount(event, ${account ? `'${account.id}'` : 'null'})">
+ <input class="input" required name="name" placeholder="Account Name *" value="${account?.name || ''}">
+ <input class="input" required name="industry" placeholder="Industry *" value="${account?.industry || ''}">
+ 
+ <select class="input" required name="tier">
+ <option value="">Select Tier *</option>
+ <option value="A" ${account?.tier === 'A' ? 'selected' : ''}>A - Strategic</option>
+ <option value="B" ${account?.tier === 'B' ? 'selected' : ''}>B - Growth</option>
+ <option value="C" ${account?.tier === 'C' ? 'selected' : ''}>C - Maintenance</option>
+ </select>
+ 
+ <input class="input" required name="location" placeholder="Location *" value="${account?.location || ''}">
+ 
+ <select class="input" name="companySize">
+ <option value="">Company Size</option>
+ <option value="1000+" ${account?.companySize === '1000+' ? 'selected' : ''}>1000+</option>
+ <option value="500-1000" ${account?.companySize === '500-1000' ? 'selected' : ''}>500-1000</option>
+ <option value="100-500" ${account?.companySize === '100-500' ? 'selected' : ''}>100-500</option>
+ <option value="50-100" ${account?.companySize === '50-100' ? 'selected' : ''}>50-100</option>
+ <option value="10-50" ${account?.companySize === '10-50' ? 'selected' : ''}>10-50</option>
+ <option value="1-10" ${account?.companySize === '1-10' ? 'selected' : ''}>1-10</option>
+ </select>
+ 
+ <input class="input" name="annualSpend" placeholder="Annual Spend (e.g., ₹50L)" value="${account?.annualSpend || ''}">
+ 
+ <select class="input" name="mode">
+ <option value="">Account Mode</option>
+ <option value="Business Expansion" ${account?.mode === 'Business Expansion' ? 'selected' : ''}>Business Expansion</option>
+ <option value="Overcome Bottleneck" ${account?.mode === 'Overcome Bottleneck' ? 'selected' : ''}>Overcome Bottleneck</option>
+ <option value="Status Quo" ${account?.mode === 'Status Quo' ? 'selected' : ''}>Status Quo</option>
+ </select>
+
+ <div class="card" style="margin-top:12px">
+ <h3 style="margin-bottom:8px">Suspect Discovery Form (Mandatory)</h3>
+ <div style="font-size:0.9em; opacity:0.9; margin-bottom:8px">Fill all 10 responses. Each answered question adds 1 point to win probability.</div>
+ ${SUSPECT_QUESTIONS.map((q, idx) => `
+  <label style="display:block; margin-top:10px; margin-bottom:4px; font-size:0.92em;">Q${idx + 1}. ${q}</label>
+  <textarea class="input" required name="suspect_q${idx + 1}" placeholder="Enter response for Q${idx + 1}">${account?.[`suspect_q${idx + 1}`] || ''}</textarea>
+ `).join('')}
+ </div>
+ 
+ <div style="margin-top:20px">
+ <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+ <button type="submit" class="btn btn-success">Save</button>
+ ${account ? `<button type="button" class="btn btn-danger" onclick="deleteAccount('${account.id}')">Delete</button>` : ''}
+ </div>
+ </form>
+ </div>
+ `;
+ document.getElementById('modal').classList.add('show');
+}
+
+ function openContactModal(contact = null) {
+ document.getElementById('modal').innerHTML = `
+ <div class="modal-content">
+ <h2>${contact ? 'Edit' : 'Add'} Contact</h2>
+ <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(contact?.createdDate || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(contact?.modifiedDate || new Date().toISOString())}</div>
+ <form onsubmit="saveContact(event, ${contact ? `'${contact.id}'` : 'null'})">
+ <input class="input" required name="name" placeholder="Name *" value="${contact?.name || ''}">
+ <input class="input" name="title" placeholder="Title" value="${contact?.title || ''}">
+ <input class="input" type="email" name="email" placeholder="Email" value="${contact?.email || ''}">
+ <input class="input" name="phone" placeholder="Phone" value="${contact?.phone || ''}">
+ 
+ <select class="input" required name="roleType">
+ <option value="">Select Role *</option>
+ <option value="MAS" ${contact?.roleType === 'MAS' ? 'selected' : ''}>MAS</option>
+ <option value="TE" ${contact?.roleType === 'TE' ? 'selected' : ''}>TE</option>
+ <option value="EU" ${contact?.roleType === 'EU' ? 'selected' : ''}>EU</option>
+ <option value="Coach" ${contact?.roleType === 'Coach' ? 'selected' : ''}>Coach</option>
+ </select>
+ 
+ <select class="input" required name="influenceLevel">
+ <option value="">Influence Level *</option>
+ <option value="High" ${contact?.influenceLevel === 'High' ? 'selected' : ''}>High</option>
+ <option value="Medium" ${contact?.influenceLevel === 'Medium' ? 'selected' : ''}>Medium</option>
+ <option value="Low" ${contact?.influenceLevel === 'Low' ? 'selected' : ''}>Low</option>
+ </select>
+ 
+ <select class="input" required name="emotion">
+ <option value="">Select Emotion *</option>
+ <option value="Euphoria" ${contact?.emotion === 'Euphoria' ? 'selected' : ''}>Euphoria</option>
+ <option value="Great" ${contact?.emotion === 'Great' ? 'selected' : ''}>Great</option>
+ <option value="OK" ${contact?.emotion === 'OK' ? 'selected' : ''}>OK</option>
+ <option value="Worry" ${contact?.emotion === 'Worry' ? 'selected' : ''}>Worry</option>
+ </select>
+ 
+ <input class="input" name="accountId" placeholder="Account ID (optional)" value="${contact?.accountId || ''}">
+ 
+ <div style="margin-top:20px">
+ <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+ <button type="submit" class="btn btn-success">Save</button>
+ ${contact ? `<button type="button" class="btn btn-danger" onclick="deleteContact('${contact.id}')">Delete</button>` : ''}
+ </div>
+ </form>
+ </div>
+ `;
+ document.getElementById('modal').classList.add('show');
+}
+ 
+function openActivityModal(activity = null) {
+ document.getElementById('modal').innerHTML = `
+ <div class="modal-content">
+ <h2>${activity ? 'Edit' : 'Log'} Activity</h2>
+ <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(activity?.createdDate || activity?.date || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(activity?.modifiedDate || activity?.date || new Date().toISOString())}</div>
+ <form onsubmit="saveActivity(event, ${activity ? `'${activity.id}'` : 'null'})">
+ <select class="input" required name="type">
+ <option value="">Select Type *</option>
+ <option value="Call" ${activity?.type === 'Call' ? 'selected' : ''}>📞 Call</option>
+ <option value="Email" ${activity?.type === 'Email' ? 'selected' : ''}>📧 Email</option>
+ <option value="Meeting" ${activity?.type === 'Meeting' ? 'selected' : ''}>🤝 Meeting</option>
+ <option value="Demo" ${activity?.type === 'Demo' ? 'selected' : ''}>💻 Demo</option>
+ <option value="Proposal" ${activity?.type === 'Proposal' ? 'selected' : ''}>📄 Proposal</option>
+ <option value="Follow-up" ${activity?.type === 'Follow-up' ? 'selected' : ''}>🔄 Follow-up</option>
+ <option value="Note" ${activity?.type === 'Note' ? 'selected' : ''}>📝 Note</option>
+ </select>
+ <input class="input" required name="subject" placeholder="Subject *" value="${activity?.subject || ''}">
+ <select class="input" name="accountId">
+ <option value="">Link Account (optional)</option>
+ ${state.data.accounts.map(a => `<option value="${a.id}" ${activity?.accountId === a.id ? 'selected' : ''}>${a.name}</option>`).join('')}
+ </select>
+ <textarea name="notes" placeholder="What did you do? What was discussed?">${activity?.notes || ''}</textarea>
+ <input class="input" required type="datetime-local" name="date" value="${activity?.date ? activity.date.slice(0,16) : new Date().toISOString().slice(0,16)}">
+ <div style="margin-top:20px">
+ <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+ <button type="submit" class="btn btn-success">Save Activity</button>
+ ${activity ? `<button type="button" class="btn btn-danger" onclick="deleteActivity('${activity.id}')">Delete</button>` : ''}
+ </div>
+ </form>
+ </div>
+ `;
+ document.getElementById('modal').classList.add('show');
+}
+
+async function saveActivity(e, id) {
+ e.preventDefault();
+ const formData = Object.fromEntries(new FormData(e.target));
+ const existing = id ? state.data.activities.find(a => a.id === id) : null;
+ const payload = {
+ id: id || undefined,
+ type: formData.type,
+ subject: formData.subject,
+ notes: formData.notes || '',
+ date: toISOOrBlank(formData.date) || new Date().toISOString(),
+ owner: currentUser,
+ account_id: formData.accountId || '',
+ account_name: (state.data.accounts.find(a => a.id === formData.accountId)?.name) || '',
+ createdDate: existing?.createdDate || new Date().toISOString(),
+ modifiedDate: new Date().toISOString(),
+ };
+
+ try {
+ await upsertActivityToApi(payload);
+ state.data.activities = await fetchActivitiesFromApi();
+ saveData();
+ closeModal();
+ render();
+ } catch (err) {
+ alert(`Could not save activity to shared backend: ${err.message}`);
+ }
+}
+
+async function deleteActivity(id) {
+ if (!confirm('Delete this activity?')) return;
+ try {
+ await deleteActivityFromApi(id);
+ state.data.activities = await fetchActivitiesFromApi();
+ saveData();
+ closeModal();
+ render();
+ } catch (err) {
+ alert(`Could not delete activity from shared backend: ${err.message}`);
+ }
+}
+
+function getTeamUsers(role) {
+ const users = new Set();
+ if (role === 'sales') {
+ state.data.leads.forEach(l => l.owner && users.add(l.owner));
+ state.data.accounts.forEach(a => a.owner && users.add(a.owner));
+ state.data.contacts.forEach(c => c.owner && users.add(c.owner));
+ state.data.opportunities.forEach(o => o.owner && users.add(o.owner));
+ SALES_TEAM_USERS.forEach(u => users.add(u));
+ users.add(currentUser || 'sales@company.com');
+ return Array.from(users);
+ }
+ const opportunities = state.data.opportunities || [];
+ opportunities.forEach(o => {
+ if (role === 'presales' && o.assignedPresales) users.add(o.assignedPresales);
+ if (role === 'purchase' && o.assignedPurchase) users.add(o.assignedPurchase);
+ });
+ if (role === 'presales') users.add('presales@company.com');
+ if (role === 'purchase') {
+  users.add('purchase@company.com');
+  users.add(PURCHASE_OWNER);
+ }
+ return Array.from(users);
+}
+
+async function updateOpportunityWorkflow(id, updates) {
+ const idx = state.data.opportunities.findIndex(o => o.id === id);
+ if (idx === -1) return;
+ const prev = state.data.opportunities[idx].workflowStage || 'Sales Review';
+ state.data.opportunities[idx] = {
+ ...state.data.opportunities[idx],
+ ...updates,
+ modifiedDate: new Date().toISOString()
+ };
+ const next = state.data.opportunities[idx].workflowStage || prev;
+ recordActivity('Workflow', `Opportunity moved: ${state.data.opportunities[idx].name}`, `${prev} → ${next}`);
+ try {
+  await upsertOpportunityToApi(state.data.opportunities[idx]);
+  state.data.opportunities = await fetchOpportunitiesFromApi();
+ } catch (err) {
+  alert(`Could not update workflow in shared backend: ${err.message}`);
+ }
+ saveData();
+ render();
+}
+
+async function assignToPresales(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ const now = new Date().toISOString();
+ const comments = prompt('Sales comments for presales:', opp.salesComments || '');
+ const requirements = prompt('Customer requirements:', opp.requirements || '');
+ await updateOpportunityWorkflow(id, {
+ assignedPresales: PRESALES_OWNER,
+ salesComments: comments || '',
+ requirements: requirements || '',
+ presalesAssignedAt: now,
+ presalesDueAt: addHours(now, 72),
+ assignmentDueAt: addHours(now, 4),
+ salesSubmittedAt: now,
+ workflowStage: 'Assigned to Presales'
+ });
+}
+
+async function assignDirectToPurchase(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ if (normalizeEmail(currentUser) !== 'rakesh.uniyal@dnispl.com' && !isSupervisor) {
+  alert('Only rakesh.uniyal@dnispl.com can use direct purchase assignment.');
+  return;
+ }
+ const now = new Date().toISOString();
+ const comments = prompt('Sales comments for purchase:', opp.salesComments || '');
+ const requirements = prompt('Customer requirements for purchase:', opp.requirements || '');
+ await updateOpportunityWorkflow(id, {
+  assignedPurchase: PURCHASE_OWNER,
+  assignedPresales: '',
+  salesComments: comments || '',
+  requirements: requirements || '',
+  purchaseAssignedAt: now,
+  purchaseDueAt: addHours(now, 24),
+  salesSubmittedAt: now,
+  assignmentDueAt: addHours(now, 4),
+  workflowStage: 'Awaiting Purchase Costing'
+ });
+}
+
+async function submitPresalesPack(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ const architecture = prompt('Presales architecture notes:', opp.presalesArchitecture || '');
+ const questions = prompt('Presales questions:', opp.presalesQuestions || '');
+ const boq = prompt('Enter BOQ details:', opp.boq || '');
+ const now = new Date().toISOString();
+ if (!boq) {
+ alert('BOQ is required.');
+ return;
+ }
+ await updateOpportunityWorkflow(id, {
+ presalesArchitecture: architecture || '',
+ presalesQuestions: questions || '',
+ boq,
+ assignedPurchase: PURCHASE_OWNER,
+ purchaseAssignedAt: now,
+ purchaseDueAt: addHours(now, 24),
+ workflowStage: 'Awaiting Purchase Costing'
+ });
+}
+
+async function submitPurchaseCosting(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ const costing = prompt('Purchase costing details:', opp.purchaseCosting || '');
+ const tat = prompt('Costing TAT (YYYY-MM-DD HH:MM):', opp.costingTat || '');
+ if (!costing) {
+ alert('Costing is required.');
+ return;
+ }
+ const tatISO = toISOOrBlank(tat);
+ const now = new Date().toISOString();
+ await updateOpportunityWorkflow(id, {
+ purchaseCosting: costing,
+ costingTat: tatISO || opp.costingTat || '',
+ costingReturnedAt: now,
+ workflowStage: 'Costing Returned'
+ });
+}
+
+async function submitFinalPricing(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ const proposal = prompt('Final pricing proposal for sales:', opp.finalPricingProposal || '');
+ if (!proposal) {
+ alert('Final proposal is required.');
+ return;
+ }
+ const now = new Date().toISOString();
+ await updateOpportunityWorkflow(id, {
+ finalPricingProposal: proposal,
+ finalProposalAt: now,
+ workflowStage: 'Final Proposal Shared'
+ });
+}
+
+async function saveLead(e, id) {
+ e.preventDefault();
+ const data = Object.fromEntries(new FormData(e.target));
+ const existing = id ? state.data.leads.find(l => l.id === id) : null;
+ const payload = {
+  id: id || undefined,
+  name: data.name || '',
+  company: data.company || '',
+  email: data.email || '',
+  phone: data.phone || '',
+  source: data.source || '',
+  status: data.status || '',
+  notes: data.notes || '',
+  owner: data.owner || currentUser,
+  createdDate: existing?.createdDate || new Date().toISOString(),
+  modifiedDate: new Date().toISOString(),
+ };
+ try {
+  await upsertLeadToApi(payload);
+  state.data.leads = await fetchLeadsFromApi();
+  recordActivity('Lead', `Lead ${id ? 'updated' : 'created'}: ${payload.name}`, `Assigned to ${payload.owner}`, payload.owner);
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  alert(`Could not save lead to shared backend: ${err.message}`);
+ }
+}
+
+async function saveAccount(e, id) {
+ e.preventDefault();
+ const data = Object.fromEntries(new FormData(e.target));
+
+ const suspectAnswers = {};
+ for (let i = 1; i <= 10; i++) {
+  suspectAnswers[`suspect_q${i}`] = String(data[`suspect_q${i}`] || '').trim();
+ }
+ const suspectScore = Object.values(suspectAnswers).filter(Boolean).length;
+
+ if (suspectScore < 10) {
+  alert('Please fill all 10 suspect discovery responses.');
+  return;
+ }
+
+ const payload = {
+  id: id || undefined,
+  account_name: data.name,
+  account_manager: currentUser,
+  industry: data.industry || '',
+  tier: data.tier || '',
+  location: data.location || '',
+  company_size: data.companySize || '',
+  annual_spend: data.annualSpend || '',
+  mode: data.mode || '',
+  suspect_score: suspectScore,
+  ...suspectAnswers,
+ };
+
+ try {
+  await upsertAccountToApi(payload);
+  state.data.accounts = await fetchAccountsFromApi();
+  recordActivity('Account', `Account ${id ? 'updated' : 'created'}: ${data.name}`);
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  alert(`Could not save account to shared backend: ${err.message}`);
+ }
+}
+
+async function saveContact(e, id) {
+ e.preventDefault();
+ const data = Object.fromEntries(new FormData(e.target));
+ const existing = id ? state.data.contacts.find(c => c.id === id) : null;
+ const payload = {
+  id: id || undefined,
+  name: data.name || '',
+  title: data.title || '',
+  email: data.email || '',
+  phone: data.phone || '',
+  roleType: data.roleType || '',
+  influenceLevel: data.influenceLevel || '',
+  emotion: data.emotion || '',
+  accountId: data.accountId || '',
+  owner: existing?.owner || currentUser,
+  createdDate: existing?.createdDate || new Date().toISOString(),
+  modifiedDate: new Date().toISOString(),
+ };
+ try {
+  await upsertContactToApi(payload);
+  state.data.contacts = await fetchContactsFromApi();
+  recordActivity('Contact', `Contact ${id ? 'updated' : 'created'}: ${payload.name}`);
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  alert(`Could not save contact to shared backend: ${err.message}`);
+ }
+}
+
+async function saveOpportunity(e, id) {
+ e.preventDefault();
+ const existing = id ? state.data.opportunities.find(o => o.id === id) : null;
+ const nowIso = new Date().toISOString();
+ const data = Object.fromEntries(new FormData(e.target));
+ data.value = parseFloat(data.value || 0);
+ data.owner = existing?.owner || currentUser;
+ data.salesOwner = existing?.salesOwner || currentUser;
+ data.createdDate = existing?.createdDate || nowIso;
+ data.modifiedDate = nowIso;
+ data.workflowStage = data.workflowStage || existing?.workflowStage || 'Sales Review';
+ data.assignedPresales = data.assignedPresales || existing?.assignedPresales || '';
+ data.assignedPurchase = data.assignedPurchase || existing?.assignedPurchase || '';
+ data.salesComments = data.salesComments || existing?.salesComments || '';
+ data.requirements = data.requirements || existing?.requirements || '';
+ data.presalesArchitecture = data.presalesArchitecture || existing?.presalesArchitecture || '';
+ data.presalesQuestions = data.presalesQuestions || existing?.presalesQuestions || '';
+ data.boq = data.boq || existing?.boq || '';
+ data.purchaseCosting = data.purchaseCosting || existing?.purchaseCosting || '';
+ data.costingTat = toISOOrBlank(data.costingTat) || existing?.costingTat || '';
+ data.finalPricingProposal = data.finalPricingProposal || existing?.finalPricingProposal || '';
+ data.intakeProblemStatement = data.intakeProblemStatement || existing?.intakeProblemStatement || '';
+ data.intakeWhyNow = data.intakeWhyNow || existing?.intakeWhyNow || '';
+ data.intakeBusinessImpact = data.intakeBusinessImpact || existing?.intakeBusinessImpact || '';
+ data.intakeCurrentState = data.intakeCurrentState || existing?.intakeCurrentState || '';
+ data.intakeBudgetRange = data.intakeBudgetRange || existing?.intakeBudgetRange || '';
+ data.intakeDecisionTimeline = data.intakeDecisionTimeline || existing?.intakeDecisionTimeline || '';
+ data.intakeRiskIfNotSolved = data.intakeRiskIfNotSolved || existing?.intakeRiskIfNotSolved || '';
+ data.intakeKeyStakeholders = data.intakeKeyStakeholders || existing?.intakeKeyStakeholders || '';
+ data.intakeInScope = data.intakeInScope || existing?.intakeInScope || '';
+ data.intakeOutOfScope = data.intakeOutOfScope || existing?.intakeOutOfScope || '';
+ data.intakeCurrentEnvironment = data.intakeCurrentEnvironment || existing?.intakeCurrentEnvironment || '';
+ data.intakePainPoints = data.intakePainPoints || existing?.intakePainPoints || '';
+ data.intakeComplianceRequirements = data.intakeComplianceRequirements || existing?.intakeComplianceRequirements || '';
+ data.intakeIntegrationRequirements = data.intakeIntegrationRequirements || existing?.intakeIntegrationRequirements || '';
+ data.intakeCompetitors = data.intakeCompetitors || existing?.intakeCompetitors || '';
+ data.intakeWinStrategy = data.intakeWinStrategy || existing?.intakeWinStrategy || '';
+ data.salesSubmittedAt = existing?.salesSubmittedAt || nowIso;
+ data.assignmentDueAt = existing?.assignmentDueAt || addHours(data.salesSubmittedAt, 4);
+ data.presalesDueAt = existing?.presalesDueAt || addHours(data.salesSubmittedAt, 72);
+ data.presalesEscalatedAt = existing?.presalesEscalatedAt || '';
+ const missingIntake = OPPORTUNITY_INTAKE_REQUIRED_FIELDS
+  .filter(f => !(data[f.key] || '').trim())
+  .map(f => f.label);
+ if (missingIntake.length) {
+  alert('Please fill mandatory Presales Intake fields:\n- ' + missingIntake.join('\n- '));
+  return;
+ }
+ const payload = { ...data, id: id || undefined };
+ try {
+  await upsertOpportunityToApi(payload);
+  state.data.opportunities = await fetchOpportunitiesFromApi();
+  recordActivity('Opportunity', `Opportunity ${id ? 'updated' : 'created'}: ${data.name}`);
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  alert(`Could not save opportunity to shared backend: ${err.message}`);
+ }
+}
+ function editLead(id) { openLeadModal(state.data.leads.find(l => l.id === id)); }
+ function editAccount(id) { openAccountModal(state.data.accounts.find(a => a.id === id)); }
+ function editContact(id) { openContactModal(state.data.contacts.find(c => c.id === id)); }
+ function editOpportunity(id) { openOpportunityModal(state.data.opportunities.find(o => o.id === id)); }
+ function editActivity(id) { openActivityModal(state.data.activities.find(a => a.id === id)); }
+
+ async function deleteLead(id) {
+ if (!confirm('Delete this lead?')) return;
+ try {
+  await deleteLeadFromApi(id);
+  state.data.leads = await fetchLeadsFromApi();
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  alert(`Could not delete lead from shared backend: ${err.message}`);
+ }
+ }
+
+ function deleteAccount(id) {
+ if (confirm('Delete this account?')) {
+ state.data.accounts = state.data.accounts.filter(a => a.id !== id);
+ saveData();
+ closeModal();
+ render();
+ }
+ }
+
+ async function deleteContact(id) {
+ if (!confirm('Delete this contact?')) return;
+ try {
+  await deleteContactFromApi(id);
+  state.data.contacts = await fetchContactsFromApi();
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  alert(`Could not delete contact from shared backend: ${err.message}`);
+ }
+ }
+
+ async function deleteOpportunity(id) {
+ if (!confirm('Delete this opportunity?')) return;
+ try {
+  await deleteOpportunityFromApi(id);
+  state.data.opportunities = await fetchOpportunitiesFromApi();
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  alert(`Could not delete opportunity from shared backend: ${err.message}`);
+ }
+ }
+
+ function closeModal() {
+ document.getElementById('modal').classList.remove('show');
+ }
+ </script>
 </body>
 </html>
