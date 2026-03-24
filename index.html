@@ -926,79 +926,66 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  });
 }
 
-<script>
 async function login() {
-  const email = document.getElementById('emailInput').value.trim().toLowerCase();
-  const password = document.getElementById('passwordInput').value;
-  const loginBtn = document.querySelector('#loginScreen .btn.btn-success');
+ const email = document.getElementById('emailInput').value.trim();
+ const password = document.getElementById('passwordInput').value;
+ const loginBtn = document.querySelector('#loginScreen .btn.btn-success');
+ 
+ if (!email) {
+ alert('Please enter your email');
+ return;
+ }
 
-  if (!email) return alert('Please enter your email');
+ if (loginBtn) {
+  loginBtn.disabled = true;
+  loginBtn.textContent = 'Signing In...';
+ }
+ 
+ const expected = (await fetchUserPassword(email)) || PASSWORD;
+ if (password !== expected) {
+ if (loginBtn) {
+  loginBtn.disabled = false;
+  loginBtn.textContent = 'Sign In';
+ }
+ alert('Incorrect password');
+ return;
+ }
+ 
+ currentUser = email;
+ isSupervisor = email.toLowerCase() === SUPERVISOR_EMAIL.toLowerCase();
+ 
+ document.getElementById('loginScreen').style.display = 'none';
+ document.getElementById('mainScreen').style.display = 'block';
+ document.getElementById('userEmail').textContent = currentUser;
+ const roleLabel = { supervisor: 'SUPERVISOR', sales: 'SALESPERSON', presales: 'PRESALES', purchase: 'PURCHASE' };
+ document.getElementById('userRole').textContent = roleLabel[getUserRole()] || 'SALESPERSON';
+ document.getElementById('fabBtn').style.display = 'block';
+ const actions = document.getElementById('userActions');
+ if (actions && !document.getElementById('changePwdBtn')) {
+ const btn = document.createElement('button');
+ btn.id = 'changePwdBtn';
+ btn.className = 'btn';
+ btn.textContent = 'Change Password';
+ btn.onclick = openChangePassword;
+ actions.insertBefore(btn, actions.firstChild);
+ }
 
+ const statusEl = document.getElementById('status');
+ if (statusEl) statusEl.textContent = 'Loading accounts and activities...';
+
+ loadData().catch(err => {
+  console.error('loadData failed', err);
+  alert('Signed in, but data loading failed. Please refresh once.');
+ }).finally(() => {
+  runSLAEngine();
+  if (slaTimer) clearInterval(slaTimer);
+  slaTimer = setInterval(runSLAEngine, 60000);
   if (loginBtn) {
-    loginBtn.disabled = true;
-    loginBtn.textContent = 'Signing In...';
+   loginBtn.disabled = false;
+   loginBtn.textContent = 'Sign In';
   }
-
-  let expected = PASSWORD;
-  try {
-    const p = await fetchUserPassword(email);
-    if (p) expected = p;
-  } catch (e) {}
-
-  if (password !== expected) {
-    if (loginBtn) {
-      loginBtn.disabled = false;
-      loginBtn.textContent = 'Sign In';
-    }
-    return alert('Incorrect password');
-  }
-
-  currentUser = email;
-  isSupervisor = email === SUPERVISOR_EMAIL.toLowerCase();
-
-  document.getElementById('loginScreen').style.display = 'none';
-  document.getElementById('mainScreen').style.display = 'block';
-  document.getElementById('userEmail').textContent = currentUser;
-
-  const roleLabel = {
-    supervisor: 'SUPERVISOR',
-    sales: 'SALESPERSON',
-    presales: 'PRESALES',
-    purchase: 'PURCHASE'
-  };
-  document.getElementById('userRole').textContent = roleLabel[getUserRole()] || 'SALESPERSON';
-  document.getElementById('fabBtn').style.display = 'block';
-
-  const actions = document.getElementById('userActions');
-  if (actions && !document.getElementById('changePwdBtn')) {
-    const btn = document.createElement('button');
-    btn.id = 'changePwdBtn';
-    btn.className = 'btn';
-    btn.textContent = 'Change Password';
-    btn.onclick = openChangePassword;
-    actions.insertBefore(btn, actions.firstChild);
-  }
-
-  const statusEl = document.getElementById('status');
-  if (statusEl) statusEl.textContent = 'Loading accounts and activities...';
-
-  try {
-    await loadData();
-  } catch (err) {
-    console.error('loadData failed', err);
-    alert('Signed in, but data loading failed. Please refresh once.');
-  } finally {
-    runSLAEngine();
-    if (slaTimer) clearInterval(slaTimer);
-    slaTimer = setInterval(runSLAEngine, 60000);
-
-    if (loginBtn) {
-      loginBtn.disabled = false;
-      loginBtn.textContent = 'Sign In';
-    }
-  }
-}
-</script>
+ });
+ }
 
  function logout() {
  currentUser = '';
@@ -2093,28 +2080,28 @@ async function deleteActivity(id) {
 }
 
 function getTeamUsers(role) {
-  if (role === 'sales') {
-    const users = new Set();
-    state.data.leads.forEach(l => l.owner && users.add(l.owner));
-    state.data.accounts.forEach(a => a.owner && users.add(a.owner));
-    state.data.contacts.forEach(c => c.owner && users.add(c.owner));
-    state.data.opportunities.forEach(o => o.owner && users.add(o.owner));
-    SALES_TEAM_USERS.forEach(u => users.add(u));
-    users.add(currentUser || 'sales@company.com');
-    return Array.from(users);
-  }
-
-  if (role === 'presales') {
-    return [PRESALES_OWNER];
-  }
-
-  if (role === 'purchase') {
-    return [PURCHASE_OWNER];
-  }
-
-  return [];
+ const users = new Set();
+ if (role === 'sales') {
+ state.data.leads.forEach(l => l.owner && users.add(l.owner));
+ state.data.accounts.forEach(a => a.owner && users.add(a.owner));
+ state.data.contacts.forEach(c => c.owner && users.add(c.owner));
+ state.data.opportunities.forEach(o => o.owner && users.add(o.owner));
+ SALES_TEAM_USERS.forEach(u => users.add(u));
+ users.add(currentUser || 'sales@company.com');
+ return Array.from(users);
+ }
+ const opportunities = state.data.opportunities || [];
+ opportunities.forEach(o => {
+ if (role === 'presales' && o.assignedPresales) users.add(o.assignedPresales);
+ if (role === 'purchase' && o.assignedPurchase) users.add(o.assignedPurchase);
+ });
+ if (role === 'presales') users.add('presales@company.com');
+ if (role === 'purchase') {
+  users.add('purchase@company.com');
+  users.add(PURCHASE_OWNER);
+ }
+ return Array.from(users);
 }
-
 
 async function updateOpportunityWorkflow(id, updates) {
  const idx = state.data.opportunities.findIndex(o => o.id === id);
@@ -2346,7 +2333,7 @@ async function saveOpportunity(e, id) {
  data.createdDate = existing?.createdDate || nowIso;
  data.modifiedDate = nowIso;
  data.workflowStage = data.workflowStage || existing?.workflowStage || 'Sales Review';
- data.assignedPresales = data.assignedPresales || existing?.assignedPresales || PRESALES_OWNER;
+ data.assignedPresales = data.assignedPresales || existing?.assignedPresales || '';
  data.assignedPurchase = data.assignedPurchase || existing?.assignedPurchase || '';
  data.salesComments = data.salesComments || existing?.salesComments || '';
  data.requirements = data.requirements || existing?.requirements || '';
