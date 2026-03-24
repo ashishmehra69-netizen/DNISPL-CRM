@@ -1181,7 +1181,7 @@ def upsert_opportunity():
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, now(), now()
+                        %s, %s, %s, %s, %s, %s, %s, %s, now(), now()
                     )
                     """,
                     (
