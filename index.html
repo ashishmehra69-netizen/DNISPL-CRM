@@ -2065,40 +2065,28 @@ async function deleteActivity(id) {
 }
 
 function getTeamUsers(role) {
- if (role === 'sales') {
-  const users = new Set();
-  state.data.leads.forEach(l => l.owner && users.add(l.owner));
-  state.data.accounts.forEach(a => a.owner && users.add(a.owner));
-  state.data.contacts.forEach(c => c.owner && users.add(c.owner));
-  state.data.opportunities.forEach(o => o.owner && users.add(o.owner));
-  SALES_TEAM_USERS.forEach(u => users.add(u));
-  users.add(currentUser || 'sales@company.com');
-  return Array.from(users);
- }
+  if (role === 'sales') {
+    const users = new Set();
+    state.data.leads.forEach(l => l.owner && users.add(l.owner));
+    state.data.accounts.forEach(a => a.owner && users.add(a.owner));
+    state.data.contacts.forEach(c => c.owner && users.add(c.owner));
+    state.data.opportunities.forEach(o => o.owner && users.add(o.owner));
+    SALES_TEAM_USERS.forEach(u => users.add(u));
+    users.add(currentUser || 'sales@company.com');
+    return Array.from(users);
+  }
 
- if (role === 'presales') {
-  return [PRESALES_OWNER]; // ONLY vinod.v@dnispl.com
- }
+  if (role === 'presales') {
+    return [PRESALES_OWNER];
+  }
 
- if (role === 'purchase') {
-  return [PURCHASE_OWNER]; // ONLY narendra.singh@dnispl.com
- }
+  if (role === 'purchase') {
+    return [PURCHASE_OWNER];
+  }
 
- return [];
+  return [];
 }
 
- const opportunities = state.data.opportunities || [];
- opportunities.forEach(o => {
- if (role === 'presales' && o.assignedPresales) users.add(o.assignedPresales);
- if (role === 'purchase' && o.assignedPurchase) users.add(o.assignedPurchase);
- });
- if (role === 'presales') users.add('vinod.v@dnispl.com');
- if (role === 'purchase') {
-  users.add('purchase@company.com');
-  users.add(PURCHASE_OWNER);
- }
- return Array.from(users);
-}
 
 async function updateOpportunityWorkflow(id, updates) {
  const idx = state.data.opportunities.findIndex(o => o.id === id);
