@@ -30,7 +30,7 @@ DATABASE_URL = (
     or os.environ.get("SUPABASE_DB_URL")
     or os.environ.get("SUPABASE_DATABASE_URL")
 )
-PRESALES_OWNER = os.environ.get("PRESALES_OWNER", "vinod.v@dnispil.com")
+PRESALES_OWNER = os.environ.get("PRESALES_OWNER", "vinod.v@dnispl.com")
 ESCALATION_EMAILS = [
     e.strip().lower()
     for e in os.environ.get("ESCALATION_EMAILS", "ashish.mehra@dnispl.com,a.gupta@dnispl.com").split(",")
