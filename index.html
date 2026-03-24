@@ -317,6 +317,13 @@ const ACCOUNT_OWNER_MAP = {
   'ICRA ONLINE LIMITED': 'a.gupta@dnispl.com',
   'POLICY BAZAAR': 'a.gupta@dnispl.com'
 };
+
+function getWinProbSafe(opp) {
+ try {
+  if (typeof calculateWinProb === 'function') return calculateWinProb(opp);
+ } catch (e) {}
+ return Number(opp?.winProbability || 0);
+}
  const CRM_API_BASE = '';
  
  // ═══════════════════════════════════════════════════════════════
@@ -1459,7 +1466,7 @@ ${filtered.accounts.map(a => `
  </div>
  <div class="grid">
  ${filtered.opportunities.map(o => {
- const winProb = calculateWinProb(o);
+ const winProb = getWinProbSafe(o);
  return `
  <div class="item-card" onclick="editOpportunity('${o.id}')">
  <h3>${o.name}</h3>
@@ -1509,7 +1516,7 @@ ${filtered.accounts.map(a => `
  <div style="margin:8px 0">
  <span class="tag">${o.workflowStage || 'Sales Review'}</span>
  <span class="tag">${o.stage || 'Discovery'}</span>
- <span class="tag" style="background:#4ade80; color:white">${calculateWinProb(o)}% Win</span>
+ <span class="tag" style="background:#4ade80; color:white">${getWinProbSafe(o)}% Win</span>
  </div>
  <div style="font-size:0.85em; line-height:1.5; opacity:0.9">
  <b>Sales:</b> ${formatUserLabel(o.salesOwner || o.owner || 'NA')}<br>
@@ -1639,7 +1646,7 @@ function renderDashboard(filtered) {
  const role = getUserRole();
  const totalPipeline = filtered.opportunities.reduce((sum, o) => sum + (o.value || 0), 0);
  const avgWin = filtered.opportunities.length
- ? Math.round(filtered.opportunities.reduce((sum, o) => sum + calculateWinProb(o), 0) / filtered.opportunities.length)
+ ? Math.round(filtered.opportunities.reduce((sum, o) => sum + getWinProbSafe(o), 0) / filtered.opportunities.length)
  : 0;
  const lastUpdated = [
  ...filtered.leads.map(x => x.modifiedDate || x.createdDate),
@@ -1724,7 +1731,7 @@ function exportMonthlyPipeline(month) {
  .filter(o => (o.createdDate || '').startsWith(m))
  .map(o => {
  const account = state.data.accounts.find(a => a.id === o.accountId);
- const win = calculateWinProb(o);
+ const win = getWinProbSafe(o);
  const weighted = (o.value || 0) * win / 100;
  return [o.name, account?.name || '', o.owner || '', o.stage || '', o.workflowStage || '', o.value || 0, win, weighted, o.createdDate || ''];
  });
@@ -2088,9 +2095,9 @@ function getTeamUsers(role) {
  if (role === 'presales' && o.assignedPresales) users.add(o.assignedPresales);
  if (role === 'purchase' && o.assignedPurchase) users.add(o.assignedPurchase);
  });
- if (role === 'presales') users.add('vinod.v@dnispil.com');
+ if (role === 'presales') users.add('presales@company.com');
  if (role === 'purchase') {
-  users.add('narendra.singh@dnispl.com');
+  users.add('purchase@company.com');
   users.add(PURCHASE_OWNER);
  }
  return Array.from(users);
