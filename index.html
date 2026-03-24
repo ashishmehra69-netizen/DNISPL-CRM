@@ -2093,9 +2093,9 @@ function getTeamUsers(role) {
  }
 
  if (role === 'presales') {
-  users.add(PRESALES_OWNER); // force correct default first
-  return Array.from(users);
- }
+  return [PRESALES_OWNER];
+}
+
 
  if (role === 'purchase') {
   users.add(PURCHASE_OWNER); // force correct default first
@@ -2348,7 +2348,7 @@ async function saveOpportunity(e, id) {
  data.createdDate = existing?.createdDate || nowIso;
  data.modifiedDate = nowIso;
  data.workflowStage = data.workflowStage || existing?.workflowStage || 'Sales Review';
- data.assignedPresales = data.assignedPresales || existing?.assignedPresales || '';
+ data.assignedPresales = data.assignedPresales || existing?.assignedPresales || PRESALES_OWNER;
  data.assignedPurchase = data.assignedPurchase || existing?.assignedPurchase || '';
  data.salesComments = data.salesComments || existing?.salesComments || '';
  data.requirements = data.requirements || existing?.requirements || '';
