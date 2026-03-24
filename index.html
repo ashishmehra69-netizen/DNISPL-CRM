@@ -927,48 +927,33 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
 }
 
 async function login() {
- const email = document.getElementById('emailInput').value.trim();
- const password = document.getElementById('passwordInput').value;
- const loginBtn = document.querySelector('#loginScreen .btn.btn-success');
- 
- if (!email) {
- alert('Please enter your email');
- return;
- }
+  const email = document.getElementById('emailInput').value.trim().toLowerCase();
+  const password = document.getElementById('passwordInput').value;
+  if (!email) return alert('Please enter your email');
 
- if (loginBtn) {
-  loginBtn.disabled = true;
-  loginBtn.textContent = 'Signing In...';
- }
- 
- const expected = (await fetchUserPassword(email)) || PASSWORD;
- if (password !== expected) {
- if (loginBtn) {
-  loginBtn.disabled = false;
-  loginBtn.textContent = 'Sign In';
- }
- alert('Incorrect password');
- return;
- }
- 
- currentUser = email;
- isSupervisor = email.toLowerCase() === SUPERVISOR_EMAIL.toLowerCase();
- 
- document.getElementById('loginScreen').style.display = 'none';
- document.getElementById('mainScreen').style.display = 'block';
- document.getElementById('userEmail').textContent = currentUser;
- const roleLabel = { supervisor: 'SUPERVISOR', sales: 'SALESPERSON', presales: 'PRESALES', purchase: 'PURCHASE' };
- document.getElementById('userRole').textContent = roleLabel[getUserRole()] || 'SALESPERSON';
- document.getElementById('fabBtn').style.display = 'block';
- const actions = document.getElementById('userActions');
- if (actions && !document.getElementById('changePwdBtn')) {
- const btn = document.createElement('button');
- btn.id = 'changePwdBtn';
- btn.className = 'btn';
- btn.textContent = 'Change Password';
- btn.onclick = openChangePassword;
- actions.insertBefore(btn, actions.firstChild);
- }
+  // Fast fallback login (prevents password API delay/failure lock)
+  let expected = PASSWORD;
+  try {
+    const p = await fetchUserPassword(email);
+    if (p) expected = p;
+  } catch (e) {}
+
+  if (password !== expected) return alert('Incorrect password');
+
+  currentUser = email;
+  isSupervisor = email === SUPERVISOR_EMAIL.toLowerCase();
+
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('mainScreen').style.display = 'block';
+  document.getElementById('userEmail').textContent = currentUser;
+  const roleLabel = { supervisor: 'SUPERVISOR', sales: 'SALESPERSON', presales: 'PRESALES', purchase: 'PURCHASE' };
+  document.getElementById('userRole').textContent = roleLabel[getUserRole()] || 'SALESPERSON';
+  document.getElementById('fabBtn').style.display = 'block';
+
+  await loadData();
+  render();
+}
+
 
  const statusEl = document.getElementById('status');
  if (statusEl) statusEl.textContent = 'Loading accounts and activities...';
