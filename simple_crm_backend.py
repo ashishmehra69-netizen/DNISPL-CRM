@@ -32,6 +32,7 @@ DATABASE_URL = (
     or os.environ.get("SUPABASE_DATABASE_URL")
 )
 PRESALES_OWNER = os.environ.get("PRESALES_OWNER", "vinod.v@dnispl.com")
+SUPERVISOR_EMAIL = os.environ.get("SUPERVISOR_EMAIL", "ashish.mehra@dnispl.com").strip().lower()
 ESCALATION_EMAILS = [
     e.strip().lower()
     for e in os.environ.get("ESCALATION_EMAILS", "ashish.mehra@dnispl.com,a.gupta@dnispl.com").split(",")
@@ -297,17 +298,21 @@ def _is_supervisor(viewer_role: str) -> bool:
     return (viewer_role or "").strip().lower() in ("supervisor", "admin")
 
 
-def send_email_smtp(to_emails, subject: str, body: str) -> bool:
-    recipients = [e.strip() for e in (to_emails or []) if (e or "").strip()]
-    if not recipients:
+def send_email_smtp(to_emails, subject: str, body: str, cc_emails=None) -> bool:
+    to_list = [e.strip().lower() for e in (to_emails or []) if (e or "").strip() and "@" in e]
+    cc_list = [e.strip().lower() for e in (cc_emails or []) if (e or "").strip() and "@" in e]
+    if not to_list and not cc_list:
         return False
     if not (SMTP_HOST and SMTP_USER and SMTP_PASSWORD):
-        print(f"[CRM] Escalation email not sent (SMTP not configured). To={recipients}, Subject={subject}")
+        print(f"[CRM] Email not sent (SMTP not configured). To={to_list}, Cc={cc_list}, Subject={subject}")
         return False
 
     msg = EmailMessage()
     msg["From"] = SMTP_FROM
-    msg["To"] = ", ".join(recipients)
+    if to_list:
+        msg["To"] = ", ".join(to_list)
+    if cc_list:
+        msg["Cc"] = ", ".join(cc_list)
     msg["Subject"] = subject
     msg.set_content(body)
     try:
@@ -317,7 +322,7 @@ def send_email_smtp(to_emails, subject: str, body: str) -> bool:
             server.send_message(msg)
         return True
     except Exception as exc:
-        print(f"[CRM] Escalation email send failed: {exc}")
+        print(f"[CRM] Email send failed: {exc}")
         return False
 
 
@@ -349,6 +354,29 @@ def send_presales_assignment_email(opportunity_name: str, opp_id: str, presales_
         "Please review requirements and submit solution/proposal within SLA."
     )
     send_email_smtp([target], subject, body)
+
+
+def send_opportunity_assignment_email(opportunity_name: str, opp_id: str, presales_email: str, sales_email: str, presales_due_iso: str) -> None:
+    presales_target = (presales_email or "").strip().lower()
+    sales_target = (sales_email or "").strip().lower()
+    to_recipients = []
+    if "@" in presales_target:
+        to_recipients.append(presales_target)
+    if "@" in sales_target and sales_target not in to_recipients:
+        to_recipients.append(sales_target)
+    if not to_recipients:
+        return
+
+    subject = f"[CRM] Opportunity Created/Assigned: {opportunity_name or opp_id}"
+    body = (
+        f"Opportunity: {opportunity_name or ''}\n"
+        f"Opportunity ID: {opp_id}\n"
+        f"Sales Owner: {sales_target or 'NA'}\n"
+        f"Assigned Presales: {presales_target or 'NA'}\n"
+        f"Presales Due At (72h SLA): {presales_due_iso}\n\n"
+        "This is an automated CRM assignment notification."
+    )
+    send_email_smtp(to_recipients, subject, body, cc_emails=[SUPERVISOR_EMAIL])
 
 
 def enforce_opportunity_sla(conn, rows):
@@ -1139,8 +1167,11 @@ def upsert_opportunity():
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id FROM opportunities WHERE id=%s", (opp_id,))
+            cur.execute("SELECT id, assigned_presales, workflow_stage, sales_owner, owner FROM opportunities WHERE id=%s", (opp_id,))
             exists = cur.fetchone()
+            prev_assigned_presales = ((exists or {}).get("assigned_presales") or "").strip().lower()
+            prev_workflow_stage = ((exists or {}).get("workflow_stage") or "").strip()
+            prev_sales_owner = ((exists or {}).get("sales_owner") or (exists or {}).get("owner") or "").strip().lower()
             if exists:
                 cur.execute(
                     """
@@ -1217,6 +1248,29 @@ def upsert_opportunity():
                 )
                 status = "created"
         conn.commit()
+
+        current_assigned = (payload.get("assigned_presales") or "").strip().lower()
+        workflow_now = (payload.get("workflow_stage") or "").strip()
+        sales_now = (payload.get("sales_owner") or payload.get("owner") or "").strip().lower()
+        should_notify = bool(current_assigned) and (
+            status == "created"
+            or current_assigned != prev_assigned_presales
+            or sales_now != prev_sales_owner
+            or (workflow_now == "Assigned to Presales" and prev_workflow_stage != "Assigned to Presales")
+        )
+        if should_notify:
+            due_iso = (payload.get("presales_due_at") or "").strip()
+            if not due_iso:
+                base_dt = parse_iso_dt((payload.get("sales_submitted_at") or "").strip()) or datetime.now(timezone.utc)
+                due_iso = (base_dt + timedelta(hours=72)).isoformat().replace("+00:00", "Z")
+            send_opportunity_assignment_email(
+                payload.get("name") or "",
+                opp_id,
+                current_assigned,
+                sales_now,
+                due_iso,
+            )
+
         return jsonify({"status": status, "id": opp_id})
     finally:
         conn.close()
