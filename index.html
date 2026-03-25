@@ -2152,18 +2152,19 @@ async function deleteActivity(id) {
 
 function getTeamUsers(role) {
     const users = new Set();
+    const LEAD_ASSIGN_PRIVILEGED_USERS = [
+        'vinod.v@dnispl.com',
+        'a.gupta@dnispl.com',
+        'ashish.mehra@dnispl.com'
+    ];
     if (role === 'sales') {
-        // Always include all known sales people
         SALES_TEAM_USERS.forEach(u => users.add(u));
-        
-        // Privileged users can see everyone in the system
         const isPrivileged = isSupervisor || LEAD_ASSIGN_PRIVILEGED_USERS.includes(normalizeEmail(currentUser));
         if (isPrivileged) {
             state.data.leads.forEach(l => l.owner && users.add(l.owner));
             state.data.accounts.forEach(a => (a.owner || a.accountManager) && users.add(a.owner || a.accountManager));
             state.data.contacts.forEach(c => c.owner && users.add(c.owner));
             state.data.opportunities.forEach(o => o.owner && users.add(o.owner));
-            // Add all known account owners from the map
             Object.values(ACCOUNT_OWNER_MAP).forEach(email => {
                 if (email && email !== 'tba@local.crm') users.add(email);
             });
@@ -2182,18 +2183,6 @@ function getTeamUsers(role) {
         users.add(PURCHASE_OWNER);
     }
     return Array.from(users);
-}
- const opportunities = state.data.opportunities || [];
- opportunities.forEach(o => {
- if (role === 'presales' && o.assignedPresales) users.add(o.assignedPresales);
- if (role === 'purchase' && o.assignedPurchase) users.add(o.assignedPurchase);
- });
- if (role === 'presales') users.add(PRESALES_OWNER);
- if (role === 'purchase') {
-  users.add('purchase@company.com');
-  users.add(PURCHASE_OWNER);
- }
- return Array.from(users);
 }
 
 async function updateOpportunityWorkflow(id, updates) {
