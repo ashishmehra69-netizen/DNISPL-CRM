@@ -356,28 +356,27 @@ def send_presales_assignment_email(opportunity_name: str, opp_id: str, presales_
     send_email_smtp([target], subject, body)
 
 
-def send_opportunity_assignment_email(opportunity_name: str, opp_id: str, presales_email: str, sales_email: str, presales_due_iso: str) -> None:
+def send_opportunity_assignment_email(opportunity_name: str, opp_id: str, presales_email: str, sales_email: str, presales_due_iso: str, account_manager_email: str = "") -> None:
     presales_target = (presales_email or "").strip().lower()
-    sales_target = (sales_email or "").strip().lower()
-    to_recipients = []
-    if "@" in presales_target:
-        to_recipients.append(presales_target)
-    if "@" in sales_target and sales_target not in to_recipients:
-        to_recipients.append(sales_target)
-    if not to_recipients:
+    if "@" not in presales_target:
         return
 
-    subject = f"[CRM] Opportunity Created/Assigned: {opportunity_name or opp_id}"
+    cc_list = []
+    for e in [SUPERVISOR_EMAIL, sales_email, account_manager_email]:
+        e = (e or "").strip().lower()
+        if e and "@" in e and e != presales_target and e not in cc_list:
+            cc_list.append(e)
+
+    subject = f"[CRM] Opportunity Assigned to Presales: {opportunity_name or opp_id}"
     body = (
         f"Opportunity: {opportunity_name or ''}\n"
         f"Opportunity ID: {opp_id}\n"
-        f"Sales Owner: {sales_target or 'NA'}\n"
-        f"Assigned Presales: {presales_target or 'NA'}\n"
+        f"Sales Owner: {sales_email or 'NA'}\n"
+        f"Assigned Presales: {presales_target}\n"
         f"Presales Due At (72h SLA): {presales_due_iso}\n\n"
-        "This is an automated CRM assignment notification."
+        "Please review requirements and submit solution/proposal within SLA."
     )
-    send_email_smtp(to_recipients, subject, body, cc_emails=[SUPERVISOR_EMAIL])
-
+    send_email_smtp([presales_target], subject, body, cc_emails=cc_list)
 
 def enforce_opportunity_sla(conn, rows):
     now = datetime.now(timezone.utc)
@@ -1263,12 +1262,34 @@ def upsert_opportunity():
             if not due_iso:
                 base_dt = parse_iso_dt((payload.get("sales_submitted_at") or "").strip()) or datetime.now(timezone.utc)
                 due_iso = (base_dt + timedelta(hours=72)).isoformat().replace("+00:00", "Z")
+
+            # Look up account manager email from accounts table
+            account_manager_email = ""
+            acc_id = (payload.get("account_id") or "").strip()
+            if acc_id:
+                try:
+                    with conn.cursor(cursor_factory=RealDictCursor) as cur_am:
+                        cur_am.execute(
+                            """
+                            SELECT u.email FROM accounts a
+                            LEFT JOIN users u ON u.id = a.account_manager_id
+                            WHERE CAST(a.id AS TEXT) = %s
+                            """,
+                            (acc_id,),
+                        )
+                        am_row = cur_am.fetchone()
+                        if am_row:
+                            account_manager_email = (am_row.get("email") or "").strip().lower()
+                except Exception as e:
+                    print(f"[CRM] Could not fetch account manager for email CC: {e}")
+
             send_opportunity_assignment_email(
                 payload.get("name") or "",
                 opp_id,
                 current_assigned,
                 sales_now,
                 due_iso,
+                account_manager_email,
             )
 
         return jsonify({"status": status, "id": opp_id})
