@@ -301,12 +301,13 @@ def _is_supervisor(viewer_role: str) -> bool:
 def send_email_smtp(to_emails, subject: str, body: str, cc_emails=None) -> bool:
     to_list = [e.strip().lower() for e in (to_emails or []) if (e or "").strip() and "@" in e]
     cc_list = [e.strip().lower() for e in (cc_emails or []) if (e or "").strip() and "@" in e]
+    print(f"[CRM SMTP] Attempting send to={to_list} cc={cc_list} subject={subject}")
     if not to_list and not cc_list:
+        print(f"[CRM SMTP] BLOCKED — no valid recipients")
         return False
     if not (SMTP_HOST and SMTP_USER and SMTP_PASSWORD):
-        print(f"[CRM] Email not sent (SMTP not configured). To={to_list}, Cc={cc_list}, Subject={subject}")
+        print(f"[CRM SMTP] BLOCKED — SMTP not configured. HOST={SMTP_HOST} USER={SMTP_USER}")
         return False
-
     msg = EmailMessage()
     msg["From"] = SMTP_FROM
     if to_list:
@@ -320,11 +321,11 @@ def send_email_smtp(to_emails, subject: str, body: str, cc_emails=None) -> bool:
             server.starttls()
             server.login(SMTP_USER, SMTP_PASSWORD)
             server.send_message(msg)
+        print(f"[CRM SMTP] Email sent successfully to={to_list} cc={cc_list}")
         return True
     except Exception as exc:
-        print(f"[CRM] Email send failed: {exc}")
+        print(f"[CRM SMTP] Email send FAILED: {exc}")
         return False
-
 
 def send_presales_escalation_email(row, presales_due_iso: str) -> None:
     subject = f"[CRM Escalation] Presales SLA Breached: {row.get('name') or row.get('id')}"
@@ -358,15 +359,15 @@ def send_presales_assignment_email(opportunity_name: str, opp_id: str, presales_
 
 def send_opportunity_assignment_email(opportunity_name: str, opp_id: str, presales_email: str, sales_email: str, presales_due_iso: str, account_manager_email: str = "") -> None:
     presales_target = (presales_email or "").strip().lower()
+    print(f"[CRM EMAIL] send_opportunity_assignment_email called: to={presales_target} cc_candidates={[SUPERVISOR_EMAIL, sales_email, account_manager_email]}")
     if "@" not in presales_target:
+        print(f"[CRM EMAIL] Aborted — no valid presales email")
         return
-
     cc_list = []
     for e in [SUPERVISOR_EMAIL, sales_email, account_manager_email]:
         e = (e or "").strip().lower()
         if e and "@" in e and e != presales_target and e not in cc_list:
             cc_list.append(e)
-
     subject = f"[CRM] Opportunity Assigned to Presales: {opportunity_name or opp_id}"
     body = (
         f"Opportunity: {opportunity_name or ''}\n"
@@ -377,7 +378,6 @@ def send_opportunity_assignment_email(opportunity_name: str, opp_id: str, presal
         "Please review requirements and submit solution/proposal within SLA."
     )
     send_email_smtp([presales_target], subject, body, cc_emails=cc_list)
-
 def enforce_opportunity_sla(conn, rows):
     now = datetime.now(timezone.utc)
     changed = False
@@ -1261,6 +1261,7 @@ def upsert_opportunity():
             and (
                 prev_workflow_stage != "Assigned to Presales"
                 or current_assigned != prev_assigned_presales
+                or status == "created"
             )
         )
 
