@@ -1251,19 +1251,25 @@ def upsert_opportunity():
         current_assigned = (payload.get("assigned_presales") or "").strip().lower()
         workflow_now = (payload.get("workflow_stage") or "").strip()
         sales_now = (payload.get("sales_owner") or payload.get("owner") or "").strip().lower()
-        should_notify = bool(current_assigned) and (
-            status == "created"
-            or current_assigned != prev_assigned_presales
-            or sales_now != prev_sales_owner
-            or (workflow_now == "Assigned to Presales" and prev_workflow_stage != "Assigned to Presales")
+
+        # Fire email when:
+        # 1. Presales is assigned AND workflow just moved to "Assigned to Presales"
+        # 2. OR presales assignee changed while already in that stage
+        presales_just_assigned = (
+            workflow_now == "Assigned to Presales"
+            and bool(current_assigned)
+            and (
+                prev_workflow_stage != "Assigned to Presales"
+                or current_assigned != prev_assigned_presales
+            )
         )
-        if should_notify:
+
+        if presales_just_assigned:
             due_iso = (payload.get("presales_due_at") or "").strip()
             if not due_iso:
                 base_dt = parse_iso_dt((payload.get("sales_submitted_at") or "").strip()) or datetime.now(timezone.utc)
                 due_iso = (base_dt + timedelta(hours=72)).isoformat().replace("+00:00", "Z")
 
-            # Look up account manager email from accounts table
             account_manager_email = ""
             acc_id = (payload.get("account_id") or "").strip()
             if acc_id:
@@ -1291,7 +1297,6 @@ def upsert_opportunity():
                 due_iso,
                 account_manager_email,
             )
-
         return jsonify({"status": status, "id": opp_id})
     finally:
         conn.close()
