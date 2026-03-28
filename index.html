@@ -2674,6 +2674,746 @@ async function saveOpportunity(e, id) {
  document.getElementById('modal').classList.remove('show');
  }
 
+const AOP_MONTHS   = ['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar'];
+const AOP_CATS     = ['Hardware','Software','Managed_Services'];
+const AOP_CATS_LBL = ['Hardware','Software','Managed Svcs'];
+const AOP_FY       = '2025-26';
+ 
+function aopCurrentMonth() {
+  // FY starts Apr. Map JS month (0=Jan) → FY index
+  const fyIdx = (new Date().getMonth() - 3 + 12) % 12;
+  return AOP_MONTHS[fyIdx];
+}
+ 
+// ── CACHE ────────────────────────────────────────────────────────
+window._aopPlans   = {};  // account_id → plan row
+window._aopActuals = {};  // account_id → { month → {hardware, software, managed_services} }
+ 
+async function loadAopData() {
+  if (!currentUser) return;
+  try {
+    const qs = `viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}&fy_year=${AOP_FY}`;
+    const [pr, ar] = await Promise.all([
+      fetch(`${CRM_API_BASE}/api/aop?${qs}`),
+      fetch(`${CRM_API_BASE}/api/aop/actuals?${qs}`)
+    ]);
+    if (pr.ok) {
+      const plans = await pr.json();
+      window._aopPlans = {};
+      (Array.isArray(plans) ? plans : []).forEach(p => { window._aopPlans[p.account_id] = p; });
+    }
+    if (ar.ok) {
+      const actuals = await ar.json();
+      window._aopActuals = {};
+      (Array.isArray(actuals) ? actuals : []).forEach(a => {
+        if (!window._aopActuals[a.account_id]) window._aopActuals[a.account_id] = {};
+        window._aopActuals[a.account_id][a.month] = {
+          hardware:         parseFloat(a.hardware         || 0),
+          software:         parseFloat(a.software         || 0),
+          managed_services: parseFloat(a.managed_services || 0),
+        };
+      });
+    }
+  } catch(e) { console.warn('AOP load failed', e); }
+}
+ 
+// ── API ──────────────────────────────────────────────────────────
+async function saveAopPlan(payload) {
+  const r = await fetch(`${CRM_API_BASE}/api/aop`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  if (!r.ok) throw new Error(await r.text() || `AOP save failed (${r.status})`);
+  return r.json();
+}
+ 
+async function saveAopActual(payload) {
+  const r = await fetch(`${CRM_API_BASE}/api/aop/actuals`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  if (!r.ok) throw new Error(await r.text() || `Actual save failed (${r.status})`);
+  return r.json();
+}
+ 
+// ── VALUE HELPERS ────────────────────────────────────────────────
+function aopPlanVal(accountId, month, cat) {
+  return parseFloat((window._aopPlans[accountId] || {})[`${month}_${cat}`] || 0);
+}
+function aopActualVal(accountId, month, cat) {
+  return parseFloat(((window._aopActuals[accountId] || {})[month] || {})[cat.toLowerCase()] || 0);
+}
+function aopMonthTarget(accountId, month) {
+  return AOP_CATS.reduce((s,c) => s + aopPlanVal(accountId, month, c), 0);
+}
+function aopMonthActual(accountId, month) {
+  return AOP_CATS.reduce((s,c) => s + aopActualVal(accountId, month, c), 0);
+}
+function aopHasPlan(accountId) {
+  const p = window._aopPlans[accountId];
+  if (!p) return false;
+  return AOP_MONTHS.some(m => AOP_CATS.some(c => parseFloat(p[`${m}_${c}`]||0) > 0));
+}
+function aopBarColor(pct) {
+  return (pct||0)>=100 ? '#4ade80' : (pct||0)>=75 ? '#fbbf24' : '#f87171';
+}
+ 
+// ── RENDER AOP TAB ───────────────────────────────────────────────
+function renderAop(filtered) {
+  const accounts = filtered.accounts;
+  if (!accounts.length) return `
+    <div class="card">
+      <h2>📅 AOP Planning — FY ${AOP_FY}</h2>
+      <p style="margin-top:12px;opacity:0.8">No accounts assigned. Add accounts first.</p>
+    </div>`;
+ 
+  const filled      = accounts.filter(a => aopHasPlan(a.id)).length;
+  const annTarget   = accounts.reduce((s,a) => s + AOP_MONTHS.reduce((s2,m)=>s2+aopMonthTarget(a.id,m),0), 0);
+  const annActual   = accounts.reduce((s,a) => s + AOP_MONTHS.reduce((s2,m)=>s2+aopMonthActual(a.id,m),0), 0);
+  const curMonth    = aopCurrentMonth();
+  const curTarget   = accounts.reduce((s,a) => s + aopMonthTarget(a.id, curMonth), 0);
+  const curActual   = accounts.reduce((s,a) => s + aopMonthActual(a.id, curMonth), 0);
+  const curPct      = curTarget > 0 ? Math.round(curActual/curTarget*100) : null;
+  const ytdPct      = annTarget > 0 ? Math.round(annActual/annTarget*100) : null;
+ 
+  return `
+    <div class="card">
+      <h2>📅 AOP Planning — FY ${AOP_FY}</h2>
+      ${renderManagerFilterControls(filtered)}
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn" onclick="openAopSummaryModal()">📊 Team Summary</button>
+        ${isSupervisor ? `<button class="btn" onclick="exportAopCsv()">⬇ Export CSV</button>` : ''}
+        <button class="btn" onclick="loadAopData().then(render)">↻ Refresh</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:14px">
+        <div class="metric" style="padding:12px">
+          <div style="font-size:0.78em;opacity:0.7">AOP Filled</div>
+          <div style="font-size:1.4em;font-weight:bold;color:#4ade80">${filled}/${accounts.length}</div>
+        </div>
+        <div class="metric" style="padding:12px">
+          <div style="font-size:0.78em;opacity:0.7">Annual Target</div>
+          <div style="font-size:1.4em;font-weight:bold">₹${annTarget.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:12px">
+          <div style="font-size:0.78em;opacity:0.7">${curMonth} Target</div>
+          <div style="font-size:1.4em;font-weight:bold">₹${curTarget.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:12px">
+          <div style="font-size:0.78em;opacity:0.7">${curMonth} Achievement</div>
+          <div style="font-size:1.4em;font-weight:bold;color:${aopBarColor(curPct)}">
+            ${curPct !== null ? curPct+'%' : '—'}
+          </div>
+        </div>
+        <div class="metric" style="padding:12px">
+          <div style="font-size:0.78em;opacity:0.7">YTD Achievement</div>
+          <div style="font-size:1.4em;font-weight:bold;color:${aopBarColor(ytdPct)}">
+            ${ytdPct !== null ? ytdPct+'%' : '—'}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:8px">
+      ${accounts.map(a => renderAopAccountCard(a, curMonth)).join('')}
+    </div>`;
+}
+ 
+function renderAopAccountCard(account, curMonth) {
+  const hasPlan   = aopHasPlan(account.id);
+  const plan      = window._aopPlans[account.id] || {};
+  const curT      = aopMonthTarget(account.id, curMonth);
+  const curA      = aopMonthActual(account.id, curMonth);
+  const curPct    = curT > 0 ? Math.round(curA/curT*100) : null;
+  const annT      = AOP_MONTHS.reduce((s,m)=>s+aopMonthTarget(account.id,m),0);
+  const annA      = AOP_MONTHS.reduce((s,m)=>s+aopMonthActual(account.id,m),0);
+  const annPct    = annT > 0 ? Math.round(annA/annT*100) : null;
+  const maxT      = Math.max(...AOP_MONTHS.map(m=>aopMonthTarget(account.id,m)), 1);
+ 
+  const sparkline = hasPlan ? AOP_MONTHS.map(m => {
+    const t = aopMonthTarget(account.id,m);
+    const a = aopMonthActual(account.id,m);
+    const isCur = m === curMonth;
+    const th = Math.max(Math.round(t/maxT*32), t>0?2:0);
+    const ah = Math.max(Math.round(a/maxT*32), a>0?2:0);
+    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px">
+      <div style="width:100%;display:flex;align-items:flex-end;justify-content:center;gap:1px;height:32px">
+        <div style="flex:1;height:${th}px;background:rgba(255,255,255,${isCur?'0.45':'0.2'});border-radius:2px 2px 0 0"></div>
+        <div style="flex:1;height:${ah}px;background:${ah>0?(a>=t?'#4ade80':'#fbbf24'):'transparent'};border-radius:2px 2px 0 0"></div>
+      </div>
+      <div style="font-size:8px;opacity:${isCur?'1':'0.45'};font-weight:${isCur?'700':'400'}">${m}</div>
+    </div>`;
+  }).join('') : '';
+ 
+  return `
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+        <div>
+          <div style="font-weight:700;font-size:1.05em">${account.name}</div>
+          <div style="font-size:0.8em;opacity:0.65;margin-top:3px">
+            ${formatUserLabel(account.accountManager||account.owner)} &nbsp;·&nbsp; Tier ${account.tier||'B'}
+            ${plan.key_solutions ? `&nbsp;·&nbsp; ${plan.key_solutions}` : ''}
+            ${plan.oem           ? `&nbsp;·&nbsp; ${plan.oem}` : ''}
+          </div>
+        </div>
+        ${hasPlan ? `
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <div style="text-align:center;background:rgba(255,255,255,0.1);border-radius:10px;padding:8px 12px;min-width:80px">
+            <div style="font-size:0.7em;opacity:0.7">${curMonth} Target</div>
+            <div style="font-weight:700">₹${curT.toFixed(1)}L</div>
+          </div>
+          <div style="text-align:center;background:rgba(255,255,255,0.1);border-radius:10px;padding:8px 12px;min-width:80px">
+            <div style="font-size:0.7em;opacity:0.7">${curMonth} Actual</div>
+            <div style="font-weight:700;color:${curA>=curT&&curT>0?'#4ade80':'#fbbf24'}">₹${curA.toFixed(1)}L</div>
+          </div>
+          ${curPct!==null ? `
+          <div style="text-align:center;background:${aopBarColor(curPct)+'33'};border-radius:10px;padding:8px 12px;min-width:70px">
+            <div style="font-size:0.7em;opacity:0.7">Achievement</div>
+            <div style="font-weight:700;color:${aopBarColor(curPct)}">${curPct}%</div>
+          </div>` : ''}
+        </div>` : `<span class="tag" style="background:#ef4444;color:white;align-self:center">AOP Pending</span>`}
+      </div>
+ 
+      ${hasPlan ? `
+      <div style="margin-top:12px">
+        <div style="display:flex;gap:2px;height:44px">${sparkline}</div>
+        <div style="display:flex;justify-content:space-between;font-size:0.75em;opacity:0.6;margin-top:4px">
+          <span>░ Target &nbsp; <span style="color:#4ade80">▓</span> Actual</span>
+          <span>Annual: ₹${annT.toFixed(1)}L target &nbsp;·&nbsp; ₹${annA.toFixed(1)}L actual
+            ${annPct!==null?`&nbsp;·&nbsp; <strong style="color:${aopBarColor(annPct)}">${annPct}%</strong>`:''}
+          </span>
+        </div>
+      </div>` : ''}
+ 
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-success" onclick="openAopPlanForm('${account.id}')">
+          ${hasPlan ? '✏ Edit AOP Plan' : '+ Fill AOP Plan'}
+        </button>
+        ${hasPlan ? `<button class="btn" onclick="openAopActualForm('${account.id}','${curMonth}')">📥 Enter ${curMonth} Actuals</button>` : ''}
+        ${hasPlan ? `<button class="btn" onclick="openAopDetailModal('${account.id}')">📋 Full Year View</button>` : ''}
+      </div>
+    </div>`;
+}
+ 
+// ── AOP PLAN FORM ────────────────────────────────────────────────
+function openAopPlanForm(accountId) {
+  const account = state.data.accounts.find(a => a.id === accountId);
+  if (!account) return;
+  const plan = window._aopPlans[accountId] || {};
+ 
+  const header = `
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:16px">
+      <div>
+        <label style="font-size:0.82em;opacity:0.75;display:block;margin-bottom:4px">Current Revenue (₹L)</label>
+        <input class="input" type="number" min="0" step="0.1" name="current_revenue" value="${plan.current_revenue||''}" placeholder="e.g. 50">
+      </div>
+      <div>
+        <label style="font-size:0.82em;opacity:0.75;display:block;margin-bottom:4px">Target Growth %</label>
+        <input class="input" type="number" step="0.1" name="target_growth" value="${plan.target_growth||''}" placeholder="e.g. 20">
+      </div>
+      <div>
+        <label style="font-size:0.82em;opacity:0.75;display:block;margin-bottom:4px">Key Solutions</label>
+        <input class="input" type="text" name="key_solutions" value="${plan.key_solutions||''}" placeholder="Cloud, Security…">
+      </div>
+      <div>
+        <label style="font-size:0.82em;opacity:0.75;display:block;margin-bottom:4px">OEM / Partner</label>
+        <input class="input" type="text" name="oem" value="${plan.oem||''}" placeholder="Cisco, Microsoft…">
+      </div>
+    </div>`;
+ 
+  const monthGrids = AOP_MONTHS.map(month => {
+    const catInputs = AOP_CATS.map((cat, ci) => {
+      const val = parseFloat(plan[`${month}_${cat}`]||0)||'';
+      return `<div>
+        <div style="font-size:9px;opacity:0.6;text-align:center;margin-bottom:3px">${AOP_CATS_LBL[ci]}</div>
+        <input class="input" type="number" min="0" step="0.01"
+          name="${month}_${cat}" value="${val}" placeholder="0"
+          style="padding:5px 4px;font-size:0.82em;text-align:right"
+          oninput="aopLiveUpdate()">
+      </div>`;
+    }).join('');
+    const mTotal = AOP_CATS.reduce((s,c)=>s+parseFloat(plan[`${month}_${c}`]||0),0);
+    return `
+      <div style="background:rgba(255,255,255,0.07);border-radius:10px;padding:10px">
+        <div style="font-weight:600;font-size:0.88em;text-align:center;margin-bottom:8px">${month}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px">${catInputs}</div>
+        <div style="text-align:right;font-size:0.78em;opacity:0.65;margin-top:6px">
+          ₹<span class="aop-mtotal" data-month="${month}">${mTotal.toFixed(1)}</span>L
+        </div>
+      </div>`;
+  }).join('');
+ 
+  const grand = AOP_MONTHS.reduce((s,m)=>s+AOP_CATS.reduce((s2,c)=>s2+parseFloat(plan[`${m}_${c}`]||0),0),0);
+ 
+  document.getElementById('modal').innerHTML = `
+    <div class="modal-content" style="max-width:960px">
+      <h2>📅 AOP Plan — ${account.name}</h2>
+      <div style="font-size:0.82em;opacity:0.65;margin-bottom:14px">FY ${AOP_FY} &nbsp;·&nbsp; All values in ₹ Lakhs</div>
+      <form onsubmit="submitAopPlan(event,'${accountId}')">
+        ${header}
+        <div style="background:rgba(255,255,255,0.1);border-radius:10px;padding:12px 16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center">
+          <span style="font-weight:600">Annual Planned Total</span>
+          <span id="aop-grand-total" style="font-size:1.4em;font-weight:bold;color:#4ade80">₹${grand.toFixed(1)}L</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px">
+          ${monthGrids}
+        </div>
+        <div style="display:flex;gap:10px">
+          <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-success">💾 Save AOP Plan</button>
+        </div>
+      </form>
+    </div>`;
+  document.getElementById('modal').classList.add('show');
+}
+ 
+function aopLiveUpdate() {
+  let grand = 0;
+  AOP_MONTHS.forEach(month => {
+    const mTotal = AOP_CATS.reduce((s,c) => {
+      const el = document.querySelector(`[name="${month}_${c}"]`);
+      return s + parseFloat(el ? el.value : 0);
+    }, 0);
+    const el = document.querySelector(`.aop-mtotal[data-month="${month}"]`);
+    if (el) el.textContent = mTotal.toFixed(1);
+    grand += mTotal;
+  });
+  const gtEl = document.getElementById('aop-grand-total');
+  if (gtEl) gtEl.textContent = `₹${grand.toFixed(1)}L`;
+}
+ 
+async function submitAopPlan(e, accountId) {
+  e.preventDefault();
+  const account = state.data.accounts.find(a => a.id === accountId);
+  const fd = Object.fromEntries(new FormData(e.target));
+  const payload = {
+    account_id:      accountId,
+    account_name:    account?.name || '',
+    account_manager: account?.accountManager || account?.owner || currentUser,
+    fy_year:         AOP_FY,
+    current_revenue: parseFloat(fd.current_revenue || 0),
+    target_growth:   parseFloat(fd.target_growth   || 0),
+    key_solutions:   fd.key_solutions || '',
+    oem:             fd.oem           || '',
+    updated_by:      currentUser,
+  };
+  AOP_MONTHS.forEach(m => AOP_CATS.forEach(c => {
+    payload[`${m}_${c}`] = parseFloat(fd[`${m}_${c}`] || 0);
+  }));
+  try {
+    await saveAopPlan(payload);
+    window._aopPlans[accountId] = payload;
+    closeModal();
+    render();
+  } catch(err) { alert(`Could not save AOP plan: ${err.message}`); }
+}
+ 
+// ── ACTUALS FORM ─────────────────────────────────────────────────
+function openAopActualForm(accountId, selectedMonth) {
+  const account = state.data.accounts.find(a => a.id === accountId);
+  if (!account) return;
+  const month  = selectedMonth || aopCurrentMonth();
+  const plan   = window._aopPlans[accountId]   || {};
+  const actual = (window._aopActuals[accountId]||{})[month] || {};
+ 
+  const rows = [
+    ['Hardware',         'hardware',         `${month}_Hardware`],
+    ['Software',         'software',         `${month}_Software`],
+    ['Managed Services', 'managed_services', `${month}_Managed_Services`],
+  ].map(([label, key, planKey]) => {
+    const target    = parseFloat(plan[planKey]||0);
+    const actualVal = parseFloat(actual[key]||0);
+    const pct       = target > 0 ? Math.round(actualVal/target*100) : null;
+    return `
+      <div style="display:grid;grid-template-columns:140px 1fr 110px 55px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.08)">
+        <div style="font-weight:600;font-size:0.9em">${label}</div>
+        <input class="input" type="number" min="0" step="0.01" name="${key}"
+          value="${actualVal||''}" placeholder="0"
+          style="padding:7px;text-align:right" oninput="aopActualLiveUpdate()">
+        <div style="font-size:0.82em;opacity:0.7;text-align:right">Target: ₹${target.toFixed(1)}L</div>
+        <div class="aop-act-pct" data-key="${key}" data-target="${target}"
+          style="font-size:0.85em;font-weight:700;text-align:right;color:${pct===null?'inherit':aopBarColor(pct)}">
+          ${pct!==null?pct+'%':'—'}
+        </div>
+      </div>`;
+  }).join('');
+ 
+  const monthOpts = AOP_MONTHS.map(m =>
+    `<option value="${m}" ${m===month?'selected':''}>${m}</option>`
+  ).join('');
+ 
+  const actTotal = ['hardware','software','managed_services'].reduce((s,k)=>s+parseFloat(actual[k]||0),0);
+  const tgtTotal = AOP_CATS.reduce((s,c)=>s+parseFloat(plan[`${month}_${c}`]||0),0);
+ 
+  document.getElementById('modal').innerHTML = `
+    <div class="modal-content" style="max-width:580px">
+      <h2>📥 Enter Actuals — ${account.name}</h2>
+      <div style="font-size:0.82em;opacity:0.65;margin-bottom:14px">FY ${AOP_FY} &nbsp;·&nbsp; ₹ Lakhs</div>
+      <form onsubmit="submitAopActual(event,'${accountId}')">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+          <label style="font-size:0.88em;opacity:0.8;white-space:nowrap">Select Month</label>
+          <select class="input" name="month" style="width:auto"
+            onchange="closeModal();openAopActualForm('${accountId}',this.value)">
+            ${monthOpts}
+          </select>
+        </div>
+        ${rows}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px">
+          <div class="metric" style="padding:10px">
+            <div style="font-size:0.75em;opacity:0.7">Total Actual</div>
+            <div id="aop-act-total" style="font-size:1.3em;font-weight:bold;color:#fbbf24">₹${actTotal.toFixed(1)}L</div>
+          </div>
+          <div class="metric" style="padding:10px">
+            <div style="font-size:0.75em;opacity:0.7">Total Target</div>
+            <div style="font-size:1.3em;font-weight:bold">₹${tgtTotal.toFixed(1)}L</div>
+          </div>
+        </div>
+        <textarea name="notes" placeholder="Notes (optional)" style="margin-top:12px">${actual.notes||''}</textarea>
+        <div style="display:flex;gap:10px;margin-top:12px">
+          <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-success">💾 Save Actuals</button>
+        </div>
+      </form>
+    </div>`;
+  document.getElementById('modal').classList.add('show');
+}
+ 
+function aopActualLiveUpdate() {
+  const keys = ['hardware','software','managed_services'];
+  let total = 0;
+  keys.forEach(k => {
+    const el  = document.querySelector(`[name="${k}"]`);
+    const val = parseFloat(el ? el.value : 0);
+    total += val;
+    const pctEl = document.querySelector(`.aop-act-pct[data-key="${k}"]`);
+    if (!pctEl) return;
+    const target = parseFloat(pctEl.dataset.target || 0);
+    const pct    = target > 0 ? Math.round(val/target*100) : null;
+    pctEl.textContent  = pct !== null ? pct+'%' : '—';
+    pctEl.style.color  = pct !== null ? aopBarColor(pct) : 'inherit';
+  });
+  const el = document.getElementById('aop-act-total');
+  if (el) el.textContent = `₹${total.toFixed(1)}L`;
+}
+ 
+async function submitAopActual(e, accountId) {
+  e.preventDefault();
+  const account = state.data.accounts.find(a => a.id === accountId);
+  const fd = Object.fromEntries(new FormData(e.target));
+  const payload = {
+    account_id:      accountId,
+    account_name:    account?.name || '',
+    account_manager: account?.accountManager || account?.owner || currentUser,
+    fy_year:         AOP_FY,
+    month:           fd.month || aopCurrentMonth(),
+    hardware:        parseFloat(fd.hardware         || 0),
+    software:        parseFloat(fd.software         || 0),
+    managed_services:parseFloat(fd.managed_services || 0),
+    notes:           fd.notes || '',
+    updated_by:      currentUser,
+  };
+  try {
+    await saveAopActual(payload);
+    if (!window._aopActuals[accountId]) window._aopActuals[accountId] = {};
+    window._aopActuals[accountId][payload.month] = {
+      hardware:         payload.hardware,
+      software:         payload.software,
+      managed_services: payload.managed_services,
+    };
+    closeModal();
+    render();
+  } catch(err) { alert(`Could not save actuals: ${err.message}`); }
+}
+ 
+// ── FULL YEAR DETAIL MODAL ───────────────────────────────────────
+function openAopDetailModal(accountId) {
+  const account  = state.data.accounts.find(a => a.id === accountId);
+  if (!account) return;
+  const plan     = window._aopPlans[accountId] || {};
+  const curMonth = aopCurrentMonth();
+  const annT     = AOP_MONTHS.reduce((s,m)=>s+aopMonthTarget(accountId,m),0);
+  const annA     = AOP_MONTHS.reduce((s,m)=>s+aopMonthActual(accountId,m),0);
+  const annPct   = annT > 0 ? Math.round(annA/annT*100) : null;
+  const targetRev= parseFloat(plan.current_revenue||0) * (1 + parseFloat(plan.target_growth||0)/100);
+ 
+  const tableRows = AOP_MONTHS.map(month => {
+    const t = aopMonthTarget(accountId, month);
+    const a = aopMonthActual(accountId, month);
+    const p = t > 0 ? Math.round(a/t*100) : null;
+    const isCur = month === curMonth;
+    const bar = t > 0 && p !== null
+      ? `<div style="display:inline-flex;align-items:center;gap:6px;vertical-align:middle">
+           <span style="font-weight:700;color:${aopBarColor(p)}">${p}%</span>
+           <div style="background:rgba(255,255,255,0.1);border-radius:3px;height:6px;width:60px;display:inline-block">
+             <div style="height:6px;border-radius:3px;width:${Math.min(p,100)}%;background:${aopBarColor(p)}"></div>
+           </div>
+         </div>`
+      : '—';
+    return `<tr style="${isCur?'background:rgba(255,255,255,0.09)':''};border-bottom:1px solid rgba(255,255,255,0.06)">
+      <td style="padding:8px;font-weight:${isCur?'700':'400'}">${month}${isCur?' ◀':''}</td>
+      <td style="padding:8px;text-align:right;font-size:0.82em;opacity:0.7;line-height:1.5">
+        HW: ${parseFloat(plan[`${month}_Hardware`]||0).toFixed(1)}<br>
+        SW: ${parseFloat(plan[`${month}_Software`]||0).toFixed(1)}<br>
+        MS: ${parseFloat(plan[`${month}_Managed_Services`]||0).toFixed(1)}
+      </td>
+      <td style="padding:8px;text-align:right;font-weight:600">${t>0?'₹'+t.toFixed(1)+'L':'—'}</td>
+      <td style="padding:8px;text-align:right;color:${a>0?(a>=t?'#4ade80':'#fbbf24'):'inherit'}">${a>0?'₹'+a.toFixed(1)+'L':'—'}</td>
+      <td style="padding:8px">${bar}</td>
+      <td style="padding:8px;text-align:center">
+        ${t>0?`<button class="btn" style="padding:4px 8px;font-size:0.78em"
+          onclick="closeModal();openAopActualForm('${accountId}','${month}')">Enter</button>`:''}
+      </td>
+    </tr>`;
+  }).join('');
+ 
+  document.getElementById('modal').innerHTML = `
+    <div class="modal-content" style="max-width:820px">
+      <h2>📋 ${account.name} — FY ${AOP_FY}</h2>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0 16px">
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.75em;opacity:0.7">Current Revenue</div>
+          <div style="font-size:1.15em;font-weight:bold">₹${parseFloat(plan.current_revenue||0).toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.75em;opacity:0.7">Target (${plan.target_growth||0}% growth)</div>
+          <div style="font-size:1.15em;font-weight:bold;color:#4ade80">₹${targetRev.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.75em;opacity:0.7">Annual Planned</div>
+          <div style="font-size:1.15em;font-weight:bold;color:#fbbf24">₹${annT.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.75em;opacity:0.7">YTD Achievement</div>
+          <div style="font-size:1.15em;font-weight:bold;color:${aopBarColor(annPct)}">
+            ₹${annA.toFixed(1)}L ${annPct!==null?`(${annPct}%)`:''}
+          </div>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:0.88em">
+          <thead>
+            <tr style="background:rgba(255,255,255,0.12)">
+              <th style="padding:8px;text-align:left">Month</th>
+              <th style="padding:8px;text-align:right">Breakdown (₹L)</th>
+              <th style="padding:8px;text-align:right">Target</th>
+              <th style="padding:8px;text-align:right">Actual</th>
+              <th style="padding:8px">Achievement</th>
+              <th style="padding:8px;text-align:center">Action</th>
+            </tr>
+          </thead>
+          <tbody>${tableRows}</tbody>
+          <tfoot>
+            <tr style="background:rgba(255,255,255,0.15);font-weight:700">
+              <td colspan="2" style="padding:8px">Annual Total</td>
+              <td style="padding:8px;text-align:right">₹${annT.toFixed(1)}L</td>
+              <td style="padding:8px;text-align:right;color:${annA>=annT&&annT>0?'#4ade80':'#fbbf24'}">₹${annA.toFixed(1)}L</td>
+              <td style="padding:8px;color:${aopBarColor(annPct)}">${annPct!==null?annPct+'%':'—'}</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div style="margin-top:16px;display:flex;gap:10px">
+        <button class="btn" onclick="closeModal()">Close</button>
+        <button class="btn btn-success" onclick="closeModal();openAopPlanForm('${accountId}')">✏ Edit Plan</button>
+      </div>
+    </div>`;
+  document.getElementById('modal').classList.add('show');
+}
+ 
+// ── TEAM SUMMARY MODAL ───────────────────────────────────────────
+function openAopSummaryModal() {
+  const filtered = getFilteredData();
+  const curMonth = aopCurrentMonth();
+ 
+  const byMgr = {};
+  filtered.accounts.forEach(acc => {
+    const mgr = acc.accountManager || acc.owner || 'Unassigned';
+    if (!byMgr[mgr]) byMgr[mgr] = [];
+    byMgr[mgr].push(acc);
+  });
+ 
+  const rows = Object.entries(byMgr).map(([mgr, accs]) => {
+    const annT  = accs.reduce((s,a)=>s+AOP_MONTHS.reduce((s2,m)=>s2+aopMonthTarget(a.id,m),0),0);
+    const annA  = accs.reduce((s,a)=>s+AOP_MONTHS.reduce((s2,m)=>s2+aopMonthActual(a.id,m),0),0);
+    const curT  = accs.reduce((s,a)=>s+aopMonthTarget(a.id,curMonth),0);
+    const curA  = accs.reduce((s,a)=>s+aopMonthActual(a.id,curMonth),0);
+    const filled= accs.filter(a=>aopHasPlan(a.id)).length;
+    const annP  = annT>0?Math.round(annA/annT*100):null;
+    const curP  = curT>0?Math.round(curA/curT*100):null;
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,0.08)">
+      <td style="padding:10px;font-weight:600">${formatUserLabel(mgr)}</td>
+      <td style="padding:10px;text-align:center">
+        <span style="color:${filled===accs.length?'#4ade80':'#fbbf24'}">${filled}</span>/${accs.length}
+      </td>
+      <td style="padding:10px;text-align:right">₹${annT.toFixed(1)}L</td>
+      <td style="padding:10px;text-align:right">
+        <span style="color:${aopBarColor(curP)}">₹${curA.toFixed(1)}L</span>
+        <span style="opacity:0.6"> / ₹${curT.toFixed(1)}L</span>
+        ${curP!==null?`<strong style="color:${aopBarColor(curP)}"> ${curP}%</strong>`:''}
+      </td>
+      <td style="padding:10px;text-align:right">₹${annA.toFixed(1)}L</td>
+      <td style="padding:10px;text-align:right;font-weight:700;color:${aopBarColor(annP)}">
+        ${annP!==null?annP+'%':'—'}
+      </td>
+    </tr>`;
+  }).join('');
+ 
+  const totAnnT = filtered.accounts.reduce((s,a)=>s+AOP_MONTHS.reduce((s2,m)=>s2+aopMonthTarget(a.id,m),0),0);
+  const totAnnA = filtered.accounts.reduce((s,a)=>s+AOP_MONTHS.reduce((s2,m)=>s2+aopMonthActual(a.id,m),0),0);
+  const totCurT = filtered.accounts.reduce((s,a)=>s+aopMonthTarget(a.id,curMonth),0);
+  const totCurA = filtered.accounts.reduce((s,a)=>s+aopMonthActual(a.id,curMonth),0);
+  const totAnnP = totAnnT>0?Math.round(totAnnA/totAnnT*100):null;
+  const totCurP = totCurT>0?Math.round(totCurA/totCurT*100):null;
+  const totFill = filtered.accounts.filter(a=>aopHasPlan(a.id)).length;
+ 
+  document.getElementById('modal').innerHTML = `
+    <div class="modal-content" style="max-width:820px">
+      <h2>📊 AOP Team Summary — FY ${AOP_FY}</h2>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:12px 0 16px">
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">AOP Filled</div>
+          <div style="font-size:1.2em;font-weight:bold;color:#4ade80">${totFill}/${filtered.accounts.length}</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">Annual Target</div>
+          <div style="font-size:1.2em;font-weight:bold">₹${totAnnT.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">${curMonth} Target</div>
+          <div style="font-size:1.2em;font-weight:bold">₹${totCurT.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">${curMonth} Achievement</div>
+          <div style="font-size:1.2em;font-weight:bold;color:${aopBarColor(totCurP)}">
+            ₹${totCurA.toFixed(1)}L ${totCurP!==null?`(${totCurP}%)`:''}
+          </div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">YTD Achievement</div>
+          <div style="font-size:1.2em;font-weight:bold;color:${aopBarColor(totAnnP)}">
+            ${totAnnP!==null?totAnnP+'%':'—'}
+          </div>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:0.88em">
+          <thead>
+            <tr style="background:rgba(255,255,255,0.12)">
+              <th style="padding:10px;text-align:left">Manager</th>
+              <th style="padding:10px;text-align:center">AOP Status</th>
+              <th style="padding:10px;text-align:right">Annual Target</th>
+              <th style="padding:10px;text-align:right">${curMonth} Actual / Target</th>
+              <th style="padding:10px;text-align:right">YTD Actual</th>
+              <th style="padding:10px;text-align:right">YTD %</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      ${isSupervisor?`<div style="margin-top:14px"><button class="btn" onclick="exportAopCsv()">⬇ Export CSV</button></div>`:''}
+      <div style="margin-top:12px"><button class="btn" onclick="closeModal()">Close</button></div>
+    </div>`;
+  document.getElementById('modal').classList.add('show');
+}
+ 
+// ── CSV EXPORT ───────────────────────────────────────────────────
+function exportAopCsv() {
+  const filtered = getFilteredData();
+  const h1 = ['Account Name','Account Manager','Industry','Current Revenue (₹L)',
+               'Target Growth %','Target Revenue (₹L)','Key Solutions','OEM'];
+  const h2 = ['','','','','','','',''];
+  AOP_MONTHS.forEach(m => {
+    h1.push(m,'','');
+    h2.push('Hardware','Software','Managed Services');
+  });
+  const rows = [h1, h2];
+  filtered.accounts.forEach(acc => {
+    const p = window._aopPlans[acc.id] || {};
+    const cr = parseFloat(p.current_revenue||0);
+    const tg = parseFloat(p.target_growth||0);
+    const row = [acc.name, acc.accountManager||acc.owner||'', acc.industry||'',
+                 cr, tg, parseFloat((cr*(1+tg/100)).toFixed(2)),
+                 p.key_solutions||'', p.oem||''];
+    AOP_MONTHS.forEach(m => {
+      row.push(parseFloat(p[`${m}_Hardware`]||0),
+               parseFloat(p[`${m}_Software`]||0),
+               parseFloat(p[`${m}_Managed_Services`]||0));
+    });
+    rows.push(row);
+  });
+  downloadCSV(`AOP_${AOP_FY}_${new Date().toISOString().slice(0,10)}.csv`, rows);
+}
+ 
+// ── DASHBOARD ACHIEVEMENT WIDGET ─────────────────────────────────
+// Called from inside renderDashboard() — returns HTML string
+function renderAopDashboardWidget(filtered) {
+  const curMonth = aopCurrentMonth();
+  const accounts = filtered.accounts;
+  const totCurT  = accounts.reduce((s,a)=>s+aopMonthTarget(a.id,curMonth),0);
+  const totCurA  = accounts.reduce((s,a)=>s+aopMonthActual(a.id,curMonth),0);
+  const totAnnT  = accounts.reduce((s,a)=>s+AOP_MONTHS.reduce((s2,m)=>s2+aopMonthTarget(a.id,m),0),0);
+  const totAnnA  = accounts.reduce((s,a)=>s+AOP_MONTHS.reduce((s2,m)=>s2+aopMonthActual(a.id,m),0),0);
+  const curP     = totCurT>0?Math.round(totCurA/totCurT*100):null;
+  const ytdP     = totAnnT>0?Math.round(totAnnA/totAnnT*100):null;
+  if (totAnnT === 0) return '';
+ 
+  const topAccounts = accounts
+    .filter(a => aopMonthTarget(a.id, curMonth) > 0)
+    .map(a => ({
+      name: a.name,
+      t: aopMonthTarget(a.id, curMonth),
+      a: aopMonthActual(a.id, curMonth),
+    }))
+    .sort((x,y) => y.t - x.t)
+    .slice(0, 6);
+ 
+  return `
+    <div class="card">
+      <h3>📅 AOP Achievement — ${curMonth} / FY ${AOP_FY}</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:10px 0 12px">
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">${curMonth} Target</div>
+          <div style="font-size:1.1em;font-weight:bold">₹${totCurT.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">${curMonth} Actual</div>
+          <div style="font-size:1.1em;font-weight:bold;color:${aopBarColor(curP)}">₹${totCurA.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">${curMonth} %</div>
+          <div style="font-size:1.1em;font-weight:bold;color:${aopBarColor(curP)}">${curP!==null?curP+'%':'—'}</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">YTD %</div>
+          <div style="font-size:1.1em;font-weight:bold;color:${aopBarColor(ytdP)}">${ytdP!==null?ytdP+'%':'—'}</div>
+        </div>
+      </div>
+      <div style="background:rgba(255,255,255,0.1);border-radius:6px;height:8px;margin-bottom:14px">
+        <div style="height:8px;border-radius:6px;width:${Math.min(curP||0,100)}%;background:${aopBarColor(curP)};transition:width 0.5s"></div>
+      </div>
+      ${topAccounts.map(x => {
+        const p = x.t > 0 ? Math.round(x.a/x.t*100) : null;
+        return `
+        <div style="margin-bottom:9px">
+          <div style="display:flex;justify-content:space-between;font-size:0.82em;margin-bottom:3px">
+            <span>${x.name}</span>
+            <span style="opacity:0.7">₹${x.a.toFixed(1)}L / ₹${x.t.toFixed(1)}L
+              ${p!==null?`<strong style="color:${aopBarColor(p)}">&nbsp;${p}%</strong>`:''}
+            </span>
+          </div>
+          <div style="background:rgba(255,255,255,0.1);border-radius:4px;height:5px">
+            <div style="height:5px;border-radius:4px;width:${Math.min(p||0,100)}%;background:${aopBarColor(p||0)}"></div>
+          </div>
+        </div>`;
+      }).join('')}
+      <button class="btn" style="margin-top:8px" onclick="openTab('aop')">Open AOP →</button>
+    </div>`;
+}
+ 
+
+
+
+
+
 
 window.addEventListener('load', () => {
  restoreSessionIfAny().catch(err => console.error('session restore failed', err));
