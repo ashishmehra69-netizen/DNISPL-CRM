@@ -256,6 +256,77 @@ def init_db() -> None:
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_integration_requirements TEXT;")
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_competitors TEXT;")
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_win_strategy TEXT;")
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS aop_plans (
+                    id SERIAL PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    account_name TEXT,
+                    account_manager TEXT,
+                    fy_year TEXT NOT NULL DEFAULT '2025-26',
+                    current_revenue NUMERIC DEFAULT 0,
+                    target_growth NUMERIC DEFAULT 0,
+                    key_solutions TEXT DEFAULT '',
+                    oem TEXT DEFAULT '',
+                    updated_by TEXT,
+                    apr_hardware NUMERIC DEFAULT 0,
+                    apr_software NUMERIC DEFAULT 0,
+                    apr_managed_services NUMERIC DEFAULT 0,
+                    may_hardware NUMERIC DEFAULT 0,
+                    may_software NUMERIC DEFAULT 0,
+                    may_managed_services NUMERIC DEFAULT 0,
+                    jun_hardware NUMERIC DEFAULT 0,
+                    jun_software NUMERIC DEFAULT 0,
+                    jun_managed_services NUMERIC DEFAULT 0,
+                    jul_hardware NUMERIC DEFAULT 0,
+                    jul_software NUMERIC DEFAULT 0,
+                    jul_managed_services NUMERIC DEFAULT 0,
+                    aug_hardware NUMERIC DEFAULT 0,
+                    aug_software NUMERIC DEFAULT 0,
+                    aug_managed_services NUMERIC DEFAULT 0,
+                    sep_hardware NUMERIC DEFAULT 0,
+                    sep_software NUMERIC DEFAULT 0,
+                    sep_managed_services NUMERIC DEFAULT 0,
+                    oct_hardware NUMERIC DEFAULT 0,
+                    oct_software NUMERIC DEFAULT 0,
+                    oct_managed_services NUMERIC DEFAULT 0,
+                    nov_hardware NUMERIC DEFAULT 0,
+                    nov_software NUMERIC DEFAULT 0,
+                    nov_managed_services NUMERIC DEFAULT 0,
+                    dec_hardware NUMERIC DEFAULT 0,
+                    dec_software NUMERIC DEFAULT 0,
+                    dec_managed_services NUMERIC DEFAULT 0,
+                    jan_hardware NUMERIC DEFAULT 0,
+                    jan_software NUMERIC DEFAULT 0,
+                    jan_managed_services NUMERIC DEFAULT 0,
+                    feb_hardware NUMERIC DEFAULT 0,
+                    feb_software NUMERIC DEFAULT 0,
+                    feb_managed_services NUMERIC DEFAULT 0,
+                    mar_hardware NUMERIC DEFAULT 0,
+                    mar_software NUMERIC DEFAULT 0,
+                    mar_managed_services NUMERIC DEFAULT 0,
+                    created_at TIMESTAMPTZ DEFAULT now(),
+                    updated_at TIMESTAMPTZ DEFAULT now(),
+                    UNIQUE(account_id, fy_year)
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS aop_actuals (
+                    id SERIAL PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    account_name TEXT,
+                    account_manager TEXT,
+                    fy_year TEXT NOT NULL DEFAULT '2025-26',
+                    month TEXT NOT NULL,
+                    hardware NUMERIC DEFAULT 0,
+                    software NUMERIC DEFAULT 0,
+                    managed_services NUMERIC DEFAULT 0,
+                    notes TEXT DEFAULT '',
+                    updated_by TEXT,
+                    created_at TIMESTAMPTZ DEFAULT now(),
+                    updated_at TIMESTAMPTZ DEFAULT now(),
+                    UNIQUE(account_id, fy_year, month)
+                )
+            ''')
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS user_passwords (
@@ -1478,7 +1549,225 @@ def set_password():
         return jsonify({"status": "ok", "email": email})
     finally:
         conn.close()
-
+     ─── AOP helpers ────────────────────────────────────────────────────────────
+ 
+_AOP_MONTHS_LOWER   = ['apr','may','jun','jul','aug','sep','oct','nov','dec','jan','feb','mar']
+_AOP_MONTHS_DISPLAY = ['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar']
+_AOP_CATS_DB        = ['hardware','software','managed_services']
+_AOP_CATS_FE        = ['Hardware','Software','Managed_Services']
+ 
+def _all_aop_cols():
+    return [f"{m}_{c}" for m in _AOP_MONTHS_LOWER for c in _AOP_CATS_DB]
+ 
+def _aop_row_to_dict(row):
+    if not row:
+        return None
+    d = dict(row)
+    for m_lo, m_di in zip(_AOP_MONTHS_LOWER, _AOP_MONTHS_DISPLAY):
+        for c_db, c_fe in zip(_AOP_CATS_DB, _AOP_CATS_FE):
+            d[f"{m_di}_{c_fe}"] = float(d.get(f"{m_lo}_{c_db}") or 0)
+    d['current_revenue'] = float(d.get('current_revenue') or 0)
+    d['target_growth']   = float(d.get('target_growth')   or 0)
+    return d
+ 
+def _fe_to_db_aop(data):
+    out = {}
+    for m_lo, m_di in zip(_AOP_MONTHS_LOWER, _AOP_MONTHS_DISPLAY):
+        for c_db, c_fe in zip(_AOP_CATS_DB, _AOP_CATS_FE):
+            val = data.get(f"{m_di}_{c_fe}") or data.get(f"{m_di}_{c_fe.replace('_',' ')}") or 0
+            out[f"{m_lo}_{c_db}"] = float(val)
+    return out
+ 
+ 
+# ─── GET /api/aop ────────────────────────────────────────────────────────────
+ 
+@app.route("/api/aop", methods=["GET"])
+def list_aop():
+    viewer_email = (request.args.get("viewer_email") or "").strip().lower()
+    viewer_role  = (request.args.get("viewer_role")  or "account_manager").strip().lower()
+    account_id   = (request.args.get("account_id")   or "").strip()
+    fy_year      = (request.args.get("fy_year")       or "2025-26").strip()
+ 
+    all_cols = ", ".join(_all_aop_cols())
+    base_sel = f"""
+        SELECT id, account_id, account_name, account_manager, fy_year,
+               current_revenue, target_growth, key_solutions, oem,
+               updated_by, created_at, updated_at, {all_cols}
+        FROM aop_plans
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if account_id:
+                cur.execute(base_sel + " WHERE account_id=%s AND fy_year=%s", (account_id, fy_year))
+                row = cur.fetchone()
+                return jsonify(_aop_row_to_dict(row) or {})
+            if _is_supervisor(viewer_role):
+                cur.execute(base_sel + " WHERE fy_year=%s ORDER BY account_name", (fy_year,))
+            else:
+                if not viewer_email:
+                    return jsonify({"error": "viewer_email required"}), 400
+                cur.execute(
+                    base_sel + " WHERE fy_year=%s AND lower(account_manager)=lower(%s) ORDER BY account_name",
+                    (fy_year, viewer_email)
+                )
+            rows = cur.fetchall()
+        return jsonify([_aop_row_to_dict(r) for r in rows])
+    finally:
+        conn.close()
+ 
+ 
+# ─── POST /api/aop ───────────────────────────────────────────────────────────
+ 
+@app.route("/api/aop", methods=["POST"])
+def upsert_aop():
+    data       = request.get_json(silent=True) or {}
+    account_id = (data.get("account_id") or "").strip()
+    fy_year    = (data.get("fy_year")    or "2025-26").strip()
+    if not account_id:
+        return jsonify({"error": "account_id is required"}), 400
+ 
+    month_data      = _fe_to_db_aop(data)
+    account_manager = (data.get("account_manager") or "").strip().lower()
+    updated_by      = (data.get("updated_by")      or account_manager).strip().lower()
+    all_cols        = _all_aop_cols()
+ 
+    base_vals = [
+        (data.get("account_name")    or "").strip(),
+        account_manager,
+        float(data.get("current_revenue") or 0),
+        float(data.get("target_growth")   or 0),
+        (data.get("key_solutions") or "").strip(),
+        (data.get("oem")           or "").strip(),
+        updated_by,
+    ]
+    month_vals = [month_data.get(c, 0.0) for c in all_cols]
+ 
+    set_parts = [
+        "account_name=%s","account_manager=%s","current_revenue=%s",
+        "target_growth=%s","key_solutions=%s","oem=%s",
+        "updated_by=%s","updated_at=now()"
+    ] + [f"{c}=%s" for c in all_cols]
+ 
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id FROM aop_plans WHERE account_id=%s AND fy_year=%s",
+                (account_id, fy_year)
+            )
+            exists = cur.fetchone()
+            if exists:
+                cur.execute(
+                    f"UPDATE aop_plans SET {', '.join(set_parts)} WHERE account_id=%s AND fy_year=%s",
+                    base_vals + month_vals + [account_id, fy_year]
+                )
+                status = "updated"
+            else:
+                ins_cols = (["account_id","fy_year","account_name","account_manager",
+                             "current_revenue","target_growth","key_solutions","oem","updated_by"]
+                            + all_cols)
+                placeholders = ", ".join(["%s"] * len(ins_cols))
+                cur.execute(
+                    f"INSERT INTO aop_plans ({', '.join(ins_cols)}) VALUES ({placeholders})",
+                    [account_id, fy_year] + base_vals + month_vals
+                )
+                status = "created"
+        conn.commit()
+        return jsonify({"status": status, "account_id": account_id, "fy_year": fy_year})
+    finally:
+        conn.close()
+ 
+ 
+# ─── GET /api/aop/actuals ────────────────────────────────────────────────────
+ 
+@app.route("/api/aop/actuals", methods=["GET"])
+def list_aop_actuals():
+    viewer_email = (request.args.get("viewer_email") or "").strip().lower()
+    viewer_role  = (request.args.get("viewer_role")  or "account_manager").strip().lower()
+    account_id   = (request.args.get("account_id")   or "").strip()
+    fy_year      = (request.args.get("fy_year")       or "2025-26").strip()
+ 
+    base_sel = """
+        SELECT id, account_id, account_name, account_manager, fy_year,
+               month, hardware, software, managed_services, notes,
+               updated_by, created_at, updated_at
+        FROM aop_actuals
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if account_id:
+                cur.execute(base_sel + " WHERE account_id=%s AND fy_year=%s ORDER BY month",
+                            (account_id, fy_year))
+                return jsonify([dict(r) for r in cur.fetchall()])
+            if _is_supervisor(viewer_role):
+                cur.execute(base_sel + " WHERE fy_year=%s ORDER BY account_name, month", (fy_year,))
+            else:
+                if not viewer_email:
+                    return jsonify({"error": "viewer_email required"}), 400
+                cur.execute(
+                    base_sel + " WHERE fy_year=%s AND lower(account_manager)=lower(%s) ORDER BY account_name, month",
+                    (fy_year, viewer_email)
+                )
+            return jsonify([dict(r) for r in cur.fetchall()])
+    finally:
+        conn.close()
+ 
+ 
+# ─── POST /api/aop/actuals ───────────────────────────────────────────────────
+ 
+@app.route("/api/aop/actuals", methods=["POST"])
+def upsert_aop_actual():
+    data       = request.get_json(silent=True) or {}
+    account_id = (data.get("account_id") or "").strip()
+    month      = (data.get("month")      or "").strip()
+    fy_year    = (data.get("fy_year")    or "2025-26").strip()
+    if not account_id or not month:
+        return jsonify({"error": "account_id and month are required"}), 400
+ 
+    account_manager  = (data.get("account_manager") or "").strip().lower()
+    updated_by       = (data.get("updated_by")      or account_manager).strip().lower()
+    hardware         = float(data.get("hardware")         or 0)
+    software         = float(data.get("software")         or 0)
+    managed_services = float(data.get("managed_services") or 0)
+    notes            = (data.get("notes") or "").strip()
+ 
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id FROM aop_actuals WHERE account_id=%s AND fy_year=%s AND month=%s",
+                (account_id, fy_year, month)
+            )
+            exists = cur.fetchone()
+            if exists:
+                cur.execute(
+                    """UPDATE aop_actuals
+                       SET account_name=%s, account_manager=%s, hardware=%s,
+                           software=%s, managed_services=%s, notes=%s,
+                           updated_by=%s, updated_at=now()
+                       WHERE account_id=%s AND fy_year=%s AND month=%s""",
+                    ((data.get("account_name") or "").strip(), account_manager,
+                     hardware, software, managed_services, notes, updated_by,
+                     account_id, fy_year, month)
+                )
+                status = "updated"
+            else:
+                cur.execute(
+                    """INSERT INTO aop_actuals
+                       (account_id, account_name, account_manager, fy_year, month,
+                        hardware, software, managed_services, notes, updated_by)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (account_id, (data.get("account_name") or "").strip(),
+                     account_manager, fy_year, month,
+                     hardware, software, managed_services, notes, updated_by)
+                )
+                status = "created"
+        conn.commit()
+        return jsonify({"status": status, "account_id": account_id, "month": month})
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
     init_db()
