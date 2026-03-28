@@ -1339,6 +1339,7 @@ function seedAccountsFromMap() {
 
  seedAccountsFromMap();
  saveData();
+ loadAopData();
  
 function calculateWinProb(opp) {
  // Base probability from stage
@@ -1496,9 +1497,9 @@ function getFilteredData() {
  function render() {
  const role = getUserRole();
  const tabs = isSupervisor
- ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'dashboard']
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'aop', 'dashboard']
  : (role === 'sales'
- ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities']
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'aop']
  : ['opportunities', 'workflow', 'activities']);
  if (!tabs.includes(state.activeTab)) state.activeTab = tabs[0];
  document.getElementById('tabs').innerHTML = tabs.map(t => 
@@ -1514,6 +1515,7 @@ function getFilteredData() {
  else if (state.activeTab === 'opportunities') content = renderOpportunities(filtered);
  	else if (state.activeTab === 'activities') content = 		renderActivities(filtered);
  else if (state.activeTab === 'workflow') content = renderWorkflow(filtered);
+ else if (state.activeTab === 'aop') content = renderAop(filtered);
  else if (state.activeTab === 'dashboard') content = renderDashboard(filtered);
  
  document.getElementById('content').innerHTML = content;
@@ -1944,6 +1946,7 @@ function renderDashboard(filtered) {
  <button class="btn" type="button" onclick="openTab('activities', { activityMode: 'all' })">Activities</button>
  </div>
  </div>
+ ${renderAopDashboardWidget(filtered)}
  `;
  }
 
