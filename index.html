@@ -1270,23 +1270,28 @@ async function loadData() {
  // Normalize legacy records so dates always exist
 
 function seedAccountsFromMap() {
- if (state.data.accounts.length) return;
- const now = new Date().toISOString();
- Object.keys(ACCOUNT_OWNER_MAP).forEach(name => {
-   state.data.accounts.push({
-     id: Date.now().toString() + Math.random().toString().slice(2),
-     name,
-     industry: '',
-     tier: 'B',
-     location: '',
-     companySize: '',
-     annualSpend: '',
-     accountManager: ACCOUNT_OWNER_MAP[name],
-     owner: ACCOUNT_OWNER_MAP[name],
-     createdDate: now,
-     modifiedDate: now
-   });
- });
+  if (state.data.accounts.length) return;
+  const now = new Date().toISOString();
+  Object.keys(ACCOUNT_OWNER_MAP).forEach(name => {
+    const owner = ACCOUNT_OWNER_MAP[name];
+    state.data.accounts.push({
+      id: Date.now().toString() + Math.random().toString().slice(2),
+      name,
+      industry: '',
+      tier: 'B',
+      location: '',
+      companySize: '',
+      annualSpend: '',
+      accountManager: owner,
+      owner: owner,
+      createdDate: now,
+      modifiedDate: now
+    });
+    upsertAccountToApi({
+      account_name: name,
+      account_manager: owner
+    }).catch(() => {});
+  });
 }
 
  ['leads','accounts','contacts','opportunities','activities'].forEach(key => {
