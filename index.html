@@ -1700,6 +1700,32 @@ ${filtered.accounts.map(a => `
  return `
  <div class="card">
  <h2>💰 Opportunities (${filtered.opportunities.length})</h2>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:14px">
+    <div class="metric" style="padding:12px;text-align:center">
+      <div style="font-size:0.78em;opacity:0.7">Total Opportunities</div>
+      <div style="font-size:1.4em;font-weight:bold">${filtered.opportunities.length}</div>
+    </div>
+    <div class="metric" style="padding:12px;text-align:center">
+      <div style="font-size:0.78em;opacity:0.7">Pipeline Value</div>
+      <div style="font-size:1.4em;font-weight:bold;color:#4ade80">₹${(filtered.opportunities.reduce((s,o)=>s+(o.value||0),0)/100000).toFixed(1)}L</div>
+    </div>
+    <div class="metric" style="padding:12px;text-align:center">
+      <div style="font-size:0.78em;opacity:0.7">Avg Win Probability</div>
+      <div style="font-size:1.4em;font-weight:bold;color:#fbbf24">${filtered.opportunities.length ? Math.round(filtered.opportunities.reduce((s,o)=>s+getWinProbSafe(o),0)/filtered.opportunities.length) : 0}%</div>
+    </div>
+    <div class="metric" style="padding:12px;text-align:center">
+      <div style="font-size:0.78em;opacity:0.7">Open</div>
+      <div style="font-size:1.4em;font-weight:bold">${filtered.opportunities.filter(o=>!['Closed Won','Closed Lost'].includes(o.stage)).length}</div>
+    </div>
+    <div class="metric" style="padding:12px;text-align:center">
+      <div style="font-size:0.78em;opacity:0.7">Closed Won</div>
+      <div style="font-size:1.4em;font-weight:bold;color:#4ade80">${filtered.opportunities.filter(o=>o.stage==='Closed Won').length}</div>
+    </div>
+    <div class="metric" style="padding:12px;text-align:center">
+      <div style="font-size:0.78em;opacity:0.7">Closed Lost</div>
+      <div style="font-size:1.4em;font-weight:bold;color:#f87171">${filtered.opportunities.filter(o=>o.stage==='Closed Lost').length}</div>
+    </div>
+  </div>
  ${renderManagerFilterControls(filtered)}
  <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
  <button class="btn" type="button" onclick="document.getElementById('rfpScanInput').click()">📄 Scan RFP</button>
