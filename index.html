@@ -1728,6 +1728,7 @@ ${filtered.accounts.map(a => `
   </div>
  ${renderManagerFilterControls(filtered)}
  <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
+ <button class="btn" type="button" onclick="exportOpportunitiesCsv()">⬇ Export CSV</button>
  <button class="btn" type="button" onclick="document.getElementById('rfpScanInput').click()">📄 Scan RFP</button>
  </div>
  <div class="grid">
@@ -4232,6 +4233,39 @@ async function saveRFPOpportunity(e) {
   } catch(err) {
     alert(`Could not save opportunity: ${err.message}`);
   }
+}
+ function exportOpportunitiesCsv() {
+  const filtered = getFilteredData();
+  const rows = filtered.opportunities.map(o => {
+    const account = state.data.accounts.find(a => a.id === o.accountId);
+    const win = getWinProbSafe(o);
+    return [
+      o.id, o.name, account?.name || '', o.value,
+      (o.value / 100000).toFixed(1) + 'L',
+      o.stage, o.workflowStage || '',
+      o.salesOwner || o.owner || '',
+      o.assignedPresales || '', o.assignedPurchase || '',
+      win + '%', Math.round((o.value || 0) * win / 100),
+      o.intakeProblemStatement || '', o.intakeWhyNow || '',
+      o.intakeBusinessImpact || '', o.intakeBudgetRange || '',
+      o.intakeDecisionTimeline || '', o.requirements || '',
+      o.boq ? 'Yes' : 'No', o.purchaseCosting ? 'Yes' : 'No',
+      o.finalPricingProposal ? 'Yes' : 'No',
+      fmtDate(o.createdDate), fmtDate(o.modifiedDate)
+    ];
+  });
+  rows.unshift([
+    'ID', 'Opportunity', 'Account', 'Value (₹)', 'Value (L)',
+    'Stage', 'Workflow Stage', 'Sales Owner',
+    'Presales', 'Purchase',
+    'Win %', 'Weighted Value (₹)',
+    'Problem Statement', 'Why Now',
+    'Business Impact', 'Budget Range',
+    'Decision Timeline', 'Requirements',
+    'BOQ', 'Costing', 'Final Proposal',
+    'Created', 'Updated'
+  ]);
+  downloadCSV(`opportunities_${new Date().toISOString().slice(0,10)}.csv`, rows);
 }
 } </script>
 </body>
