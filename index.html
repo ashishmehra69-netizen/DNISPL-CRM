@@ -112,6 +112,7 @@ const LEAD_ASSIGN_PRIVILEGED_USERS = [
     'vinod.v@dnispl.com',
     'a.gupta@dnispl.com',
     'ashish.mehra@dnispl.com'
+    'rakesh.uniyal@dnispl.com'
 ];
 const BUILD_VERSION = '2026-03-10-01';
 const SUSPECT_QUESTIONS = [
@@ -2069,12 +2070,12 @@ function openAddModal() {
  <textarea required name="intakeDecisionTimeline" placeholder="Decision Timeline *">${opp?.intakeDecisionTimeline || ''}</textarea>
  <textarea name="intakeRiskIfNotSolved" placeholder="Risk if Not Solved">${opp?.intakeRiskIfNotSolved || ''}</textarea>
  <textarea name="intakeKeyStakeholders" placeholder="Key Stakeholders">${opp?.intakeKeyStakeholders || ''}</textarea>
- <textarea name="intakeInScope" placeholder="In Scope">${opp?.intakeInScope || ''}</textarea>
- <textarea name="intakeOutOfScope" placeholder="Out of Scope">${opp?.intakeOutOfScope || ''}</textarea>
- <textarea name="intakeCurrentEnvironment" placeholder="Current Environment (OEM/Cloud/Security)">${opp?.intakeCurrentEnvironment || ''}</textarea>
+ <textarea name="intakeInScope" placeholder="In Scope *">${opp?.intakeInScope || ''}</textarea>
+ <textarea name="intakeOutOfScope" placeholder="Out of Scope *">${opp?.intakeOutOfScope || ''}</textarea>
+ <textarea name="intakeCurrentEnvironment" placeholder="Current Environment (OEM/Cloud/Security) *">${opp?.intakeCurrentEnvironment || ''}</textarea>
  <textarea name="intakePainPoints" placeholder="Pain Points">${opp?.intakePainPoints || ''}</textarea>
- <textarea name="intakeComplianceRequirements" placeholder="Compliance Requirements">${opp?.intakeComplianceRequirements || ''}</textarea>
- <textarea name="intakeIntegrationRequirements" placeholder="Integration Requirements">${opp?.intakeIntegrationRequirements || ''}</textarea>
+ <textarea name="intakeComplianceRequirements" placeholder="Compliance Requirements *">${opp?.intakeComplianceRequirements || ''}</textarea>
+ <textarea name="intakeIntegrationRequirements" placeholder="Integration Requirements *">${opp?.intakeIntegrationRequirements || ''}</textarea>
  <textarea name="intakeCompetitors" placeholder="Competitors / Incumbent">${opp?.intakeCompetitors || ''}</textarea>
  <textarea name="intakeWinStrategy" placeholder="Why Should We Win">${opp?.intakeWinStrategy || ''}</textarea>
  <textarea name="presalesArchitecture" placeholder="Presales Architecture Notes">${opp?.presalesArchitecture || ''}</textarea>
