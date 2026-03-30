@@ -2232,7 +2232,11 @@ function openAddModal() {
  <option value="Worry" ${contact?.emotion === 'Worry' ? 'selected' : ''}>Worry</option>
  </select>
  
- <input class="input" name="accountId" placeholder="Account ID (optional)" value="${contact?.accountId || ''}">
+ <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Account *</label>
+<select class="input" required name="accountId">
+  <option value="" disabled ${!contact?.accountId ? 'selected' : ''}>Select Account *</option>
+  ${state.data.accounts.map(a => `<option value="${a.id}" ${contact?.accountId === a.id ? 'selected' : ''}>${a.name}</option>`).join('')}
+</select>
  
  <div style="margin-top:20px">
  <button type="button" class="btn" onclick="closeModal()">Cancel</button>
@@ -3826,7 +3830,7 @@ async function handlePOScan(event, poId) {
             role: 'user',
             content: [
               { type: 'image', source: { type: 'base64', media_type: file.type === 'application/pdf' ? 'application/pdf' : 'image/jpeg', data: base64.split(',')[1] }},
-              { type: 'text', text: 'Extract from this Purchase Order document: PO Number, PO Date, Customer Name, Total Value (in INR), Payment Terms, Delivery Address, and any item descriptions. Return as a clean formatted summary.' }
+              { type: 'text', text: 'Extract from this Purchase Order document: PO Number, PO Date, Customer Name, Total Value (in INR), Payment Terms, Delivery Address, Scope of Work (what is being supplied/delivered/installed), and any item descriptions or line items. Return as a clean formatted summary with clear section headers.' }
             ]
           }]
         })
