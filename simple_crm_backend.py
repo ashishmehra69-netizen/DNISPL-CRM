@@ -1549,7 +1549,7 @@ def set_password():
         return jsonify({"status": "ok", "email": email})
     finally:
         conn.close()
-     ─── AOP helpers ────────────────────────────────────────────────────────────
+# ─── AOP helpers ────────────────────────────────────────────────────────────
  
 _AOP_MONTHS_LOWER   = ['apr','may','jun','jul','aug','sep','oct','nov','dec','jan','feb','mar']
 _AOP_MONTHS_DISPLAY = ['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar']
