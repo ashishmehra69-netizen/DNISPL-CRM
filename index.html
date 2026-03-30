@@ -85,6 +85,17 @@ const SUPERVISOR_EMAIL = 'ashish.mehra@dnispl.com';
 const PASSWORD = 'crm2026'; // Simple password for demo
 const PRESALES_OWNER = 'vinod.v@dnispl.com';
 const PURCHASE_OWNER = 'narendra.singh@dnispl.com';
+const FINANCE_APPROVER = 'Rakesh.uniyal@dnispl.com';
+const PRESALES_APPROVER = 'vinod.v@dnispl.com';
+const IMPLEMENTATION_APPROVER = 'pokhraj.yadav@dnispl.com';
+const CEO_APPROVERS = ['ashish.mehra@dnispl.com', 'rakesh.uniyal@dnispl.com'];
+
+const PO_APPROVAL_CHAIN = [
+  { key: 'presales', label: 'Presales Approval', email: 'vinod.v@dnispl.com', role: 'Presales Head' },
+  { key: 'finance', label: 'Finance Approval', email: 'rakesh.uniyal@dnispl.com', role: 'Finance' },
+  { key: 'implementation', label: 'Implementation Approval', email: 'pokhraj.yadav@dnispl.com', role: 'Implementation Head' },
+  { key: 'ceo', label: 'P&L / CEO Approval', email: 'ashish.mehra@dnispl.com', role: 'CEO', alternates: ['rakesh.uniyal@dnispl.com'] }
+];
 const ESCALATION_EMAILS = ['ashish.mehra@dnispl.com', 'a.gupta@dnispl.com'];
 const OPPORTUNITY_INTAKE_REQUIRED_FIELDS = [
  { key: 'intakeProblemStatement', label: 'Problem Statement' },
@@ -483,7 +494,7 @@ function getWinProbSafe(opp) {
  
 let currentUser = '';
 let isSupervisor = false;
-let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] } };
+let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [], opportunities: [], activities: [], purchase_orders: [] } };
 let activityFilter = { mode: 'today', from: '', to: '' };
 let managerFilter = '';
 let slaEngineRunning = false;
@@ -1497,9 +1508,9 @@ function getFilteredData() {
  function render() {
  const role = getUserRole();
  const tabs = isSupervisor
- ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'aop', 'dashboard']
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'purchase', 'dashboard']
  : (role === 'sales'
- ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'aop']
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'purchase']
  : ['opportunities', 'workflow', 'activities']);
  if (!tabs.includes(state.activeTab)) state.activeTab = tabs[0];
  document.getElementById('tabs').innerHTML = tabs.map(t => 
@@ -1515,6 +1526,7 @@ function getFilteredData() {
  else if (state.activeTab === 'opportunities') content = renderOpportunities(filtered);
  	else if (state.activeTab === 'activities') content = 		renderActivities(filtered);
  else if (state.activeTab === 'workflow') content = renderWorkflow(filtered);
+ else if (state.activeTab === 'purchase') content = renderPurchaseOrders(filtered);
  else if (state.activeTab === 'aop') content = renderAop(filtered);
  else if (state.activeTab === 'dashboard') content = renderDashboard(filtered);
  
@@ -1991,6 +2003,9 @@ function openAddModal() {
  break;
  case 'activities':
  openActivityModal();
+ break;
+ case 'purchase':
+ openPurchaseOrderModal();
  break;
  default:
  openLeadModal();
@@ -3421,6 +3436,623 @@ function renderAopDashboardWidget(filtered) {
 window.addEventListener('load', () => {
  restoreSessionIfAny().catch(err => console.error('session restore failed', err));
 });
- </script>
+  // ═══════════════════════════════════════════════════════════════
+// PURCHASE ORDER MODULE — Full Approval Chain + PO Scan
+// ═══════════════════════════════════════════════════════════════
+
+const PO_TYPES = ['Managed Services', 'Hardware - Switches/Routers', 'Passive Infrastructure', 'SDWAN Implementation', 'Software/Licensing', 'AMC/Support Contract', 'Subcontract/Services'];
+const PO_STAGES = ['Draft', 'Pending Presales+Finance Approval', 'Presales Approved', 'Finance Approved', 'Both Approved - Pending Implementation', 'Implementation Approved', 'Pending CEO Approval', 'CEO Approved', 'PO Issued to Vendor', 'Goods Received', 'Installation Done', 'Customer Sign-off', 'Invoiced', 'Closed'];
+const PO_APPROVAL_LEVELS = ['Purchase Head', 'CFO', 'MD'];
+
+const FINANCE_APPROVER = 'narendra.singh@dnispl.com';
+const PRESALES_APPROVER = 'vinod.v@dnispl.com';
+const IMPLEMENTATION_APPROVER = 'pokhraj.yadav@dnispl.com';
+const CEO_APPROVERS = ['ashish.mehra@dnispl.com', 'rakesh.uniyal@dnispl.com'];
+
+const PO_APPROVAL_CHAIN = [
+  { key: 'presales', label: 'Presales Approval', email: PRESALES_APPROVER, role: 'Presales Head' },
+  { key: 'finance', label: 'Finance Approval', email: FINANCE_APPROVER, role: 'Finance' },
+  { key: 'implementation', label: 'Implementation Approval', email: IMPLEMENTATION_APPROVER, role: 'Implementation Head' },
+  { key: 'ceo', label: 'P&L / CEO Approval', email: 'ashish.mehra@dnispl.com', role: 'CEO', alternates: ['rakesh.uniyal@dnispl.com'] }
+];
+
+function canApproveAtStage(stage) {
+  const me = normalizeEmail(currentUser);
+  if (stage === 'Pending Presales+Finance Approval') {
+    return me === normalizeEmail(PRESALES_APPROVER) || me === normalizeEmail(FINANCE_APPROVER) || isSupervisor;
+  }
+  if (stage === 'Both Approved - Pending Implementation') return me === normalizeEmail(IMPLEMENTATION_APPROVER) || isSupervisor;
+  if (stage === 'Pending CEO Approval') return CEO_APPROVERS.map(normalizeEmail).includes(me) || isSupervisor;
+  return false;
+}
+function getApprovalStatusHTML(po) {
+  const steps = [
+    { label: 'Presales', approvedKey: 'presalesApprovedBy', dateKey: 'presalesApprovedAt', pendingStage: 'Pending Presales Approval', approvedStage: 'Presales Approved' },
+    { label: 'Finance', approvedKey: 'financeApprovedBy', dateKey: 'financeApprovedAt', pendingStage: 'Pending Finance Approval', approvedStage: 'Finance Approved' },
+    { label: 'Implementation', approvedKey: 'implementationApprovedBy', dateKey: 'implementationApprovedAt', pendingStage: 'Pending Implementation Approval', approvedStage: 'Implementation Approved' },
+    { label: 'CEO P&L', approvedKey: 'ceoApprovedBy', dateKey: 'ceoApprovedAt', pendingStage: 'Pending CEO Approval', approvedStage: 'CEO Approved' }
+  ];
+  const stageIdx = PO_STAGES.indexOf(po.stage);
+  return `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px">` +
+    steps.map(s => {
+      const done = po[s.approvedKey];
+      const pending = po.stage === s.pendingStage;
+      const bg = done ? '#22c55e' : pending ? '#f59e0b' : 'rgba(255,255,255,0.15)';
+      const label = done ? `✅ ${s.label}: ${po[s.approvedKey]}` : pending ? `⏳ ${s.label}` : `○ ${s.label}`;
+      return `<span class="tag" style="background:${bg}; font-size:0.75em">${label}</span>`;
+    }).join('') + `</div>`;
+}
+
+function getPOStageColor(stage) {
+  const colors = {
+    'Draft': 'rgba(255,255,255,0.2)',
+    'Pending Presales Approval': '#f59e0b',
+    'Presales Approved': '#3b82f6',
+    'Pending Finance Approval': '#f59e0b',
+    'Finance Approved': '#3b82f6',
+    'Pending Implementation Approval': '#f59e0b',
+    'Implementation Approved': '#3b82f6',
+    'Pending CEO Approval': '#ef4444',
+    'CEO Approved': '#22c55e',
+    'PO Issued to Vendor': '#8b5cf6',
+    'Goods Received': '#06b6d4',
+    'Installation Done': '#10b981',
+    'Customer Sign-off': '#22c55e',
+    'Invoiced': '#4ade80',
+    'Closed': 'rgba(255,255,255,0.3)'
+  };
+  return colors[stage] || 'rgba(255,255,255,0.2)';
+}
+
+function normalizePOFromStorage(po) {
+  return {
+    id: po.id || Date.now().toString(),
+    poNumber: po.poNumber || '',
+    poType: po.poType || '',
+    stage: po.stage || 'Draft',
+    opportunityId: po.opportunityId || '',
+    accountId: po.accountId || '',
+    accountName: po.accountName || '',
+    vendorName: po.vendorName || '',
+    vendorPONumber: po.vendorPONumber || '',
+    oem: po.oem || '',
+    dealRegistrationNo: po.dealRegistrationNo || '',
+    description: po.description || '',
+    value: Number(po.value || 0),
+    vendorValue: Number(po.vendorValue || 0),
+    paymentTermsCustomer: po.paymentTermsCustomer || '',
+    paymentTermsVendor: po.paymentTermsVendor || '',
+    approvalLevel: po.approvalLevel || '',
+    // Approval chain fields
+    presalesApprovedBy: po.presalesApprovedBy || '',
+    presalesApprovedAt: po.presalesApprovedAt || '',
+    financeApprovedBy: po.financeApprovedBy || '',
+    financeApprovedAt: po.financeApprovedAt || '',
+    implementationApprovedBy: po.implementationApprovedBy || '',
+    implementationApprovedAt: po.implementationApprovedAt || '',
+    ceoApprovedBy: po.ceoApprovedBy || '',
+    ceoApprovedAt: po.ceoApprovedAt || '',
+    // Delivery fields
+    expectedDelivery: po.expectedDelivery || '',
+    actualDelivery: po.actualDelivery || '',
+    grnNumber: po.grnNumber || '',
+    grnDate: po.grnDate || '',
+    invoiceNumber: po.invoiceNumber || '',
+    invoiceDate: po.invoiceDate || '',
+    notes: po.notes || '',
+    siteAddress: po.siteAddress || '',
+    isSiteWork: po.isSiteWork || false,
+    siteCompletionDate: po.siteCompletionDate || '',
+    // PO scan
+    scannedPOData: po.scannedPOData || '',
+    scannedPOImage: po.scannedPOImage || '',
+    owner: po.owner || '',
+    createdDate: po.createdDate || new Date().toISOString(),
+    modifiedDate: po.modifiedDate || new Date().toISOString()
+  };
+}
+
+function savePurchaseOrders() {
+  if (!Array.isArray(state.data.purchase_orders)) state.data.purchase_orders = [];
+  localStorage.setItem('crmPurchaseOrders', JSON.stringify(state.data.purchase_orders));
+}
+
+function loadPurchaseOrders() {
+  try {
+    const saved = localStorage.getItem('crmPurchaseOrders');
+    state.data.purchase_orders = saved ? JSON.parse(saved).map(normalizePOFromStorage) : [];
+  } catch(e) { state.data.purchase_orders = []; }
+}
+
+function renderPurchaseOrders(filtered) {
+  loadPurchaseOrders();
+  const pos = state.data.purchase_orders || [];
+  const totalValue = pos.reduce((s, p) => s + (p.value || 0), 0);
+  const totalVendor = pos.reduce((s, p) => s + (p.vendorValue || 0), 0);
+  const totalMargin = totalValue - totalVendor;
+  const marginPct = totalValue > 0 ? ((totalMargin / totalValue) * 100).toFixed(1) : 0;
+  const pendingApprovals = pos.filter(p => p.stage.startsWith('Pending')).length;
+  const overdueDelivery = pos.filter(p => p.expectedDelivery && new Date(p.expectedDelivery) < new Date() && !['Goods Received','Installation Done','Customer Sign-off','Invoiced','Closed'].includes(p.stage)).length;
+  const myApprovals = pos.filter(p => canApproveAtStage(p.stage));
+
+  const byStage = {};
+  PO_STAGES.forEach(s => byStage[s] = []);
+  pos.forEach(po => { (byStage[po.stage] || byStage['Draft']).push(po); });
+
+  return `
+  <div class="card">
+    <h2>📦 Purchase Orders (${pos.length})</h2>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-top:16px">
+      <div class="metric" style="padding:14px; text-align:center">
+        <div style="font-size:0.8em; opacity:0.8">Customer PO Value</div>
+        <div style="font-size:1.3em; font-weight:bold; color:#4ade80">₹${(totalValue/100000).toFixed(1)}L</div>
+      </div>
+      <div class="metric" style="padding:14px; text-align:center">
+        <div style="font-size:0.8em; opacity:0.8">Vendor Cost</div>
+        <div style="font-size:1.3em; font-weight:bold; color:#60a5fa">₹${(totalVendor/100000).toFixed(1)}L</div>
+      </div>
+      <div class="metric" style="padding:14px; text-align:center">
+        <div style="font-size:0.8em; opacity:0.8">Gross Margin</div>
+        <div style="font-size:1.3em; font-weight:bold; color:#f59e0b">₹${(totalMargin/100000).toFixed(1)}L (${marginPct}%)</div>
+      </div>
+      <div class="metric" style="padding:14px; text-align:center">
+        <div style="font-size:0.8em; opacity:0.8">Pending Approvals</div>
+        <div style="font-size:1.3em; font-weight:bold; color:${pendingApprovals > 0 ? '#f87171' : '#4ade80'}">${pendingApprovals}</div>
+      </div>
+      <div class="metric" style="padding:14px; text-align:center">
+        <div style="font-size:0.8em; opacity:0.8">Overdue Delivery</div>
+        <div style="font-size:1.3em; font-weight:bold; color:${overdueDelivery > 0 ? '#f87171' : '#4ade80'}">${overdueDelivery}</div>
+      </div>
+    </div>
+  </div>
+
+  ${myApprovals.length > 0 ? `
+  <div class="card" style="border:2px solid #f59e0b; margin-top:12px">
+    <h3>⚡ Awaiting Your Approval (${myApprovals.length})</h3>
+    <div class="grid" style="margin-top:10px">
+      ${myApprovals.map(po => `
+      <div class="item-card" style="border:1px solid #f59e0b">
+        <h3>${po.poNumber || 'Draft PO'} — ${po.accountName || 'No Account'}</h3>
+        <div style="color:#4ade80; font-weight:bold">₹${(po.value/100000).toFixed(1)}L</div>
+        <div style="font-size:0.85em; margin:6px 0"><span class="tag" style="background:#f59e0b">${po.stage}</span></div>
+        ${getApprovalStatusHTML(po)}
+        <div style="margin-top:10px">
+          <button type="button" class="btn btn-success" onclick="approveCurrentStage('${po.id}')">✅ Approve Now</button>
+          <button type="button" class="btn" onclick="editPurchaseOrder('${po.id}')">View Details</button>
+        </div>
+      </div>`).join('')}
+    </div>
+  </div>` : ''}
+
+  <div style="margin:20px 0">
+    <h3 style="margin-bottom:12px">📋 PO Pipeline by Stage</h3>
+    ${PO_STAGES.map(stage => {
+      const stagePOs = byStage[stage] || [];
+      if (!stagePOs.length) return '';
+      return `
+      <div class="card" style="margin-bottom:10px">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px">
+          <span><span class="tag" style="background:${getPOStageColor(stage)}">${stage}</span> <strong>${stagePOs.length} PO${stagePOs.length > 1 ? 's' : ''}</strong></span>
+          <span style="font-size:0.85em; opacity:0.8">₹${(stagePOs.reduce((s,p)=>s+(p.value||0),0)/100000).toFixed(1)}L</span>
+        </div>
+        <div class="grid">
+          ${stagePOs.map(po => `
+          <div class="item-card" onclick="editPurchaseOrder('${po.id}')">
+            <div style="display:flex; justify-content:space-between">
+              <h3 style="font-size:0.9em">${po.poNumber || 'Draft PO'}</h3>
+              <span class="tag" style="font-size:0.75em">${po.poType || 'General'}</span>
+            </div>
+            <div style="color:#4ade80; font-weight:bold; margin:4px 0">₹${(po.value/100000).toFixed(1)}L | Vendor: ₹${(po.vendorValue/100000).toFixed(1)}L | Margin: ₹${((po.value-po.vendorValue)/100000).toFixed(1)}L</div>
+            <div style="font-size:0.82em; opacity:0.9"><b>Account:</b> ${po.accountName || 'NA'} | <b>Vendor:</b> ${po.vendorName || 'NA'} | <b>OEM:</b> ${po.oem || 'NA'}</div>
+            ${getApprovalStatusHTML(po)}
+            ${po.scannedPOImage ? `<div style="margin-top:6px"><span class="tag" style="background:#8b5cf6">📄 PO Scan Attached</span></div>` : ''}
+            ${po.expectedDelivery ? `<div style="margin-top:4px; font-size:0.8em">${new Date(po.expectedDelivery) < new Date() && !['Goods Received','Closed','Invoiced','Customer Sign-off'].includes(po.stage) ? `<span class="tag" style="background:#ef4444">⚠ Overdue: ${fmtDate(po.expectedDelivery)}</span>` : `<span class="tag">📅 Delivery: ${fmtDate(po.expectedDelivery)}</span>`}</div>` : ''}
+            <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap">
+              <button type="button" class="btn" onclick="event.stopPropagation();editPurchaseOrder('${po.id}')">Edit</button>
+              ${po.stage === 'Draft' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPOForApproval('${po.id}')">Submit for Approval</button>` : ''}
+              ${canApproveAtStage(po.stage) ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();approveCurrentStage('${po.id}')">✅ Approve</button>` : ''}
+              ${po.stage === 'CEO Approved' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();issuePOToVendor('${po.id}')">Issue PO to Vendor</button>` : ''}
+              ${po.stage === 'PO Issued to Vendor' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();recordGRN('${po.id}')">Record GRN</button>` : ''}
+              ${po.stage === 'Goods Received' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();markInstallationDone('${po.id}')">Mark Installation Done</button>` : ''}
+              ${po.stage === 'Installation Done' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();customerSignoff('${po.id}')">Customer Sign-off</button>` : ''}
+              ${po.stage === 'Customer Sign-off' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();raiseInvoice('${po.id}')">Raise Invoice</button>` : ''}
+              ${po.stage === 'Invoiced' ? `<button type="button" class="btn" onclick="event.stopPropagation();closePO('${po.id}')">Close PO</button>` : ''}
+            </div>
+          </div>`).join('')}
+        </div>
+      </div>`;
+    }).join('')}
+    ${pos.length === 0 ? '<div class="card">No purchase orders yet. Click + to create one.</div>' : ''}
+  </div>
+
+  <div class="card">
+    <h3>🔄 Approval Flow: Presales → Finance → Implementation → CEO P&L</h3>
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:12px; font-size:0.85em">
+      ${PO_APPROVAL_CHAIN.map((step, i) => `
+        <div style="background:rgba(255,255,255,0.12); padding:8px 14px; border-radius:8px; text-align:center">
+          <div style="font-weight:bold">${step.label}</div>
+          <div style="opacity:0.8; font-size:0.85em">${step.email}</div>
+        </div>
+        ${i < PO_APPROVAL_CHAIN.length - 1 ? '<div style="font-size:1.5em">→</div>' : ''}
+      `).join('')}
+    </div>
+  </div>
+  `;
+}
+
+function openPurchaseOrderModal(po = null) {
+  const filtered = getFilteredData();
+  document.getElementById('modal').innerHTML = `
+  <div class="modal-content">
+    <h2>${po ? 'Edit' : 'New'} Purchase Order</h2>
+    <div style="margin:8px 0 16px; padding:10px; border-radius:8px; background:rgba(255,255,255,0.15); font-size:0.85em">
+      📅 Created: ${fmtDateTime(po?.createdDate || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(po?.modifiedDate || new Date().toISOString())}
+    </div>
+
+    ${po ? `<div style="margin-bottom:16px">${getApprovalStatusHTML(po)}</div>` : ''}
+
+    <div style="margin-bottom:16px; padding:12px; background:rgba(255,255,255,0.12); border-radius:8px">
+      <h3 style="margin-bottom:10px">📄 Scan Customer PO</h3>
+      <input type="file" id="poScanInput" accept="image/*,application/pdf" style="display:none" onchange="handlePOScan(event, '${po?.id || ''}')">
+      <button type="button" class="btn" onclick="document.getElementById('poScanInput').click()">📷 Upload PO Scan (Photo/PDF)</button>
+      ${po?.scannedPOImage ? `<div style="margin-top:8px"><span class="tag" style="background:#22c55e">✅ PO Scan Attached</span></div>` : ''}
+      ${po?.scannedPOData ? `<div style="margin-top:8px; font-size:0.82em; opacity:0.9; background:rgba(0,0,0,0.2); padding:8px; border-radius:6px"><b>AI Extracted:</b><br>${po.scannedPOData}</div>` : ''}
+      <div id="poScanStatus" style="margin-top:6px; font-size:0.85em"></div>
+    </div>
+
+    <form onsubmit="savePurchaseOrder(event, ${po ? `'${po.id}'` : 'null'})">
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">PO Number</label>
+      <input class="input" name="poNumber" placeholder="e.g. DNISPL/PO/2026/001" value="${po?.poNumber || ''}">
+
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">PO Type *</label>
+      <select class="input" required name="poType">
+        <option value="">Select PO Type *</option>
+        ${PO_TYPES.map(t => `<option value="${t}" ${po?.poType === t ? 'selected' : ''}>${t}</option>`).join('')}
+      </select>
+
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Stage</label>
+      <select class="input" name="stage" ${isSupervisor ? '' : 'disabled'}>
+        ${PO_STAGES.map(s => `<option value="${s}" ${(po?.stage || 'Draft') === s ? 'selected' : ''}>${s}</option>`).join('')}
+      </select>
+
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Linked Account</label>
+      <select class="input" name="accountId">
+        <option value="">Select Account</option>
+        ${filtered.accounts.map(a => `<option value="${a.id}" data-name="${a.name}" ${po?.accountId === a.id ? 'selected' : ''}>${a.name}</option>`).join('')}
+      </select>
+
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Linked Opportunity</label>
+      <select class="input" name="opportunityId">
+        <option value="">Select Opportunity (optional)</option>
+        ${filtered.opportunities.map(o => `<option value="${o.id}" ${po?.opportunityId === o.id ? 'selected' : ''}>${o.name}</option>`).join('')}
+      </select>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Customer PO Value (₹) *</label>
+          <input class="input" required type="number" name="value" placeholder="₹ Value" value="${po?.value || ''}">
+        </div>
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Vendor Cost (₹)</label>
+          <input class="input" type="number" name="vendorValue" placeholder="₹ Vendor cost" value="${po?.vendorValue || ''}">
+        </div>
+      </div>
+
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Vendor Name *</label>
+      <input class="input" required name="vendorName" placeholder="Distributor / Vendor" value="${po?.vendorName || ''}">
+
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">OEM / Brand</label>
+      <input class="input" name="oem" placeholder="e.g. Cisco, Fortinet, Juniper" value="${po?.oem || ''}">
+
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Deal Registration Number</label>
+      <input class="input" name="dealRegistrationNo" placeholder="OEM deal reg number" value="${po?.dealRegistrationNo || ''}">
+
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Vendor PO Number</label>
+      <input class="input" name="vendorPONumber" placeholder="PO issued to vendor" value="${po?.vendorPONumber || ''}">
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Payment Terms — Customer</label>
+          <input class="input" name="paymentTermsCustomer" placeholder="e.g. 30 days" value="${po?.paymentTermsCustomer || ''}">
+        </div>
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Payment Terms — Vendor</label>
+          <input class="input" name="paymentTermsVendor" placeholder="e.g. 15 days" value="${po?.paymentTermsVendor || ''}">
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Expected Delivery</label>
+          <input class="input" type="date" name="expectedDelivery" value="${po?.expectedDelivery || ''}">
+        </div>
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Actual Delivery</label>
+          <input class="input" type="date" name="actualDelivery" value="${po?.actualDelivery || ''}">
+        </div>
+      </div>
+
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">GRN Number</label>
+      <input class="input" name="grnNumber" placeholder="Goods Receipt Note" value="${po?.grnNumber || ''}">
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">GRN Date</label>
+          <input class="input" type="date" name="grnDate" value="${po?.grnDate || ''}">
+        </div>
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Site Completion Date</label>
+          <input class="input" type="date" name="siteCompletionDate" value="${po?.siteCompletionDate || ''}">
+        </div>
+      </div>
+
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Invoice Number</label>
+      <input class="input" name="invoiceNumber" placeholder="Your invoice to customer" value="${po?.invoiceNumber || ''}">
+
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Invoice Date</label>
+      <input class="input" type="date" name="invoiceDate" value="${po?.invoiceDate || ''}">
+
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Site Address</label>
+      <input class="input" name="siteAddress" placeholder="Delivery / installation site" value="${po?.siteAddress || ''}">
+
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Site Work Required?</label>
+      <select class="input" name="isSiteWork">
+        <option value="false" ${!po?.isSiteWork ? 'selected' : ''}>No</option>
+        <option value="true" ${po?.isSiteWork ? 'selected' : ''}>Yes — Passive/Civil work included</option>
+      </select>
+
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Description / Scope</label>
+      <textarea name="description" placeholder="What is being procured / delivered">${po?.description || ''}</textarea>
+
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Notes / Risks</label>
+      <textarea name="notes" placeholder="Internal notes, risks, dependencies">${po?.notes || ''}</textarea>
+
+      <div style="margin-top:20px; display:flex; gap:8px; flex-wrap:wrap">
+        <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-success">Save PO</button>
+        ${po?.stage === 'Draft' ? `<button type="button" class="btn btn-success" onclick="event.preventDefault();submitPOForApproval('${po.id}')">Submit for Approval</button>` : ''}
+        ${po ? `<button type="button" class="btn btn-danger" onclick="deletePurchaseOrder('${po.id}')">Delete</button>` : ''}
+      </div>
+    </form>
+  </div>`;
+  document.getElementById('modal').classList.add('show');
+}
+
+async function handlePOScan(event, poId) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const statusEl = document.getElementById('poScanStatus');
+  if (statusEl) statusEl.textContent = '🔄 Reading file...';
+  const reader = new FileReader();
+  reader.onload = async function(e) {
+    const base64 = e.target.result;
+    if (statusEl) statusEl.textContent = '🤖 Extracting PO details with AI...';
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1000,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: file.type === 'application/pdf' ? 'application/pdf' : 'image/jpeg', data: base64.split(',')[1] }},
+              { type: 'text', text: 'Extract from this Purchase Order document: PO Number, PO Date, Customer Name, Total Value (in INR), Payment Terms, Delivery Address, and any item descriptions. Return as a clean formatted summary.' }
+            ]
+          }]
+        })
+      });
+      const data = await response.json();
+      const extracted = data?.content?.[0]?.text || 'Could not extract details.';
+      window._pendingPOScan = { image: base64, data: extracted, poId };
+      if (statusEl) statusEl.innerHTML = `<span style="color:#4ade80">✅ AI Extraction done. Save the PO to attach.</span><br><div style="margin-top:6px; font-size:0.82em; background:rgba(0,0,0,0.2); padding:8px; border-radius:6px">${extracted}</div>`;
+    } catch(err) {
+      window._pendingPOScan = { image: base64, data: 'Manual review needed', poId };
+      if (statusEl) statusEl.textContent = '✅ File attached. AI extraction unavailable — will attach scan only.';
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+function savePurchaseOrder(e, id) {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target));
+  loadPurchaseOrders();
+  const existing = id ? state.data.purchase_orders.find(p => p.id === id) : null;
+  const accountOpt = e.target.querySelector('select[name="accountId"] option:checked');
+  const scan = window._pendingPOScan;
+  const po = normalizePOFromStorage({
+    ...existing,
+    id: id || Date.now().toString() + Math.random().toString().slice(2),
+    poNumber: data.poNumber || '',
+    poType: data.poType || '',
+    stage: isSupervisor ? (data.stage || 'Draft') : (existing?.stage || 'Draft'),
+    accountId: data.accountId || '',
+    accountName: accountOpt?.dataset?.name || accountOpt?.text || existing?.accountName || '',
+    opportunityId: data.opportunityId || '',
+    vendorName: data.vendorName || '',
+    vendorPONumber: data.vendorPONumber || '',
+    oem: data.oem || '',
+    dealRegistrationNo: data.dealRegistrationNo || '',
+    description: data.description || '',
+    value: parseFloat(data.value || 0),
+    vendorValue: parseFloat(data.vendorValue || 0),
+    paymentTermsCustomer: data.paymentTermsCustomer || '',
+    paymentTermsVendor: data.paymentTermsVendor || '',
+    expectedDelivery: data.expectedDelivery || '',
+    actualDelivery: data.actualDelivery || '',
+    grnNumber: data.grnNumber || '',
+    grnDate: data.grnDate || '',
+    invoiceNumber: data.invoiceNumber || '',
+    invoiceDate: data.invoiceDate || '',
+    siteAddress: data.siteAddress || '',
+    isSiteWork: data.isSiteWork === 'true',
+    siteCompletionDate: data.siteCompletionDate || '',
+    notes: data.notes || '',
+    scannedPOImage: (scan?.poId === id || !id) && scan?.image ? scan.image : (existing?.scannedPOImage || ''),
+    scannedPOData: (scan?.poId === id || !id) && scan?.data ? scan.data : (existing?.scannedPOData || ''),
+    owner: existing?.owner || currentUser,
+    createdDate: existing?.createdDate || new Date().toISOString(),
+    modifiedDate: new Date().toISOString()
+  });
+  window._pendingPOScan = null;
+  if (id) {
+    const idx = state.data.purchase_orders.findIndex(p => p.id === id);
+    if (idx > -1) state.data.purchase_orders[idx] = po;
+    else state.data.purchase_orders.push(po);
+  } else {
+    state.data.purchase_orders.push(po);
+  }
+  savePurchaseOrders();
+  closeModal();
+  render();
+}
+
+function editPurchaseOrder(id) {
+  loadPurchaseOrders();
+  openPurchaseOrderModal(state.data.purchase_orders.find(p => p.id === id));
+}
+
+function deletePurchaseOrder(id) {
+  if (!confirm('Delete this purchase order?')) return;
+  loadPurchaseOrders();
+  state.data.purchase_orders = state.data.purchase_orders.filter(p => p.id !== id);
+  savePurchaseOrders();
+  closeModal();
+  render();
+}
+
+function submitPOForApproval(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po) return;
+  po.stage = 'Pending Presales+Finance Approval';
+  po.modifiedDate = new Date().toISOString();
+  savePurchaseOrders();
+  closeModal();
+  render();
+  alert('PO submitted. Presales (vinod.v@dnispl.com) and Finance (rakehs.uniyal@dnispl.com) can now approve in parallel.');
+}
+
+function approveCurrentStage(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po) return;
+  const now = new Date().toISOString();
+  const me = normalizeEmail(currentUser);
+
+  if (po.stage === 'Pending Presales+Finance Approval') {
+    // Presales approves
+    if (me === normalizeEmail(PRESALES_APPROVER) && !po.presalesApprovedBy) {
+      po.presalesApprovedBy = currentUser;
+      po.presalesApprovedAt = now;
+      alert('Presales approved ✅ — waiting for Finance approval in parallel');
+    }
+    // Finance approves
+    else if (me === normalizeEmail(FINANCE_APPROVER) && !po.financeApprovedBy) {
+      po.financeApprovedBy = currentUser;
+      po.financeApprovedAt = now;
+      alert('Finance approved ✅ — waiting for Presales approval in parallel');
+    }
+    // Supervisor can approve both
+    else if (isSupervisor) {
+      if (!po.presalesApprovedBy) { po.presalesApprovedBy = currentUser; po.presalesApprovedAt = now; }
+      if (!po.financeApprovedBy) { po.financeApprovedBy = currentUser; po.financeApprovedAt = now; }
+      alert('Both approved by supervisor ✅');
+    }
+    // Check if both now done — advance to Implementation
+    if (po.presalesApprovedBy && po.financeApprovedBy) {
+      po.stage = 'Both Approved - Pending Implementation';
+      alert('Both Presales & Finance approved ✅ — forwarded to Implementation (pokhraj.yadav@dnispl.com)');
+    }
+  } else if (po.stage === 'Both Approved - Pending Implementation') {
+    po.implementationApprovedBy = currentUser;
+    po.implementationApprovedAt = now;
+    po.stage = 'Pending CEO Approval';
+    alert('Implementation approved ✅ — forwarded to CEO for P&L sign-off');
+  } else if (po.stage === 'Pending CEO Approval') {
+    po.ceoApprovedBy = currentUser;
+    po.ceoApprovedAt = now;
+    po.stage = 'CEO Approved';
+    alert('CEO approved ✅ — PO fully approved. Ready to issue to vendor.');
+  }
+  po.modifiedDate = now;
+  savePurchaseOrders();
+  render();
+}
+
+function issuePOToVendor(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po) return;
+  const vendorPO = prompt('Enter Vendor PO Number:', po.vendorPONumber || '');
+  if (!vendorPO) return;
+  po.vendorPONumber = vendorPO;
+  po.stage = 'PO Issued to Vendor';
+  po.modifiedDate = new Date().toISOString();
+  savePurchaseOrders();
+  render();
+}
+
+function recordGRN(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po) return;
+  const grn = prompt('GRN Number:');
+  if (!grn) return;
+  po.grnNumber = grn;
+  po.grnDate = new Date().toISOString().slice(0, 10);
+  po.actualDelivery = po.actualDelivery || new Date().toISOString().slice(0, 10);
+  po.stage = 'Goods Received';
+  po.modifiedDate = new Date().toISOString();
+  savePurchaseOrders();
+  render();
+}
+
+function markInstallationDone(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po) return;
+  po.siteCompletionDate = po.siteCompletionDate || new Date().toISOString().slice(0, 10);
+  po.stage = 'Installation Done';
+  po.modifiedDate = new Date().toISOString();
+  savePurchaseOrders();
+  render();
+}
+
+function customerSignoff(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po) return;
+  po.stage = 'Customer Sign-off';
+  po.modifiedDate = new Date().toISOString();
+  savePurchaseOrders();
+  render();
+}
+
+function raiseInvoice(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po) return;
+  const inv = prompt('Invoice Number:');
+  if (!inv) return;
+  po.invoiceNumber = inv;
+  po.invoiceDate = new Date().toISOString().slice(0, 10);
+  po.stage = 'Invoiced';
+  po.modifiedDate = new Date().toISOString();
+  savePurchaseOrders();
+  render();
+}
+
+function closePO(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po || !confirm('Close this PO?')) return;
+  po.stage = 'Closed';
+  po.modifiedDate = new Date().toISOString();
+  savePurchaseOrders();
+  render();
+} </script>
 </body>
 </html> 
