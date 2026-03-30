@@ -533,7 +533,7 @@ async function restoreSessionIfAny() {
  const savedUser = normalizeEmail(localStorage.getItem('crmCurrentUser') || '');
  if (!savedUser) return false;
  currentUser = savedUser;
- isSupervisor = savedUser === SUPERVISOR_EMAIL.toLowerCase() || localStorage.getItem('crmIsSupervisor') === '1';
+ isSupervisor = ['ashish.mehra@dnispl.com', 'a.gupta@dnispl.com', 'rakesh.uniyal@dnispl.com'].includes(savedUser) || localStorage.getItem('crmIsSupervisor') === '1';
  managerFilter = '';
  applyLoggedInUi();
  const statusEl = document.getElementById('status');
@@ -1191,7 +1191,7 @@ async function login() {
  }
  
  currentUser = email;
- isSupervisor = email.toLowerCase() === SUPERVISOR_EMAIL.toLowerCase();
+ isSupervisor = ['ashish.mehra@dnispl.com', 'a.gupta@dnispl.com', 'rakesh.uniyal@dnispl.com'].includes(email.toLowerCase());
  managerFilter = '';
  
  applyLoggedInUi();
@@ -1350,8 +1350,8 @@ function seedAccountsFromMap() {
 
  seedAccountsFromMap();
  saveData();
- loadAopData();
- 
+ setTimeout(() => loadAopData().then(() => render()), 500);
+  
 function calculateWinProb(opp) {
  // Base probability from stage
  const stageProb = {
@@ -1508,7 +1508,7 @@ function getFilteredData() {
  function render() {
  const role = getUserRole();
  const tabs = isSupervisor
- ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'purchase', 'dashboard']
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'purchase', 'aop', 'dashboard']
  : (role === 'sales'
  ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'purchase']
  : ['opportunities', 'workflow', 'activities']);
@@ -3444,18 +3444,6 @@ const PO_TYPES = ['Managed Services', 'Hardware - Switches/Routers', 'Passive In
 const PO_STAGES = ['Draft', 'Pending Presales+Finance Approval', 'Presales Approved', 'Finance Approved', 'Both Approved - Pending Implementation', 'Implementation Approved', 'Pending CEO Approval', 'CEO Approved', 'PO Issued to Vendor', 'Goods Received', 'Installation Done', 'Customer Sign-off', 'Invoiced', 'Closed'];
 const PO_APPROVAL_LEVELS = ['Purchase Head', 'CFO', 'MD'];
 
-const FINANCE_APPROVER = 'narendra.singh@dnispl.com';
-const PRESALES_APPROVER = 'vinod.v@dnispl.com';
-const IMPLEMENTATION_APPROVER = 'pokhraj.yadav@dnispl.com';
-const CEO_APPROVERS = ['ashish.mehra@dnispl.com', 'rakesh.uniyal@dnispl.com'];
-
-const PO_APPROVAL_CHAIN = [
-  { key: 'presales', label: 'Presales Approval', email: PRESALES_APPROVER, role: 'Presales Head' },
-  { key: 'finance', label: 'Finance Approval', email: FINANCE_APPROVER, role: 'Finance' },
-  { key: 'implementation', label: 'Implementation Approval', email: IMPLEMENTATION_APPROVER, role: 'Implementation Head' },
-  { key: 'ceo', label: 'P&L / CEO Approval', email: 'ashish.mehra@dnispl.com', role: 'CEO', alternates: ['rakesh.uniyal@dnispl.com'] }
-];
-
 function canApproveAtStage(stage) {
   const me = normalizeEmail(currentUser);
   if (stage === 'Pending Presales+Finance Approval') {
@@ -3932,7 +3920,7 @@ function submitPOForApproval(id) {
   savePurchaseOrders();
   closeModal();
   render();
-  alert('PO submitted. Presales (vinod.v@dnispl.com) and Finance (rakehs.uniyal@dnispl.com) can now approve in parallel.');
+  alert('PO submitted. Presales (vinod.v@dnispl.com) and Finance (rakesh.uniyal@dnispl.com) can now approve in parallel.');
 }
 
 function approveCurrentStage(id) {
