@@ -4237,7 +4237,9 @@ async function saveRFPOpportunity(e) {
 }
  function exportOpportunitiesCsv() {
   const filtered = getFilteredData();
-  const rows = filtered.opportunities.map(o => {
+  const opps = filtered.opportunities;
+  if (!opps.length) { alert('No opportunities to export.'); return; }
+  const rows = opps.map(o => {
     const account = state.data.accounts.find(a => a.id === o.accountId);
     const win = getWinProbSafe(o);
     return [
@@ -4256,15 +4258,15 @@ async function saveRFPOpportunity(e) {
     ];
   });
   rows.unshift([
-    'ID', 'Opportunity', 'Account', 'Value (₹)', 'Value (L)',
-    'Stage', 'Workflow Stage', 'Sales Owner',
-    'Presales', 'Purchase',
-    'Win %', 'Weighted Value (₹)',
-    'Problem Statement', 'Why Now',
-    'Business Impact', 'Budget Range',
-    'Decision Timeline', 'Requirements',
-    'BOQ', 'Costing', 'Final Proposal',
-    'Created', 'Updated'
+    'ID','Opportunity','Account','Value (₹)','Value (L)',
+    'Stage','Workflow Stage','Sales Owner',
+    'Presales','Purchase',
+    'Win %','Weighted Value (₹)',
+    'Problem Statement','Why Now',
+    'Business Impact','Budget Range',
+    'Decision Timeline','Requirements',
+    'BOQ','Costing','Final Proposal',
+    'Created','Updated'
   ]);
   downloadCSV(`opportunities_${new Date().toISOString().slice(0,10)}.csv`, rows);
 }
