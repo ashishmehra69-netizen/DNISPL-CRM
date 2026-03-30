@@ -4075,6 +4075,7 @@ function closePO(id) {
   po.modifiedDate = new Date().toISOString();
   savePurchaseOrders();
   render();
+ } 
  async function handleRFPScan(event) {
   const file = event.target.files[0];
   if (!file) return;
