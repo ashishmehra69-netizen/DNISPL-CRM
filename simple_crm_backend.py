@@ -142,8 +142,6 @@ def init_db() -> None:
                 );
                 """
             )
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS closure_date DATE;")
-            
             cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS industry TEXT;")
             cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS tier TEXT;")
             cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS location TEXT;")
