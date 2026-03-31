@@ -256,6 +256,7 @@ def init_db() -> None:
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_integration_requirements TEXT;")
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_competitors TEXT;")
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_win_strategy TEXT;")
+            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS closure_date TEXT;")
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS aop_plans (
                     id SERIAL PRIMARY KEY,
