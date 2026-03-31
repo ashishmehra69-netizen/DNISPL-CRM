@@ -135,7 +135,6 @@ def init_db() -> None:
                     suspect_q8 TEXT,
                     suspect_q9 TEXT,
                     suspect_q10 TEXT,
-                    cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS closure_date TEXT;")
                     suspect_score INTEGER DEFAULT 0,
                     created_at TIMESTAMPTZ DEFAULT now(),
                     updated_at TIMESTAMPTZ DEFAULT now()
