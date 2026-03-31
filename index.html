@@ -1754,7 +1754,7 @@ ${filtered.accounts.map(a => `
  Purchase: ${formatUserLabel(o.assignedPurchase || 'Unassigned')}
  </div>
  <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
- 📅 Created: ${fmtDate(o.createdDate)}<br>🕒 Updated: ${fmtDate(o.modifiedDate)}
+ 📅 Created: ${fmtDate(o.createdDate)}<br>🕒 Updated: ${fmtDate(o.modifiedDate)}${o.closureDate ? `<br>🎯 Closure: ${fmtDate(o.closureDate)}` : ''}
  </div>
  <div style="margin-top:10px">
  <button type="button" class="btn" onclick="event.stopPropagation();editOpportunity('${o.id}')">Edit</button>
@@ -2112,6 +2112,8 @@ function openAddModal() {
  <input class="input" type="datetime-local" name="costingTat" value="${opp?.costingTat ? opp.costingTat.slice(0,16) : ''}">
  <textarea name="finalPricingProposal" placeholder="Final Pricing Proposal">${opp?.finalPricingProposal || ''}</textarea>
  <select class="input" name="workflowStage">
+ <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Expected Closure Date</label>
+ <input class="input" type="date" name="closureDate" value="${opp?.closureDate ? opp.closureDate.slice(0,10) : ''}">
  <option value="Sales Review" ${opp?.workflowStage === 'Sales Review' ? 'selected' : ''}>Sales Review</option>
  <option value="Assigned to Presales" ${opp?.workflowStage === 'Assigned to Presales' ? 'selected' : ''}>Assigned to Presales</option>
  <option value="Awaiting Purchase Costing" ${opp?.workflowStage === 'Awaiting Purchase Costing' ? 'selected' : ''}>Awaiting Purchase Costing</option>
@@ -2649,6 +2651,7 @@ async function saveOpportunity(e, id) {
  data.assignmentDueAt = existing?.assignmentDueAt || addHours(data.salesSubmittedAt, 4);
  data.presalesDueAt = existing?.presalesDueAt || addHours(data.salesSubmittedAt, 72);
  data.presalesEscalatedAt = existing?.presalesEscalatedAt || '';
+ data.closureDate = data.closureDate || existing?.closureDate || '';
  const missingIntake = OPPORTUNITY_INTAKE_REQUIRED_FIELDS
   .filter(f => !(data[f.key] || '').trim())
   .map(f => f.label);
@@ -2657,6 +2660,7 @@ async function saveOpportunity(e, id) {
   return;
  }
  const payload = { ...data, id: id || undefined };
+ closure_date: (data.closureDate || '').trim(),
  try {
   await upsertOpportunityToApi(payload);
   state.data.opportunities = await fetchOpportunitiesFromApi();
