@@ -120,27 +120,6 @@ def init_db() -> None:
                 );
                 """
             )
-              tier TEXT,
-                    location TEXT,
-                    company_size TEXT,
-                    annual_spend TEXT,
-                    mode TEXT,
-                    suspect_q1 TEXT,
-                    suspect_q2 TEXT,
-                    suspect_q3 TEXT,
-                    suspect_q4 TEXT,
-                    suspect_q5 TEXT,
-                    suspect_q6 TEXT,
-                    suspect_q7 TEXT,
-                    suspect_q8 TEXT,
-                    suspect_q9 TEXT,
-                    suspect_q10 TEXT,
-                    suspect_score INTEGER DEFAULT 0,
-                    created_at TIMESTAMPTZ DEFAULT now(),
-                    updated_at TIMESTAMPTZ DEFAULT now()
-                );
-                """
-            )
             cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS industry TEXT;")
             cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS tier TEXT;")
             cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS location TEXT;")
