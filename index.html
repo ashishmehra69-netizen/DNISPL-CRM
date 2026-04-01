@@ -487,9 +487,11 @@ const ACCOUNT_OWNER_MAP = {
 
 function getWinProbSafe(opp) {
  try {
-  if (typeof calculateWinProb === 'function') return calculateWinProb(opp);
- } catch (e) {}
- return Number(opp?.winProbability || 0);
+  return calculateWinProb(opp);
+ } catch (e) {
+  console.error('calculateWinProb failed:', e, opp);
+  return 25;
+ }
 }
  const CRM_API_BASE = '';
  
@@ -1356,106 +1358,67 @@ function seedAccountsFromMap() {
  saveData();
  setTimeout(() => loadAopData().then(() => render()), 500);
   
+ document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
+ render();
+ }
+
 function calculateWinProb(opp) {
  if (opp.stage === 'Closed Won') return 100;
  if (opp.stage === 'Closed Lost') return 0;
- const stageProb = {
- 'Discovery': 25,
- 'Proposal': 60,
- 'Negotiation': 85,
- };
- 
+ const stageProb = { 'Discovery': 25, 'Proposal': 60, 'Negotiation': 85 };
  let base = stageProb[opp.stage] || 25;
- 
- // Get account for this opportunity
  const account = state.data.accounts.find(a => a.id === opp.accountId);
- 
- // Get contacts for this account
  const contacts = state.data.contacts.filter(c => c.accountId === opp.accountId);
- 
  if (!account) return base;
- 
  let adjustments = 0;
- 
- // 1. ICP Score adjustment (±15%)
  const icpScore = calculateICPScore(account);
  if (icpScore >= 45) adjustments += 15;
  else if (icpScore >= 35) adjustments += 8;
- else if (icpScore >= 25) adjustments += 0;
- else adjustments -= 10;
- 
- // 2. Competition Position (±10%)
+ else if (icpScore < 25) adjustments -= 10;
  if (opp.competitionPosition === 'Strong') adjustments += 10;
  else if (opp.competitionPosition === 'Favorable') adjustments += 5;
  else if (opp.competitionPosition === 'Unfavorable') adjustments -= 8;
- 
- // 3. Buying Influence Coverage (±10%)
  const hasMAS = contacts.some(c => c.roleType === 'MAS');
  const hasCoach = contacts.some(c => c.roleType === 'Coach');
  const hasHighInfluence = contacts.some(c => c.influenceLevel === 'High');
- 
  if (hasMAS && hasCoach && hasHighInfluence) adjustments += 10;
  else if (hasMAS && hasHighInfluence) adjustments += 5;
  else if (!hasMAS) adjustments -= 5;
- 
- // 4. Contact Sentiment (±5%)
  const positiveEmotions = contacts.filter(c => c.emotion === 'Euphoria' || c.emotion === 'Great').length;
  const negativeEmotions = contacts.filter(c => c.emotion === 'Worry').length;
- 
  if (positiveEmotions > negativeEmotions && positiveEmotions > 0) adjustments += 5;
  else if (negativeEmotions > positiveEmotions && negativeEmotions > 0) adjustments -= 5;
- 
- // 5. Account Mode (±5%)
  if (account.mode === 'Business Expansion') adjustments += 5;
  else if (account.mode === 'Overcome Bottleneck') adjustments += 3;
  else if (account.mode === 'Status Quo') adjustments -= 5;
-
- // 6. Suspect Discovery Completeness (0 to +10)
  adjustments += getAccountSuspectScore(account);
- 
  return Math.min(100, Math.max(0, base + adjustments));
 }
 
 function calculateICPScore(account) {
  let score = 0;
- 
- // Company Size (0-15 points)
- const sizeRanges = {
- '1000+': 15, '500-1000': 12, '100-500': 10,
- '50-100': 7, '10-50': 4, '1-10': 2
- };
+ const sizeRanges = { '1000+': 15, '500-1000': 12, '100-500': 10, '50-100': 7, '10-50': 4, '1-10': 2 };
  score += sizeRanges[account.companySize] || 0;
- 
- // Industry (0-10 points)
  const targetIndustries = ['Technology', 'Finance', 'Healthcare', 'Manufacturing'];
  if (targetIndustries.includes(account.industry)) score += 10;
  else if (account.industry) score += 5;
- 
- // Budget (0-15 points)
  if (account.annualSpend) {
- const spendNum = parseFloat(account.annualSpend.replace(/[^\d.]/g, ''));
- if (spendNum >= 50) score += 15;
- else if (spendNum >= 20) score += 12;
- else if (spendNum >= 10) score += 8;
- else if (spendNum >= 5) score += 5;
- else score += 2;
+  const spendNum = parseFloat(String(account.annualSpend).replace(/[^\d.]/g, ''));
+  if (spendNum >= 50) score += 15;
+  else if (spendNum >= 20) score += 12;
+  else if (spendNum >= 10) score += 8;
+  else if (spendNum >= 5) score += 5;
+  else score += 2;
  }
- 
- // Location (0-5 points)
  const tierOne = ['Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai', 'Pune'];
- if (tierOne.some(city => account.location?.includes(city))) score += 5;
+ if (tierOne.some(city => (account.location || '').includes(city))) score += 5;
  else if (account.location) score += 3;
- 
- // Tier (0-10 points)
  const tierScores = { 'A': 10, 'B': 7, 'C': 4 };
  score += tierScores[account.tier] || 0;
- 
  return Math.min(score, 60);
 }
 
- document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
- render();
- }
+ function saveData() {
 
  function saveData() {
  localStorage.setItem('crmData', JSON.stringify(state.data));
