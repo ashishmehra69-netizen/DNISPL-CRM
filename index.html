@@ -74,6 +74,7 @@
  <input type="file" id="leadsCsvInput" accept=".csv" style="display:none" onchange="handleLeadsCsv(event)">
  <input type="file" id="oppsCsvInput" accept=".csv" style="display:none" onchange="handleOppsCsv(event)">
  <input type="file" id="rfpScanInput" accept="image/*,application/pdf" style="display:none" onchange="handleRFPScan(event)">
+ <input type="file" id="wonPoScanInput" accept="image/*,application/pdf" style="display:none" onchange="handleWonPOScan(event)"> 
 
  <script>
  // ═══════════════════════════════════════════════════════════════
@@ -1236,8 +1237,9 @@ async function loadData() {
  if (savedData) {
  state.data = JSON.parse(savedData);
  } else {
- state.data = { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] };
+ state.data = { leads: [], accounts: [], contacts: [], opportunities: [], activities: [], purchase_orders: [] };
  }
+ loadPurchaseOrders();
 
  const [accountsResult, activitiesResult, leadsResult, contactsResult, oppsResult] = await Promise.allSettled([
   withTimeout(fetchAccountsFromApi(), 7000, 'accounts'),
@@ -1355,14 +1357,15 @@ function seedAccountsFromMap() {
  setTimeout(() => loadAopData().then(() => render()), 500);
   
 function calculateWinProb(opp) {
- // Base probability from stage
+ if (opp.stage === 'Closed Won') return 100;
+ if (opp.stage === 'Closed Lost') return 0;
  const stageProb = {
  'Discovery': 25,
  'Proposal': 60,
  'Negotiation': 85,
- 'Closed Won': 100,
- 'Closed Lost': 0
  };
+ 
+ let base = stageProb[opp.stage] || 25;
  
  let base = stageProb[opp.stage] || 25;
  
@@ -1512,7 +1515,7 @@ function getFilteredData() {
  const tabs = isSupervisor
  ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'purchase', 'aop', 'dashboard']
  : (role === 'sales'
- ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'purchase']
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'purchase', 'aop']
  : ['opportunities', 'workflow', 'activities']);
  if (!tabs.includes(state.activeTab)) state.activeTab = tabs[0];
  document.getElementById('tabs').innerHTML = tabs.map(t => 
@@ -1654,8 +1657,8 @@ ${filtered.accounts.map(a => `
  <div style="margin-top:10px">
  <span class="tag">Tier ${a.tier}</span>
  <span class="tag">${a.location}</span>
- <span class="tag" style="background:#4ade80; color:white">Suspect Score: ${getAccountSuspectScore(a)}/10</span>
- <span class="tag" style="background:#22c55e; color:white">Questionnaire: ${getAccountQuestionnaireCompletion(a)}%</span>
+ <span class="tag" style="background:${getAccountSuspectScore(a) >= 10 ? '#4ade80' : '#ef4444'}; color:white">Suspect Score: ${getAccountSuspectScore(a)}/10</span>
+ <span class="tag" style="background:${getAccountQuestionnaireCompletion(a) >= 100 ? '#22c55e' : '#ef4444'}; color:white">Questionnaire: ${getAccountQuestionnaireCompletion(a)}%</span>
  </div>
  <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
  📅 Created: ${fmtDate(a.createdDate)}<br>🕒 Updated: ${fmtDate(a.modifiedDate)}
@@ -1730,6 +1733,7 @@ ${filtered.accounts.map(a => `
  <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
  <button class="btn" type="button" onclick="exportOpportunitiesCsv()">⬇ Export CSV</button>
  <button class="btn" type="button" onclick="document.getElementById('rfpScanInput').click()">📄 Scan RFP</button>
+ <button class="btn btn-success" type="button" onclick="document.getElementById('wonPoScanInput').click()">🏆 Scan Won PO</button>
  </div>
  <div class="grid">
  ${filtered.opportunities.map(o => {
@@ -4078,7 +4082,259 @@ function closePO(id) {
   po.modifiedDate = new Date().toISOString();
   savePurchaseOrders();
   render();
- } 
+ }
+ async function handleWonPOScan(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  event.target.value = '';
+
+  document.getElementById('modal').innerHTML = `
+  <div class="modal-content">
+    <h2>🏆 Won PO Scanner</h2>
+    <div id="wonPoStatus" style="padding:16px;background:rgba(255,255,255,0.12);border-radius:8px;margin-bottom:16px">
+      <div style="font-weight:600;margin-bottom:8px">🔄 Reading PO document...</div>
+      <div style="font-size:0.85em;opacity:0.8">AI is extracting all details. This takes 10–15 seconds.</div>
+    </div>
+    <div id="wonPoContent" style="display:none">
+      <div style="background:rgba(255,255,255,0.12);border-radius:10px;padding:14px;margin-bottom:16px">
+        <h3 style="margin-bottom:10px">📋 AI Extracted Summary</h3>
+        <div id="wonPoExtracted" style="background:rgba(0,0,0,0.2);padding:14px;border-radius:8px;font-size:0.85em;white-space:pre-wrap;max-height:320px;overflow-y:auto"></div>
+      </div>
+      <h3 style="margin-bottom:10px">Link to Opportunity & Create Purchase Order</h3>
+      <form onsubmit="saveWonPOFromScan(event)">
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Link to Opportunity (Closed Won) *</label>
+        <select class="input" required name="opportunityId" onchange="wonPoFillAccount(this)">
+          <option value="">Select Opportunity *</option>
+          ${state.data.opportunities
+            .filter(o => o.stage === 'Closed Won')
+            .map(o => {
+              const acc = state.data.accounts.find(a => a.id === o.accountId);
+              return `<option value="${o.id}" data-account-id="${o.accountId}" data-account-name="${acc?.name || ''}">${o.name}${acc ? ' — ' + acc.name : ''}</option>`;
+            }).join('')}
+        </select>
+
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Account</label>
+        <input class="input" name="accountName" id="wonPoAccountName" placeholder="Auto-filled from opportunity" readonly>
+        <input type="hidden" name="accountId" id="wonPoAccountId">
+
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">PO Number *</label>
+        <input class="input" required name="poNumber" placeholder="e.g. DNISPL/PO/2026/001" id="wonPoNumber">
+
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">PO Type *</label>
+        <select class="input" required name="poType">
+          <option value="">Select PO Type *</option>
+          ${PO_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}
+        </select>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Customer PO Value (₹) *</label>
+            <input class="input" required type="number" name="value" id="wonPoValue" placeholder="₹ Value">
+          </div>
+          <div>
+            <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Vendor Cost (₹)</label>
+            <input class="input" type="number" name="vendorValue" placeholder="₹ Vendor cost">
+          </div>
+        </div>
+
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Vendor Name</label>
+        <input class="input" name="vendorName" id="wonPoVendor" placeholder="Distributor / Vendor">
+
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">OEM / Brand</label>
+        <input class="input" name="oem" id="wonPoOem" placeholder="e.g. Cisco, Fortinet">
+
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Payment Terms — Customer</label>
+        <input class="input" name="paymentTermsCustomer" id="wonPoPaymentTerms" placeholder="e.g. 30 days net">
+
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Expected Delivery Date</label>
+        <input class="input" type="date" name="expectedDelivery" id="wonPoDelivery">
+
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Site Address</label>
+        <input class="input" name="siteAddress" id="wonPoSite" placeholder="Delivery / installation address">
+
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Description / Scope</label>
+        <textarea name="description" id="wonPoDescription" placeholder="What is being supplied / delivered / installed"></textarea>
+
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Notes</label>
+        <textarea name="notes" placeholder="Internal notes, risks, dependencies"></textarea>
+
+        <input type="hidden" name="wonPoData" id="wonPoHiddenData">
+        <input type="hidden" name="wonPoImage" id="wonPoHiddenImage">
+
+        <div style="margin-top:20px;display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-success">✅ Create PO from Won Order</button>
+        </div>
+      </form>
+    </div>
+    <div style="margin-top:10px">
+      <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+    </div>
+  </div>`;
+  document.getElementById('modal').classList.add('show');
+
+  const reader = new FileReader();
+  reader.onload = async function(e) {
+    const base64 = e.target.result;
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 2000,
+          messages: [{
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: file.type === 'application/pdf' ? 'application/pdf' : 'image/jpeg',
+                  data: base64.split(',')[1]
+                }
+              },
+              {
+                type: 'text',
+                text: `This is a Purchase Order (Won Order) received from a customer. Extract ALL details and return a structured summary with these sections:
+
+PO NUMBER:
+PO DATE:
+CUSTOMER / ISSUING COMPANY:
+BILLING ADDRESS:
+DELIVERY / SITE ADDRESS:
+TOTAL PO VALUE (₹):
+PAYMENT TERMS:
+DELIVERY TIMELINE / EXPECTED DATE:
+LINE ITEMS / SCOPE OF SUPPLY:
+  (list every item, quantity, unit price, total — be thorough)
+OEM / BRAND MENTIONED:
+VENDOR / DISTRIBUTOR (if mentioned):
+SPECIAL CONDITIONS OR TERMS:
+AUTHORISED SIGNATORY:
+CONTACT PERSON & DETAILS:
+WARRANTY / AMC TERMS (if mentioned):
+INSTALLATION REQUIREMENTS:
+KEY OBSERVATIONS / RISKS:
+
+Extract every detail visible. Be thorough on line items and scope.`
+              }
+            ]
+          }]
+        })
+      });
+      const data = await response.json();
+      const extracted = data?.content?.[0]?.text || 'Could not extract details.';
+
+      document.getElementById('wonPoStatus').style.display = 'none';
+      document.getElementById('wonPoContent').style.display = 'block';
+      document.getElementById('wonPoExtracted').textContent = extracted;
+      document.getElementById('wonPoHiddenData').value = extracted;
+      document.getElementById('wonPoHiddenImage').value = base64;
+
+      // Auto-fill form fields from extracted text
+      function extractField(text, ...labels) {
+        for (const label of labels) {
+          const regex = new RegExp(`${label}[:\\s]+([^\\n]+)`, 'i');
+          const match = text.match(regex);
+          if (match?.[1]?.trim()) return match[1].trim();
+        }
+        return '';
+      }
+
+      const poNum = extractField(extracted, 'PO NUMBER', 'PO NO', 'ORDER NUMBER');
+      const poVal = extractField(extracted, 'TOTAL PO VALUE', 'TOTAL VALUE', 'PO VALUE', 'AMOUNT');
+      const payTerms = extractField(extracted, 'PAYMENT TERMS');
+      const delivery = extractField(extracted, 'DELIVERY TIMELINE', 'EXPECTED DATE', 'DELIVERY DATE');
+      const site = extractField(extracted, 'DELIVERY.*ADDRESS', 'SITE ADDRESS', 'BILLING ADDRESS');
+      const vendor = extractField(extracted, 'VENDOR', 'DISTRIBUTOR');
+      const oem = extractField(extracted, 'OEM', 'BRAND');
+      const scope = extractField(extracted, 'LINE ITEMS.*SCOPE', 'SCOPE OF SUPPLY');
+
+      if (poNum) document.getElementById('wonPoNumber').value = poNum;
+      if (payTerms) document.getElementById('wonPoPaymentTerms').value = payTerms;
+      if (site) document.getElementById('wonPoSite').value = site;
+      if (vendor) document.getElementById('wonPoVendor').value = vendor;
+      if (oem) document.getElementById('wonPoOem').value = oem;
+      if (scope) document.getElementById('wonPoDescription').value = scope;
+
+      // Parse value — strip ₹, commas, lakhs etc
+      if (poVal) {
+        const numStr = poVal.replace(/[₹,\s]/g, '').replace(/L$/i, '');
+        const num = parseFloat(numStr);
+        if (!isNaN(num)) {
+          // If it looks like lakhs (small number), convert
+          document.getElementById('wonPoValue').value = num < 1000 ? Math.round(num * 100000) : Math.round(num);
+        }
+      }
+
+      // Try to parse delivery date
+      if (delivery) {
+        const dateMatch = delivery.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+        if (dateMatch) {
+          const [, d, m, y] = dateMatch;
+          const yr = y.length === 2 ? '20' + y : y;
+          document.getElementById('wonPoDelivery').value = `${yr}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+        }
+      }
+
+    } catch(err) {
+      document.getElementById('wonPoStatus').innerHTML = `
+        <div style="color:#f87171;font-weight:600">⚠ AI extraction failed</div>
+        <div style="font-size:0.85em;margin-top:6px">${err.message}</div>
+        <div style="font-size:0.85em;margin-top:6px">Fill details manually below.</div>`;
+      document.getElementById('wonPoContent').style.display = 'block';
+      document.getElementById('wonPoHiddenImage').value = base64;
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+function wonPoFillAccount(sel) {
+  const opt = sel.options[sel.selectedIndex];
+  document.getElementById('wonPoAccountId').value = opt.dataset.accountId || '';
+  document.getElementById('wonPoAccountName').value = opt.dataset.accountName || '';
+}
+
+function saveWonPOFromScan(e) {
+  e.preventDefault();
+  const fd = Object.fromEntries(new FormData(e.target));
+  loadPurchaseOrders();
+
+  const opp = state.data.opportunities.find(o => o.id === fd.opportunityId);
+  const nowIso = new Date().toISOString();
+
+  const po = normalizePOFromStorage({
+    id: Date.now().toString() + Math.random().toString().slice(2),
+    poNumber: fd.poNumber || '',
+    poType: fd.poType || '',
+    stage: 'Pending Presales+Finance Approval',
+    opportunityId: fd.opportunityId || '',
+    accountId: fd.accountId || opp?.accountId || '',
+    accountName: fd.accountName || '',
+    vendorName: fd.vendorName || '',
+    oem: fd.oem || '',
+    description: fd.description || '',
+    value: parseFloat(fd.value || 0),
+    vendorValue: parseFloat(fd.vendorValue || 0),
+    paymentTermsCustomer: fd.paymentTermsCustomer || '',
+    expectedDelivery: fd.expectedDelivery || '',
+    siteAddress: fd.siteAddress || '',
+    notes: fd.notes || '',
+    scannedPOData: fd.wonPoData || '',
+    scannedPOImage: fd.wonPoImage || '',
+    owner: currentUser,
+    createdDate: nowIso,
+    modifiedDate: nowIso
+  });
+
+  state.data.purchase_orders.push(po);
+  savePurchaseOrders();
+  closeModal();
+  state.activeTab = 'purchase';
+  render();
+  alert(`✅ Purchase Order created from Won PO scan!\n\nPO is now in approval queue.\nPresales (vinod.v) and Finance (rakesh.uniyal) can approve in parallel.`);
+} 
  async function handleRFPScan(event) {
   const file = event.target.files[0];
   if (!file) return;
