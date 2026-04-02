@@ -1704,6 +1704,9 @@ ${filtered.accounts.map(a => `
  return `
  <div class="item-card" onclick="editOpportunity('${o.id}')">
  <h3>${o.name}</h3>
+ <div style="font-size:0.85em; opacity:0.75; margin-bottom:6px">
+ 🏢 ${state.data.accounts.find(a => a.id === o.accountId)?.name || 'No Account'}
+ </div>
  <div style="color:#4ade80; font-weight:bold; font-size:1.2em; margin:10px 0">
  ₹${(o.value / 100000).toFixed(1)}L
  </div>
