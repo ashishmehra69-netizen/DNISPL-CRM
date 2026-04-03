@@ -1445,23 +1445,44 @@ function getFilteredData() {
    return mgr === me || owner === me;
   });
   const myAccountIds = new Set(myAccounts.map(a => String(a.id)));
-  const opportunities = state.data.opportunities.filter(o => {
-   if (normalizeEmail(o.owner) === normalizeEmail(currentUser)) return true;
-   if (myAccountIds.has(String(o.accountId))) return true;
-   if (role === 'presales') return normalizeEmail(o.assignedPresales) === normalizeEmail(currentUser);
-   if (role === 'purchase') return normalizeEmail(o.assignedPurchase) === normalizeEmail(currentUser);
-   return false;
-  });
-  const contacts = state.data.contacts.filter(c => normalizeEmail(c.owner) === normalizeEmail(currentUser) || myAccountIds.has(String(c.accountId)));
-  baseData = {
-   leads: state.data.leads.filter(l => normalizeEmail(l.owner) === normalizeEmail(currentUser)),
-   accounts: myAccounts,
-   contacts,
-   opportunities,
-   activities: state.data.activities.filter(a => normalizeEmail(a.owner) === normalizeEmail(currentUser))
-  };
- }
 
+  if (role === 'presales') {
+   const presalesOpps = state.data.opportunities.filter(o =>
+    normalizeEmail(o.assignedPresales) === normalizeEmail(currentUser)
+   );
+   baseData = {
+    leads: [],
+    accounts: [],
+    contacts: [],
+    opportunities: presalesOpps,
+    activities: state.data.activities.filter(a => normalizeEmail(a.owner) === normalizeEmail(currentUser))
+   };
+  } else if (role === 'purchase') {
+   const purchaseOpps = state.data.opportunities.filter(o =>
+    normalizeEmail(o.assignedPurchase) === normalizeEmail(currentUser)
+   );
+   baseData = {
+    leads: [],
+    accounts: [],
+    contacts: [],
+    opportunities: purchaseOpps,
+    activities: state.data.activities.filter(a => normalizeEmail(a.owner) === normalizeEmail(currentUser))
+   };
+  } else {
+   const opportunities = state.data.opportunities.filter(o => {
+    if (normalizeEmail(o.owner) === normalizeEmail(currentUser)) return true;
+    if (myAccountIds.has(String(o.accountId))) return true;
+    return false;
+   });
+   const contacts = state.data.contacts.filter(c => normalizeEmail(c.owner) === normalizeEmail(currentUser) || myAccountIds.has(String(c.accountId)));
+   baseData = {
+    leads: state.data.leads.filter(l => normalizeEmail(l.owner) === normalizeEmail(currentUser)),
+    accounts: myAccounts,
+    contacts,
+    opportunities,
+    activities: state.data.activities.filter(a => normalizeEmail(a.owner) === normalizeEmail(currentUser))
+   };
+  }
  if (!managerFilter) return baseData;
 
  return {
@@ -2081,6 +2102,8 @@ function openAddModal() {
  <textarea name="purchaseCosting" placeholder="Purchase Costing">${opp?.purchaseCosting || ''}</textarea>
  <input class="input" type="datetime-local" name="costingTat" value="${opp?.costingTat ? opp.costingTat.slice(0,16) : ''}">
  <textarea name="finalPricingProposal" placeholder="Final Pricing Proposal">${opp?.finalPricingProposal || ''}</textarea>
+ <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Expected Closure Date</label>
+ <input class="input" type="date" name="closureDate" value="${opp?.closureDate ? opp.closureDate.slice(0,10) : ''}">
  <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Expected Closure Date</label>
  <input class="input" type="date" name="closureDate" value="${opp?.closureDate ? opp.closureDate.slice(0,10) : ''}">
  <select class="input" name="workflowStage">
