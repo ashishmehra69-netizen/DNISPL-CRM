@@ -539,7 +539,7 @@ async function restoreSessionIfAny() {
  const savedUser = normalizeEmail(localStorage.getItem('crmCurrentUser') || '');
  if (!savedUser) return false;
  currentUser = savedUser;
- isSupervisor = ['ashish.mehra@dnispl.com', 'a.gupta@dnispl.com', 'rakesh.uniyal@dnispl.com'].includes(savedUser) || localStorage.getItem('crmIsSupervisor') === '1';
+ isSupervisor = ['ashish.mehra@dnispl.com', 'a.gupta@dnispl.com', 'rakesh.uniyal@dnispl.com'].includes(savedUser);
  managerFilter = '';
  applyLoggedInUi();
  const statusEl = document.getElementById('status');
@@ -4517,7 +4517,6 @@ async function saveRFPOpportunity(e) {
   downloadCSV(`opportunities_${new Date().toISOString().slice(0,10)}.csv`, rows);
  }
 }
-</script>
 </script>
 </body>
 </html> 
