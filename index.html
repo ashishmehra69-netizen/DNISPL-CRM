@@ -783,6 +783,7 @@ function normalizeOpportunityFromApi(o) {
   assignedPresales: o.assigned_presales || o.assignedPresales || '',
   assignedPurchase: o.assigned_purchase || o.assignedPurchase || '',
   salesComments: o.sales_comments || o.salesComments || '',
+  closureDate: o.closure_date || o.closureDate || '',
   requirements: o.requirements || '',
   presalesArchitecture: o.presales_architecture || o.presalesArchitecture || '',
   presalesQuestions: o.presales_questions || o.presalesQuestions || '',
@@ -1674,6 +1675,10 @@ ${filtered.accounts.map(a => `
  <div class="item-card" onclick="editContact('${c.id}')">
  <h3>${c.name}</h3>
  <div>${c.title}</div>
+ <div style="font-size:0.85em; opacity:0.75; margin-bottom:6px">
+ 🏢 ${state.data.accounts.find(a => String(a.id) === String(c.accountId))?.name || 'No Account'}
+ </div>
+
  <div style="margin-top:10px">
  <span class="tag">${c.roleType}</span>
  <span class="tag">${c.emotion}</span>
