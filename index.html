@@ -1368,7 +1368,7 @@ function seedAccountsFromMap() {
 
 
  document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
- render?.();
+ render();
 }
 function calculateWinProb(opp) {
  if (opp.stage === 'Closed Won') return 100;
@@ -1486,8 +1486,8 @@ function getFilteredData() {
     opportunities,
     activities: state.data.activities.filter(a => normalizeEmail(a.owner) === normalizeEmail(currentUser))
    };
-  }
-
+    
+ }
  if (!managerFilter) return baseData;
 
  return {
