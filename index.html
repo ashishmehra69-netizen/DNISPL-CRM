@@ -1238,14 +1238,12 @@ async function login() {
  }
 
 async function loadData() {
- // Use localStorage for now (replace with your backend later)
  const savedData = localStorage.getItem('crmData');
  if (savedData) {
  state.data = JSON.parse(savedData);
  } else {
  state.data = { leads: [], accounts: [], contacts: [], opportunities: [], activities: [], purchase_orders: [] };
  }
- loadPurchaseOrders();
 
  const [accountsResult, activitiesResult, leadsResult, contactsResult, oppsResult] = await Promise.allSettled([
   withTimeout(fetchAccountsFromApi(), 7000, 'accounts'),
@@ -1358,6 +1356,7 @@ function seedAccountsFromMap() {
  });
  });
 
+ loadPurchaseOrders();
  seedAccountsFromMap();
  saveData();
  setTimeout(() => loadAopData().then(() => render()), 500);
