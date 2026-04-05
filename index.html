@@ -1481,6 +1481,7 @@ function getFilteredData() {
     activities: state.data.activities.filter(a => normalizeEmail(a.owner) === normalizeEmail(currentUser))
    };
   }
+
  if (!managerFilter) return baseData;
 
  return {
@@ -1491,7 +1492,6 @@ function getFilteredData() {
   activities: (baseData.activities || []).filter(a => getActivityManagerEmail(a) === managerFilter)
  };
 }
-
  function render() {
  const role = getUserRole();
  const tabs = isSupervisor
