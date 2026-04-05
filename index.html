@@ -1357,7 +1357,7 @@ function seedAccountsFromMap() {
 
  seedAccountsFromMap();
  saveData();
- setTimeout(() => loadAopData().then(() => render()), 500);
+ setTimeout(() => loadAopData(), 500);
 
  document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
  render();
