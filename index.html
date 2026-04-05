@@ -1247,11 +1247,11 @@ async function loadData() {
  }
 
  const dataPromise = Promise.allSettled([
-  withTimeout(fetchAccountsFromApi(), 2500, 'accounts'),
-  withTimeout(fetchActivitiesFromApi(), 2500, 'activities'),
-  withTimeout(fetchLeadsFromApi(), 2500, 'leads'),
-  withTimeout(fetchContactsFromApi(), 2500, 'contacts'),
-  withTimeout(fetchOpportunitiesFromApi(), 2500, 'opportunities')
+  withTimeout(fetchAccountsFromApi(), 8000, 'accounts'),
+  withTimeout(fetchActivitiesFromApi(), 8000, 'activities'),
+  withTimeout(fetchLeadsFromApi(), 8000, 'leads'),
+  withTimeout(fetchContactsFromApi(), 8000, 'contacts'),
+  withTimeout(fetchOpportunitiesFromApi(), 8000, 'opportunities')
 ]);
 
 window.render?.(); // show local/cached data immediately
@@ -1271,25 +1271,25 @@ const [accountsResult, activitiesResult, leadsResult, contactsResult, oppsResult
  if (activitiesResult.status === 'fulfilled') {
   state.data.activities = activitiesResult.value;
  } else {
-  console.warn('Backend activities unavailable, using local activities only', activitiesResult.reason);
+  console.info('Backend activities unavailable, using local activities only', activitiesResult.reason);
  }
 
  if (leadsResult.status === 'fulfilled') {
   state.data.leads = leadsResult.value;
  } else {
-  console.warn('Backend leads unavailable, using local leads only', leadsResult.reason);
+  console.info('Backend leads unavailable, using local leads only', leadsResult.reason);
  }
 
  if (contactsResult.status === 'fulfilled') {
   state.data.contacts = contactsResult.value;
  } else {
-  console.warn('Backend contacts unavailable, using local contacts only', contactsResult.reason);
+  console.info('Backend contacts unavailable, using local contacts only', contactsResult.reason);
  }
 
  if (oppsResult.status === 'fulfilled') {
   state.data.opportunities = oppsResult.value;
  } else {
-  console.warn('Backend opportunities unavailable, using local opportunities only', oppsResult.reason);
+  console.info('Backend opportunities unavailable, using local opportunities only', oppsResult.reason);
  }
 
  // Normalize legacy records so dates always exist
