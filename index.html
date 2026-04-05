@@ -1246,13 +1246,18 @@ async function loadData() {
  state.data = { leads: [], accounts: [], contacts: [], opportunities: [], activities: [], purchase_orders: [] };
  }
 
- const [accountsResult, activitiesResult, leadsResult, contactsResult, oppsResult] = await Promise.allSettled([
-  withTimeout(fetchAccountsFromApi(), 7000, 'accounts'),
-  withTimeout(fetchActivitiesFromApi(), 7000, 'activities'),
-  withTimeout(fetchLeadsFromApi(), 7000, 'leads'),
-  withTimeout(fetchContactsFromApi(), 7000, 'contacts'),
-  withTimeout(fetchOpportunitiesFromApi(), 7000, 'opportunities')
- ]);
+ const dataPromise = Promise.allSettled([
+  withTimeout(fetchAccountsFromApi(), 2500, 'accounts'),
+  withTimeout(fetchActivitiesFromApi(), 2500, 'activities'),
+  withTimeout(fetchLeadsFromApi(), 2500, 'leads'),
+  withTimeout(fetchContactsFromApi(), 2500, 'contacts'),
+  withTimeout(fetchOpportunitiesFromApi(), 2500, 'opportunities')
+]);
+
+window.render?.(); // show local/cached data immediately
+
+const [accountsResult, activitiesResult, leadsResult, contactsResult, oppsResult] = await dataPromise;
+
 
  if (accountsResult.status === 'fulfilled') {
   const remoteAccounts = accountsResult.value;
