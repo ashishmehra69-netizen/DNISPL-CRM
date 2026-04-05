@@ -783,7 +783,7 @@ function normalizeOpportunityFromApi(o) {
   assignedPresales: o.assigned_presales || o.assignedPresales || '',
   assignedPurchase: o.assigned_purchase || o.assignedPurchase || '',
   salesComments: o.sales_comments || o.salesComments || '',
-  closureDate: o.closure_date || o.closureDate || '',
+  closureDate: o.closure_date || o.closureDate || o.expected_closure_date || o.expectedClosureDate || '',
   requirements: o.requirements || '',
   presalesArchitecture: o.presales_architecture || o.presalesArchitecture || '',
   presalesQuestions: o.presales_questions || o.presalesQuestions || '',
@@ -2662,7 +2662,9 @@ async function saveOpportunity(e, id) {
   alert('Please fill mandatory Presales Intake fields:\n- ' + missingIntake.join('\n- '));
   return;
  }
- const payload = { ...data, id: id || undefined, closure_date: (data.closureDate || '').trim() };
+ const cd = (data.closureDate || '').trim();
+ const payload = { ...data, id: id || undefined, closureDate: cd, closure_date: cd, expectedClosureDate: cd, expected_closure_date: cd };
+
  try {
   await upsertOpportunityToApi(payload);
   state.data.opportunities = await fetchOpportunitiesFromApi();
