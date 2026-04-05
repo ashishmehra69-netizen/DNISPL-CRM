@@ -1487,8 +1487,11 @@ function getFilteredData() {
     activities: state.data.activities.filter(a => normalizeEmail(a.owner) === normalizeEmail(currentUser))
    };
     
+   }
  }
+ 
  if (!managerFilter) return baseData;
+
 
  return {
   leads: (baseData.leads || []).filter(l => getLeadManagerEmail(l) === managerFilter),
