@@ -2,6 +2,7 @@
 <html>
 <head>
  <meta charset="UTF-8">
+ <link rel="icon" href="data:,">
  <title>Sales CRM - Simple Version</title>
  <style>
  * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
@@ -1185,7 +1186,8 @@ async function login() {
  
  let expected = PASSWORD;
  try {
-  const fetched = await withTimeout(fetchUserPassword(email), 1200, 'password check');
+  const fetched = null;
+
   if (fetched) expected = fetched;
  } catch (_) {
   // Keep default password fallback if password API is slow/unavailable.
@@ -1357,10 +1359,10 @@ function seedAccountsFromMap() {
 
  seedAccountsFromMap();
  saveData();
- setTimeout(() => loadAopData(), 500);
+ setTimeout(() => window.loadAopData?.().then(() => window.render?.()), 500);
 
  document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
- render();
+ window.render?.();
 }
 function calculateWinProb(opp) {
  if (opp.stage === 'Closed Won') return 100;
