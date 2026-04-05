@@ -2116,8 +2116,6 @@ function openAddModal() {
  <textarea name="finalPricingProposal" placeholder="Final Pricing Proposal">${opp?.finalPricingProposal || ''}</textarea>
  <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Expected Closure Date</label>
  <input class="input" type="date" name="closureDate" value="${opp?.closureDate ? opp.closureDate.slice(0,10) : ''}">
- <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Expected Closure Date</label>
- <input class="input" type="date" name="closureDate" value="${opp?.closureDate ? opp.closureDate.slice(0,10) : ''}">
  <select class="input" name="workflowStage">
  <option value="Sales Review" ${opp?.workflowStage === 'Sales Review' ? 'selected' : ''}>Sales Review</option>
  <option value="Assigned to Presales" ${opp?.workflowStage === 'Assigned to Presales' ? 'selected' : ''}>Assigned to Presales</option>
