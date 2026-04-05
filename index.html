@@ -1358,6 +1358,7 @@ function seedAccountsFromMap() {
  normalized.finalProposalAt = normalized.finalProposalAt || '';
  normalized.assignmentDueAt = normalized.assignmentDueAt || '';
  normalized.salesSubmittedAt = normalized.salesSubmittedAt || '';
+ normalized.closureDate = normalized.closureDate || normalized.closure_date || normalized.expectedClosureDate || normalized.expected_closure_date || '';
  }
  return normalized;
  });
