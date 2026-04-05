@@ -1758,7 +1758,8 @@ ${filtered.accounts.map(a => `
  Purchase: ${formatUserLabel(o.assignedPurchase || 'Unassigned')}
  </div>
  <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
- 📅 Created: ${fmtDate(o.createdDate)}<br>🕒 Updated: ${fmtDate(o.modifiedDate)}${o.closureDate ? `<br>🎯 Closure: ${fmtDate(o.closureDate)}` : ''}
+ 📅 Created: ${fmtDate(o.createdDate)}<br>🕒 Updated: ${fmtDate(o.modifiedDate)}<br>🎯 Closure: ${fmtDate(o.closureDate || o.closure_date || o.expectedClosureDate || o.expected_closure_date) || 'Not set'}
+
  </div>
  <div style="margin-top:10px">
  <button type="button" class="btn" onclick="event.stopPropagation();editOpportunity('${o.id}')">Edit</button>
