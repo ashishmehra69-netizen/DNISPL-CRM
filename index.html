@@ -1359,11 +1359,9 @@ function seedAccountsFromMap() {
  saveData();
  setTimeout(() => loadAopData().then(() => render()), 500);
 
-  
  document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
  render();
- }
-
+}
 function calculateWinProb(opp) {
  if (opp.stage === 'Closed Won') return 100;
  if (opp.stage === 'Closed Lost') return 0;
