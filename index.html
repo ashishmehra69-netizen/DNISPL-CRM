@@ -493,7 +493,7 @@ function getWinProbSafe(opp) {
   return 25;
  }
 }
- const CRM_API_BASE = '';
+ const CRM_API_BASE = 'https://dnispl-crm-demo.vercel.app';
  
  // ═══════════════════════════════════════════════════════════════
  
@@ -1211,7 +1211,6 @@ async function login() {
 
  loadData().catch(err => {
   console.error('loadData failed', err);
-  alert('Signed in, but data loading failed. Please refresh once.');
  }).finally(() => {
   runSLAEngine();
   if (slaTimer) clearInterval(slaTimer);
@@ -1360,6 +1359,7 @@ function seedAccountsFromMap() {
  seedAccountsFromMap();
  saveData();
  setTimeout(() => loadAopData().then(() => render()), 500);
+ if (typeof loadPurchaseOrders === 'function') loadPurchaseOrders();
   
  document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
  render();
