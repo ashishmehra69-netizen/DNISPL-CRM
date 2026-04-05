@@ -1359,7 +1359,7 @@ function seedAccountsFromMap() {
  seedAccountsFromMap();
  saveData();
  setTimeout(() => loadAopData().then(() => render()), 500);
- if (typeof loadPurchaseOrders === 'function') loadPurchaseOrders();
+
   
  document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
  render();
