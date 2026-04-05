@@ -1364,10 +1364,11 @@ function seedAccountsFromMap() {
 
  seedAccountsFromMap();
  saveData();
- setTimeout(() => window.loadAopData?.().then(() => window.render?.()), 500);
+ setTimeout(() => loadAopData().then(() => render()), 500);
+
 
  document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
- window.render?.();
+ render?.();
 }
 function calculateWinProb(opp) {
  if (opp.stage === 'Closed Won') return 100;
