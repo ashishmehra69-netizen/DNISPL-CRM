@@ -783,6 +783,7 @@ function normalizeOpportunityFromApi(o) {
   assignedPresales: o.assigned_presales || o.assignedPresales || '',
   assignedPurchase: o.assigned_purchase || o.assignedPurchase || '',
   salesComments: o.sales_comments || o.salesComments || '',
+  presalesComments: o.presales_comments || o.presalesComments || '',
   closureDate: o.closure_date || o.closureDate || o.expected_closure_date || o.expectedClosureDate || '',
   requirements: o.requirements || '',
   presalesArchitecture: o.presales_architecture || o.presalesArchitecture || '',
@@ -1339,6 +1340,7 @@ function seedAccountsFromMap() {
  const normalized = { ...item, createdDate: created, modifiedDate: modified };
  if (key === 'opportunities') {
  normalized.workflowStage = normalized.workflowStage || 'Sales Review';
+ normalized.presalesComments = normalized.presalesComments || normalized.presales_comments || '';
  normalized.salesOwner = normalized.salesOwner || normalized.owner || '';
  normalized.assignedPresales = normalized.assignedPresales || '';
  normalized.assignedPurchase = normalized.assignedPurchase || '';
@@ -2058,7 +2060,8 @@ function openAddModal() {
  
  <select class="input" required name="accountId">
  <option value="">Select Account *</option>
- ${filtered.accounts.map(a => `<option value="${a.id}" ${opp?.accountId === a.id ? 'selected' : ''}>${a.name}</option>`).join('')}
+ ${state.data.accounts.map(a => `<option value="${a.id}" ${String(opp?.accountId) === String(a.id) ? 'selected' : ''}>${a.name}</option>`).join('')}
+
  </select>
  
  <input class="input" required type="number" name="value" placeholder="Value (₹) *" value="${opp?.value || ''}">
@@ -2112,6 +2115,7 @@ function openAddModal() {
  <textarea name="intakeWinStrategy" placeholder="Why Should We Win">${opp?.intakeWinStrategy || ''}</textarea>
  <textarea name="presalesArchitecture" placeholder="Presales Architecture Notes">${opp?.presalesArchitecture || ''}</textarea>
  <textarea name="presalesQuestions" placeholder="Presales Questions">${opp?.presalesQuestions || ''}</textarea>
+ <textarea name="presalesComments" placeholder="Presales Notes for Sales (client meeting prep)">${opp?.presalesComments || ''}</textarea>
  <textarea name="boq" placeholder="BOQ">${opp?.boq || ''}</textarea>
  <textarea name="purchaseCosting" placeholder="Purchase Costing">${opp?.purchaseCosting || ''}</textarea>
  <input class="input" type="datetime-local" name="costingTat" value="${opp?.costingTat ? opp.costingTat.slice(0,16) : ''}">
@@ -2124,6 +2128,7 @@ function openAddModal() {
  <option value="Awaiting Purchase Costing" ${opp?.workflowStage === 'Awaiting Purchase Costing' ? 'selected' : ''}>Awaiting Purchase Costing</option>
  <option value="Costing Returned" ${opp?.workflowStage === 'Costing Returned' ? 'selected' : ''}>Costing Returned</option>
  <option value="Presales Overdue" ${opp?.workflowStage === 'Presales Overdue' ? 'selected' : ''}>Presales Overdue</option>
+ <option value="Sales Review (Client Meeting)" ${opp?.workflowStage === 'Sales Review (Client Meeting)' ? 'selected' : ''}>Sales Review (Client Meeting)</option>
  <option value="Final Proposal Shared" ${opp?.workflowStage === 'Final Proposal Shared' ? 'selected' : ''}>Final Proposal Shared</option>
  </select>
  
@@ -2500,20 +2505,22 @@ async function submitPurchaseCosting(id) {
 }
 
 async function submitFinalPricing(id) {
- const opp = state.data.opportunities.find(o => o.id === id);
- if (!opp) return;
- const proposal = prompt('Final pricing proposal for sales:', opp.finalPricingProposal || '');
- if (!proposal) {
- alert('Final proposal is required.');
- return;
- }
- const now = new Date().toISOString();
- await updateOpportunityWorkflow(id, {
- finalPricingProposal: proposal,
- finalProposalAt: now,
- workflowStage: 'Final Proposal Shared'
- });
+  const opp = state.data.opportunities.find(o => o.id === id);
+  if (!opp) return;
+  const proposal = prompt('Final pricing proposal for sales:', opp.finalPricingProposal || '');
+  if (!proposal) { alert('Final proposal is required.'); return; }
+
+  const notes = prompt('Presales notes for sales/client meeting:', opp.presalesComments || '');
+  const now = new Date().toISOString();
+
+  await updateOpportunityWorkflow(id, {
+    finalPricingProposal: proposal,
+    presalesComments: notes || '',
+    finalProposalAt: now,
+    workflowStage: 'Sales Review (Client Meeting)'
+  });
 }
+
 
 async function saveLead(e, id) {
  e.preventDefault();
@@ -2627,6 +2634,7 @@ async function saveOpportunity(e, id) {
  data.modifiedDate = nowIso;
  data.workflowStage = data.workflowStage || existing?.workflowStage || 'Sales Review';
  data.assignedPresales = data.assignedPresales || existing?.assignedPresales || '';
+ data.presalesComments = data.presalesComments || existing?.presalesComments || '';
  data.assignedPurchase = data.assignedPurchase || existing?.assignedPurchase || '';
  data.salesComments = data.salesComments || existing?.salesComments || '';
  data.requirements = data.requirements || existing?.requirements || '';
