@@ -101,32 +101,20 @@ const PO_APPROVAL_CHAIN = [
 ];
 const ESCALATION_EMAILS = ['ashish.mehra@dnispl.com', 'a.gupta@dnispl.com'];
 const OPPORTUNITY_INTAKE_REQUIRED_FIELDS = [
-  { key: 'intakeProblemStatement', label: 'Problem Statement' },
-  { key: 'intakeWhyNow', label: 'Why Now (Trigger Event)' },
-  { key: 'intakeBusinessImpact', label: 'Business Impact' },
-  { key: 'intakeCurrentState', label: 'Current State Summary' },
-  { key: 'intakeBudgetRange', label: 'Budget Range' },
-  { key: 'intakeDecisionTimeline', label: 'Decision Timeline' }
+ { key: 'intakeProblemStatement', label: 'Problem Statement' },
+ { key: 'intakeWhyNow', label: 'Why Now (Trigger Event)' },
+ { key: 'intakeBusinessImpact', label: 'Business Impact' },
+ { key: 'intakeCurrentState', label: 'Current State Summary' },
+ { key: 'intakeBudgetRange', label: 'Budget Range' },
+ { key: 'intakeDecisionTimeline', label: 'Decision Timeline' }
 ];
-
-const SALES_TEAM_USERS = [
-  'shasank.raturi@dnispl.com',
-  'aakriti.v@dnispl.com',
-  'yash.k@dnispl.com',
-  'soumya.m@dnispl.com',
-  'om.prakash@dnispl.com',
-  'uttkarsha.j@dnispl.com',
-  'navneet.k@dnispl.com',
-  'vikrant.tolumbia@dnispl.com',
-  'stephen.h@dnispl.com',
-  'rakesh.uniyal@dnispl.com'
-];
-
+const SALES_TEAM_USERS = ['rakesh.uniyal@dnispl.com', 'om.prakash@dnispl.com', 'uttkarsha.j@dnispl.com'];
+// Emails that can assign leads to ANY sales person
 const LEAD_ASSIGN_PRIVILEGED_USERS = [
-  'vinod.v@dnispl.com',
-  'a.gupta@dnispl.com',
-  'ashish.mehra@dnispl.com',
-  'rakesh.uniyal@dnispl.com'
+    'vinod.v@dnispl.com',
+    'a.gupta@dnispl.com',
+    'ashish.mehra@dnispl.com',
+    'rakesh.uniyal@dnispl.com'
 ];
 const BUILD_VERSION = '2026-03-10-01';
 const SUSPECT_QUESTIONS = [
@@ -569,6 +557,8 @@ const ACCOUNT_OWNER_MAP = {
   'S S KOTHARI MEHTA AND COMPANY': 'uttkarsha.j@dnispl.com',
   'SHARE INDIA': 'uttkarsha.j@dnispl.com',
   'SISL INFOTECH PRIVATE Limited': 'uttkarsha.j@dnispl.com',
+  'ICRA ONLINE LIMITED': 'uttkarsha.j@dnispl.com',
+  'MAYFAIR': 'uttkarsha.j@dnispl.com',
 };
 
 function getWinProbSafe(opp) {
@@ -1382,11 +1372,26 @@ const [accountsResult, activitiesResult, leadsResult, contactsResult, oppsResult
  // Normalize legacy records so dates always exist
 
 function seedAccountsFromMap() {
-  if (state.data.accounts.length) return;
   const now = new Date().toISOString();
-  Object.keys(ACCOUNT_OWNER_MAP).forEach(name => {
-    const owner = ACCOUNT_OWNER_MAP[name];
-    state.data.accounts.push({
+  const byName = new Map(
+    state.data.accounts
+      .filter(a => a && a.name)
+      .map(a => [String(a.name).trim().toLowerCase(), a])
+  );
+
+  Object.entries(ACCOUNT_OWNER_MAP).forEach(([name, owner]) => {
+    const key = String(name).trim().toLowerCase();
+    const existing = byName.get(key);
+
+    if (existing) {
+      existing.accountManager = owner;
+      existing.owner = owner;
+      existing.modifiedDate = now;
+      upsertAccountToApi({ account_name: existing.name || name, account_manager: owner }).catch(() => {});
+      return;
+    }
+
+    const account = {
       id: Date.now().toString() + Math.random().toString().slice(2),
       name,
       industry: '',
@@ -1395,14 +1400,14 @@ function seedAccountsFromMap() {
       companySize: '',
       annualSpend: '',
       accountManager: owner,
-      owner: owner,
+      owner,
       createdDate: now,
       modifiedDate: now
-    });
-    upsertAccountToApi({
-      account_name: name,
-      account_manager: owner
-    }).catch(() => {});
+    };
+
+    state.data.accounts.push(account);
+    byName.set(key, account);
+    upsertAccountToApi({ account_name: name, account_manager: owner }).catch(() => {});
   });
 }
 
@@ -1417,6 +1422,7 @@ function seedAccountsFromMap() {
    const mapped = ACCOUNT_OWNER_MAP[mapKey] || ACCOUNT_OWNER_MAP[mapKey.toLowerCase()] || ACCOUNT_OWNER_MAP[mapKey.toUpperCase()];
    if (mapped) {
      item.accountManager = mapped;
+     item.owner = mapped;
    }
  }
  const ts = new Date().toISOString();
