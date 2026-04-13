@@ -1,4 +1,5 @@
 from simple_crm_backend import app
+from flask import request, Response
 
 @app.after_request
 def add_cors(response):
@@ -9,5 +10,12 @@ def add_cors(response):
 
 @app.route("/api/<path:path>", methods=["OPTIONS"])
 def handle_options(path):
-    from flask import Response
-    return add_cors(Response())
+    response = Response()
+    response.status_code = 200
+    return add_cors(response)
+
+@app.route("/api/", methods=["OPTIONS"])
+def handle_options_root():
+    response = Response()
+    response.status_code = 200
+    return add_cors(response)
