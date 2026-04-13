@@ -1324,11 +1324,11 @@ async function loadData() {
  }
 
  const dataPromise = Promise.allSettled([
-  withTimeout(fetchAccountsFromApi(), 8000, 'accounts'),
-  withTimeout(fetchActivitiesFromApi(), 8000, 'activities'),
-  withTimeout(fetchLeadsFromApi(), 8000, 'leads'),
-  withTimeout(fetchContactsFromApi(), 8000, 'contacts'),
-  withTimeout(fetchOpportunitiesFromApi(), 8000, 'opportunities')
+  withTimeout(fetchAccountsFromApi(), 25000, 'accounts'),
+  withTimeout(fetchActivitiesFromApi(), 25000, 'activities'),
+  withTimeout(fetchLeadsFromApi(), 25000, 'leads'),
+  withTimeout(fetchContactsFromApi(), 25000, 'contacts'),
+  withTimeout(fetchOpportunitiesFromApi(), 25000, 'opportunities')
 ]);
 
 window.render?.(); // show local/cached data immediately
