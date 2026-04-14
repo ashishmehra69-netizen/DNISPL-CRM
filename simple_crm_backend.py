@@ -79,9 +79,7 @@ def get_conn():
         user="postgres.dcdwxnsmatunnedkyjel",
         password="Dnispl!2026",
         sslmode="require",
-        connect_timeout=10,  
-        keepalives=1,        
-        keepalives_idle=30   
+        connect_timeout=30,  
     )
 
 def init_db() -> None:
