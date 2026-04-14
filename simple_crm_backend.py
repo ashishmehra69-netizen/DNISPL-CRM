@@ -78,7 +78,7 @@ def get_conn():
         dbname="postgres",
         user="postgres.dcdwxnsmatunnedkyjel",
         password="Dnispl!2026",
-        sslmode="require"
+        sslmode="require",
         connect_timeout=10,  
         keepalives=1,        
         keepalives_idle=30   
