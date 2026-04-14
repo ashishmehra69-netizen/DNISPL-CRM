@@ -1,3 +1,5 @@
+from flask_cors import CORS
+CORS(app, origins="*")
 import csv
 import os
 import smtplib
