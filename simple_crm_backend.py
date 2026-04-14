@@ -73,14 +73,13 @@ def add_cors_headers(resp):
 
 def get_conn():
     return psycopg2.connect(
-        host="aws-0-ap-south-1.pooler.supabase.com",
+        host="aws-1-ap-southeast-2.pooler.supabase.com",
         port=6543,
         dbname="postgres",
         user="postgres.dcdwxnsmatunnedkyjel",
-        password="dnispl@",
+        password="Dnispl!2026",
         sslmode="require"
     )
-
 
 def init_db() -> None:
     conn = get_conn()
