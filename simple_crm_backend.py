@@ -523,31 +523,26 @@ def ensure_user(manager_value: str) -> int:
     value = (manager_value or "").strip()
     if not value:
         raise ValueError("account_manager is required")
-    
+
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             if "@" in value:
                 cur.execute(
                     "SELECT id FROM users WHERE lower(email)=lower(%s)",
-                    (value,)
+                    (value,),
                 )
                 row = cur.fetchone()
                 if row:
                     return int(row["id"])
-                
-                # If not found, insert
                 cur.execute(
                     "INSERT INTO users (email, name, role, created_at) VALUES (%s, %s, 'account_manager', now()) RETURNING id",
-                    (value, value.split("@")[0])
+                    (value, value.split("@")[0]),
                 )
                 new_id = cur.fetchone()["id"]
                 conn.commit()
                 return int(new_id)
-    finally:
-        # CRITICAL: This closes the connection and frees up the slot
-        conn.close()
-        
+
             cur.execute(
                 "SELECT id FROM users WHERE lower(name)=lower(%s)",
                 (value,),
@@ -555,7 +550,6 @@ def ensure_user(manager_value: str) -> int:
             row = cur.fetchone()
             if row:
                 return int(row["id"])
-
             placeholder_email = f"{value.lower().replace(' ', '.')}@local.crm"
             cur.execute(
                 "INSERT INTO users (email, name, role, created_at) VALUES (%s, %s, 'account_manager', now()) RETURNING id",
