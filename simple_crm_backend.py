@@ -1,5 +1,3 @@
-from flask_cors import CORS
-CORS(app, origins="*")
 import csv
 import os
 import smtplib
@@ -8,10 +6,13 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from io import StringIO
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
-
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from flask import Flask, jsonify, request
+from flask_cors import CORS
+
+app = Flask(__name__)  # ← app must be created FIRST
+CORS(app, origins="*")  # ← then CORS applied
 
 
 def utc_now() -> str:
