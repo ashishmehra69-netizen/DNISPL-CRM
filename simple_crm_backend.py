@@ -72,7 +72,7 @@ def add_cors_headers(resp):
 
 
 def get_conn():
-    return psycopg2.connect(DATABASE_URL, sslmode="prefer")
+    return psycopg2.connect(DATABASE_URL + "?sslmode=require")
 
 
 def init_db() -> None:
