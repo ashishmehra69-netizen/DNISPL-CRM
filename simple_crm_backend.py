@@ -9,11 +9,6 @@ from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from flask import Flask, jsonify, request
-from flask_cors import CORS
-
-app = Flask(__name__)  # ← app must be created FIRST
-CORS(app, origins="*")  # ← then CORS applied
-
 
 def utc_now() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
