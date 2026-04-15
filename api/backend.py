@@ -137,6 +137,61 @@ def init_db() -> None:
             cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q9 TEXT;")
             cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q10 TEXT;")
             cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_score INTEGER DEFAULT 0;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS account_manager_id INTEGER REFERENCES users(id);")
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema='public' AND table_name='accounts' AND column_name='account_manager'
+                  ) THEN
+                    INSERT INTO users (email, name, role, created_at)
+                    SELECT DISTINCT
+                      lower(trim(account_manager)) AS email,
+                      split_part(lower(trim(account_manager)), '@', 1) AS name,
+                      'account_manager',
+                      now()
+                    FROM accounts
+                    WHERE account_manager_id IS NULL
+                      AND account_manager IS NOT NULL
+                      AND trim(account_manager) <> ''
+                      AND position('@' in account_manager) > 1
+                    ON CONFLICT (email) DO NOTHING;
+
+                    UPDATE accounts a
+                    SET account_manager_id = u.id
+                    FROM users u
+                    WHERE a.account_manager_id IS NULL
+                      AND lower(trim(a.account_manager)) = lower(u.email);
+                  END IF;
+
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema='public' AND table_name='accounts' AND column_name='account_manager_email'
+                  ) THEN
+                    INSERT INTO users (email, name, role, created_at)
+                    SELECT DISTINCT
+                      lower(trim(account_manager_email)) AS email,
+                      split_part(lower(trim(account_manager_email)), '@', 1) AS name,
+                      'account_manager',
+                      now()
+                    FROM accounts
+                    WHERE account_manager_id IS NULL
+                      AND account_manager_email IS NOT NULL
+                      AND trim(account_manager_email) <> ''
+                      AND position('@' in account_manager_email) > 1
+                    ON CONFLICT (email) DO NOTHING;
+
+                    UPDATE accounts a
+                    SET account_manager_id = u.id
+                    FROM users u
+                    WHERE a.account_manager_id IS NULL
+                      AND lower(trim(a.account_manager_email)) = lower(u.email);
+                  END IF;
+                END $$;
+                """
+            )
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS activities (
@@ -153,6 +208,15 @@ def init_db() -> None:
                 );
                 """
             )
+            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS type TEXT;")
+            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS subject TEXT;")
+            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS notes TEXT;")
+            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS date TEXT;")
+            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS owner TEXT;")
+            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS account_id TEXT;")
+            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS account_name TEXT;")
+            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();")
+            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();")
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS leads (
@@ -279,6 +343,11 @@ def ensure_db_initialized():
             return
         init_db()
         _db_init_done = True
+
+
+@app.errorhandler(Exception)
+def _json_exception_handler(exc):
+    return jsonify({"error": f"internal server error: {exc}"}), 500
 
 
 @app.before_request
@@ -713,6 +782,39 @@ def create_or_update_account():
         return jsonify({"status": result, "account_name": account_name}), 200
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"account save failed: {exc}"}), 500
+
+
+@app.route("/api/accounts/<account_id>", methods=["DELETE"])
+def delete_account(account_id: str):
+    viewer_email = (request.args.get("viewer_email") or "").strip().lower()
+    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
+
+    if not str(account_id).isdigit():
+        return jsonify({"error": "invalid account id"}), 400
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, account_manager_id FROM accounts WHERE id=%s", (int(account_id),))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"error": "account not found"}), 404
+
+            if not _is_supervisor(viewer_role):
+                if not viewer_email:
+                    return jsonify({"error": "viewer_email is required"}), 400
+                cur.execute("SELECT id FROM users WHERE lower(email)=lower(%s)", (viewer_email,))
+                manager = cur.fetchone()
+                if not manager or int(manager["id"]) != int(row.get("account_manager_id") or -1):
+                    return jsonify({"error": "not allowed"}), 403
+
+            cur.execute("DELETE FROM accounts WHERE id=%s", (int(account_id),))
+        conn.commit()
+        return jsonify({"status": "deleted", "id": int(account_id)})
+    finally:
+        conn.close()
 
 
 @app.route("/api/accounts/import", methods=["POST"])
@@ -1424,6 +1526,8 @@ def delete_activity(activity_id: str):
             cur.execute("DELETE FROM activities WHERE id=%s", (activity_id,))
         conn.commit()
         return jsonify({"status": "deleted", "id": activity_id})
+    except Exception as exc:
+        return jsonify({"error": f"activity delete failed: {exc}"}), 500
     finally:
         conn.close()
 
