@@ -9,8 +9,8 @@ from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 from flask import Flask, jsonify, request, make_response
 
 import psycopg2
+import psycopg2.pool
 from psycopg2.extras import RealDictCursor
-
 
 
 def utc_now() -> str:
@@ -83,9 +83,27 @@ def handle_options():
         return resp, 200
 
 
-def get_conn():
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
+_pool = None
+_pool_lock = threading.Lock()
 
+def get_pool():
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                _pool = psycopg2.pool.ThreadedConnectionPool(
+                    minconn=1,
+                    maxconn=5,
+                    dsn=DATABASE_URL,
+                    sslmode="require",
+                )
+    return _pool
+
+def get_conn():
+    return get_pool().getconn()
+
+def release_conn(conn):
+    get_pool().putconn(conn)
 
 def init_db() -> None:
     conn = get_conn()
@@ -277,7 +295,7 @@ def init_db() -> None:
             )
         conn.commit()
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 def ensure_db_initialized():
@@ -491,7 +509,7 @@ def ensure_user(manager_value: str) -> int:
             conn.commit()
             return int(new_id)
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 def upsert_account(data: dict, manager_id: int) -> str:
@@ -613,7 +631,7 @@ def upsert_account(data: dict, manager_id: int) -> str:
             conn.commit()
             return "created"
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/health", methods=["GET"])
@@ -634,7 +652,7 @@ def health():
             }
         )
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/users", methods=["GET"])
@@ -653,7 +671,7 @@ def list_users():
             rows = cur.fetchall()
         return jsonify(rows)
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/accounts", methods=["GET"])
@@ -706,7 +724,7 @@ def list_accounts():
             )
             return jsonify(cur.fetchall())
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/accounts", methods=["POST"])
@@ -808,7 +826,7 @@ def list_activities():
             )
             return jsonify(cur.fetchall())
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/leads", methods=["GET"])
@@ -843,7 +861,7 @@ def list_leads():
             )
             return jsonify(cur.fetchall())
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/leads", methods=["POST"])
@@ -901,7 +919,7 @@ def upsert_lead():
         conn.commit()
         return jsonify({"status": status, "id": lead_id})
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/leads/<lead_id>", methods=["DELETE"])
@@ -924,7 +942,7 @@ def delete_lead(lead_id: str):
         conn.commit()
         return jsonify({"status": "deleted", "id": lead_id})
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/contacts", methods=["GET"])
@@ -959,7 +977,7 @@ def list_contacts():
             )
             return jsonify(cur.fetchall())
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/contacts", methods=["POST"])
@@ -1020,7 +1038,7 @@ def upsert_contact():
         conn.commit()
         return jsonify({"status": status, "id": contact_id})
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/contacts/<contact_id>", methods=["DELETE"])
@@ -1043,7 +1061,7 @@ def delete_contact(contact_id: str):
         conn.commit()
         return jsonify({"status": "deleted", "id": contact_id})
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/opportunities", methods=["GET"])
@@ -1105,7 +1123,7 @@ def list_opportunities():
                 rows = cur.fetchall()
             return jsonify(rows)
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/opportunities", methods=["POST"])
@@ -1310,7 +1328,7 @@ def upsert_opportunity():
             )
         return jsonify({"status": status, "id": opp_id})
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/opportunities/<opp_id>", methods=["DELETE"])
@@ -1337,7 +1355,7 @@ def delete_opportunity(opp_id: str):
         conn.commit()
         return jsonify({"status": "deleted", "id": opp_id})
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/activities", methods=["POST"])
@@ -1406,7 +1424,7 @@ def upsert_activity():
         conn.commit()
         return jsonify({"status": status, "id": activity_id})
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/activities/<activity_id>", methods=["DELETE"])
@@ -1435,7 +1453,7 @@ def delete_activity(activity_id: str):
         conn.commit()
         return jsonify({"status": "deleted", "id": activity_id})
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/passwords/<email>", methods=["GET"])
@@ -1456,7 +1474,7 @@ def get_password(email: str):
                 return jsonify({"email": email, "password": None})
             return jsonify(row)
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 @app.route("/api/passwords", methods=["POST"])
@@ -1487,7 +1505,7 @@ def set_password():
         conn.commit()
         return jsonify({"status": "ok", "email": email})
     finally:
-        conn.close()
+        release_conn(conn)
 
 
 if __name__ == "__main__":
