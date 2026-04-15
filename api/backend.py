@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 import smtplib
 import threading
@@ -76,12 +77,12 @@ def add_cors_headers(resp):
 
 def get_conn():
     last_exc = None
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             return psycopg2.connect(
                 DATABASE_URL,
                 sslmode="require",
-                connect_timeout=10,
+                connect_timeout=3,
                 application_name="dnispl-crm",
                 keepalives=1,
                 keepalives_idle=30,
@@ -337,6 +338,35 @@ def init_db() -> None:
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_integration_requirements TEXT;")
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_competitors TEXT;")
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_win_strategy TEXT;")
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS aop_plans (
+                    account_id TEXT NOT NULL,
+                    fy_year TEXT NOT NULL,
+                    plan_data JSONB DEFAULT '{}'::jsonb,
+                    owner TEXT,
+                    created_at TIMESTAMPTZ DEFAULT now(),
+                    updated_at TIMESTAMPTZ DEFAULT now(),
+                    PRIMARY KEY (account_id, fy_year)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS aop_actuals (
+                    account_id TEXT NOT NULL,
+                    fy_year TEXT NOT NULL,
+                    month TEXT NOT NULL,
+                    hardware NUMERIC DEFAULT 0,
+                    software NUMERIC DEFAULT 0,
+                    managed_services NUMERIC DEFAULT 0,
+                    owner TEXT,
+                    created_at TIMESTAMPTZ DEFAULT now(),
+                    updated_at TIMESTAMPTZ DEFAULT now(),
+                    PRIMARY KEY (account_id, fy_year, month)
+                );
+                """
+            )
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS user_passwords (
@@ -1597,6 +1627,165 @@ def set_password():
             )
         conn.commit()
         return jsonify({"status": "ok", "email": email})
+    finally:
+        conn.close()
+
+
+@app.route("/api/aop", methods=["GET"])
+def list_aop_plans():
+    viewer_email = (request.args.get("viewer_email") or "").strip().lower()
+    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
+    fy_year = (request.args.get("fy_year") or "2025-26").strip()
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if _is_supervisor(viewer_role):
+                cur.execute(
+                    "SELECT account_id, fy_year, plan_data, owner, updated_at FROM aop_plans WHERE fy_year=%s",
+                    (fy_year,),
+                )
+            else:
+                if not viewer_email:
+                    return jsonify([])
+                cur.execute(
+                    """
+                    SELECT p.account_id, p.fy_year, p.plan_data, p.owner, p.updated_at
+                    FROM aop_plans p
+                    JOIN accounts a ON CAST(a.id AS TEXT) = p.account_id
+                    JOIN users u ON u.id = a.account_manager_id
+                    WHERE p.fy_year=%s AND lower(u.email)=lower(%s)
+                    """,
+                    (fy_year, viewer_email),
+                )
+            rows = cur.fetchall()
+            out = []
+            for r in rows:
+                item = {
+                    "account_id": r.get("account_id"),
+                    "fy_year": r.get("fy_year"),
+                    "owner": r.get("owner"),
+                    "updated_at": str(r.get("updated_at") or ""),
+                }
+                pd = r.get("plan_data") or {}
+                if isinstance(pd, str):
+                    try:
+                        pd = json.loads(pd)
+                    except Exception:
+                        pd = {}
+                if isinstance(pd, dict):
+                    item.update(pd)
+                out.append(item)
+            return jsonify(out)
+    finally:
+        conn.close()
+
+
+@app.route("/api/aop", methods=["POST"])
+def upsert_aop_plan():
+    data = request.get_json(silent=True) or {}
+    account_id = str(data.get("account_id") or "").strip()
+    fy_year = str(data.get("fy_year") or "2025-26").strip()
+    owner = str(data.get("owner") or data.get("viewer_email") or "").strip().lower()
+    if not account_id:
+        return jsonify({"error": "account_id required"}), 400
+
+    plan_data = {k: v for k, v in data.items() if k not in {"account_id", "fy_year", "owner", "viewer_email", "viewer_role"}}
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO aop_plans (account_id, fy_year, plan_data, owner, created_at, updated_at)
+                VALUES (%s, %s, %s::jsonb, %s, now(), now())
+                ON CONFLICT (account_id, fy_year)
+                DO UPDATE SET plan_data=EXCLUDED.plan_data, owner=EXCLUDED.owner, updated_at=now()
+                """,
+                (account_id, fy_year, json.dumps(plan_data), owner),
+            )
+        conn.commit()
+        return jsonify({"status": "ok", "account_id": account_id, "fy_year": fy_year})
+    finally:
+        conn.close()
+
+
+@app.route("/api/aop/actuals", methods=["GET"])
+def list_aop_actuals():
+    viewer_email = (request.args.get("viewer_email") or "").strip().lower()
+    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
+    fy_year = (request.args.get("fy_year") or "2025-26").strip()
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if _is_supervisor(viewer_role):
+                cur.execute(
+                    """
+                    SELECT account_id, fy_year, month,
+                           COALESCE(hardware,0) AS hardware,
+                           COALESCE(software,0) AS software,
+                           COALESCE(managed_services,0) AS managed_services,
+                           owner, updated_at
+                    FROM aop_actuals
+                    WHERE fy_year=%s
+                    """,
+                    (fy_year,),
+                )
+            else:
+                if not viewer_email:
+                    return jsonify([])
+                cur.execute(
+                    """
+                    SELECT x.account_id, x.fy_year, x.month,
+                           COALESCE(x.hardware,0) AS hardware,
+                           COALESCE(x.software,0) AS software,
+                           COALESCE(x.managed_services,0) AS managed_services,
+                           x.owner, x.updated_at
+                    FROM aop_actuals x
+                    JOIN accounts a ON CAST(a.id AS TEXT) = x.account_id
+                    JOIN users u ON u.id = a.account_manager_id
+                    WHERE x.fy_year=%s AND lower(u.email)=lower(%s)
+                    """,
+                    (fy_year, viewer_email),
+                )
+            return jsonify(cur.fetchall())
+    finally:
+        conn.close()
+
+
+@app.route("/api/aop/actuals", methods=["POST"])
+def upsert_aop_actual():
+    data = request.get_json(silent=True) or {}
+    account_id = str(data.get("account_id") or "").strip()
+    fy_year = str(data.get("fy_year") or "2025-26").strip()
+    month = str(data.get("month") or "").strip()
+    owner = str(data.get("owner") or data.get("viewer_email") or "").strip().lower()
+    if not account_id or not month:
+        return jsonify({"error": "account_id and month required"}), 400
+
+    hardware = float(data.get("hardware") or 0)
+    software = float(data.get("software") or 0)
+    managed_services = float(data.get("managed_services") or 0)
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO aop_actuals (account_id, fy_year, month, hardware, software, managed_services, owner, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, now(), now())
+                ON CONFLICT (account_id, fy_year, month)
+                DO UPDATE SET hardware=EXCLUDED.hardware,
+                              software=EXCLUDED.software,
+                              managed_services=EXCLUDED.managed_services,
+                              owner=EXCLUDED.owner,
+                              updated_at=now()
+                """,
+                (account_id, fy_year, month, hardware, software, managed_services, owner),
+            )
+        conn.commit()
+        return jsonify({"status": "ok", "account_id": account_id, "fy_year": fy_year, "month": month})
     finally:
         conn.close()
 
