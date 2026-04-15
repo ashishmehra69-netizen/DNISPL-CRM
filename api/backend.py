@@ -8,6 +8,7 @@ from io import StringIO
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 import psycopg2
+from psycopg2 import pool as psycopg2_pool
 from psycopg2.extras import RealDictCursor
 from flask import Flask, jsonify, request
 
@@ -63,6 +64,8 @@ DATABASE_URL = _strip_sslmode(DATABASE_URL)
 app = Flask(__name__)
 _db_init_done = False
 _db_init_lock = threading.Lock()
+_db_pool = None
+_db_pool_lock = threading.Lock()
 
 
 @app.after_request
@@ -74,7 +77,36 @@ def add_cors_headers(resp):
 
 
 def get_conn():
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
+    global _db_pool
+    if _db_pool is None:
+        with _db_pool_lock:
+            if _db_pool is None:
+                maxconn = int(os.environ.get("DB_POOL_MAX", "5"))
+                _db_pool = psycopg2_pool.ThreadedConnectionPool(
+                    1,
+                    maxconn,
+                    DATABASE_URL,
+                    sslmode="require",
+                    connect_timeout=10,
+                )
+
+    raw = _db_pool.getconn()
+
+    class _PooledConn:
+        def __init__(self, conn, pool_obj):
+            self._conn = conn
+            self._pool = pool_obj
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def close(self):
+            try:
+                self._pool.putconn(self._conn)
+            except Exception:
+                pass
+
+    return _PooledConn(raw, _db_pool)
 
 
 def init_db() -> None:
