@@ -2,13 +2,13 @@ import csv
 import os
 import smtplib
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from io import StringIO
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 import psycopg2
-from psycopg2 import pool as psycopg2_pool
 from psycopg2.extras import RealDictCursor
 from flask import Flask, jsonify, request
 
@@ -64,8 +64,6 @@ DATABASE_URL = _strip_sslmode(DATABASE_URL)
 app = Flask(__name__)
 _db_init_done = False
 _db_init_lock = threading.Lock()
-_db_pool = None
-_db_pool_lock = threading.Lock()
 
 
 @app.after_request
@@ -77,36 +75,23 @@ def add_cors_headers(resp):
 
 
 def get_conn():
-    global _db_pool
-    if _db_pool is None:
-        with _db_pool_lock:
-            if _db_pool is None:
-                maxconn = int(os.environ.get("DB_POOL_MAX", "5"))
-                _db_pool = psycopg2_pool.ThreadedConnectionPool(
-                    1,
-                    maxconn,
-                    DATABASE_URL,
-                    sslmode="require",
-                    connect_timeout=10,
-                )
-
-    raw = _db_pool.getconn()
-
-    class _PooledConn:
-        def __init__(self, conn, pool_obj):
-            self._conn = conn
-            self._pool = pool_obj
-
-        def __getattr__(self, name):
-            return getattr(self._conn, name)
-
-        def close(self):
-            try:
-                self._pool.putconn(self._conn)
-            except Exception:
-                pass
-
-    return _PooledConn(raw, _db_pool)
+    last_exc = None
+    for attempt in range(3):
+        try:
+            return psycopg2.connect(
+                DATABASE_URL,
+                sslmode="require",
+                connect_timeout=10,
+                application_name="dnispl-crm",
+                keepalives=1,
+                keepalives_idle=30,
+                keepalives_interval=10,
+                keepalives_count=3,
+            )
+        except Exception as exc:
+            last_exc = exc
+            time.sleep(0.2 * (attempt + 1))
+    raise last_exc
 
 
 def init_db() -> None:
