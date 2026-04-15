@@ -91,9 +91,9 @@ def get_pool():
     if _pool is None:
         with _pool_lock:
             if _pool is None:
-                _pool = psycopg2.pool.ThreadedConnectionPool(
+               _pool = psycopg2.pool.ThreadedConnectionPool(
                     minconn=1,
-                    maxconn=5,
+                    maxconn=20,
                     dsn=DATABASE_URL,
                     sslmode="require",
                 )
@@ -103,6 +103,10 @@ def get_conn():
     return get_pool().getconn()
 
 def release_conn(conn):
+    try:
+        conn.rollback()  # reset any open transaction before returning to pool
+    except Exception:
+        pass
     get_pool().putconn(conn)
 
 def init_db() -> None:
