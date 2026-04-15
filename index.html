@@ -557,8 +557,6 @@ const ACCOUNT_OWNER_MAP = {
   'S S KOTHARI MEHTA AND COMPANY': 'uttkarsha.j@dnispl.com',
   'SHARE INDIA': 'uttkarsha.j@dnispl.com',
   'SISL INFOTECH PRIVATE Limited': 'uttkarsha.j@dnispl.com',
-  'ICRA ONLINE LIMITED': 'uttkarsha.j@dnispl.com',
-  'MAYFAIR': 'uttkarsha.j@dnispl.com',
 };
 
 function getWinProbSafe(opp) {
@@ -569,7 +567,7 @@ function getWinProbSafe(opp) {
   return 25;
  }
 }
- const CRM_API_BASE = '';
+ const CRM_API_BASE = 'https://dnispl-crm-demo.vercel.app';
  
  // ═══════════════════════════════════════════════════════════════
  
@@ -939,6 +937,13 @@ async function upsertAccountToApi(accountPayload) {
   const msg = await resp.text();
   throw new Error(`account save failed (${resp.status}): ${msg}`);
  }
+ return resp.json();
+}
+
+async function deleteAccountFromApi(id) {
+ const url = `${CRM_API_BASE}/api/accounts/${encodeURIComponent(id)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url, { method: 'DELETE' });
+ if (!resp.ok) throw new Error(await resp.text() || `account delete failed (${resp.status})`);
  return resp.json();
 }
 
@@ -1372,26 +1377,11 @@ const [accountsResult, activitiesResult, leadsResult, contactsResult, oppsResult
  // Normalize legacy records so dates always exist
 
 function seedAccountsFromMap() {
+  if (state.data.accounts.length) return;
   const now = new Date().toISOString();
-  const byName = new Map(
-    state.data.accounts
-      .filter(a => a && a.name)
-      .map(a => [String(a.name).trim().toLowerCase(), a])
-  );
-
-  Object.entries(ACCOUNT_OWNER_MAP).forEach(([name, owner]) => {
-    const key = String(name).trim().toLowerCase();
-    const existing = byName.get(key);
-
-    if (existing) {
-      existing.accountManager = owner;
-      existing.owner = owner;
-      existing.modifiedDate = now;
-      upsertAccountToApi({ account_name: existing.name || name, account_manager: owner }).catch(() => {});
-      return;
-    }
-
-    const account = {
+  Object.keys(ACCOUNT_OWNER_MAP).forEach(name => {
+    const owner = ACCOUNT_OWNER_MAP[name];
+    state.data.accounts.push({
       id: Date.now().toString() + Math.random().toString().slice(2),
       name,
       industry: '',
@@ -1400,14 +1390,11 @@ function seedAccountsFromMap() {
       companySize: '',
       annualSpend: '',
       accountManager: owner,
-      owner,
+      owner: owner,
       createdDate: now,
       modifiedDate: now
-    };
-
-    state.data.accounts.push(account);
-    byName.set(key, account);
-    upsertAccountToApi({ account_name: name, account_manager: owner }).catch(() => {});
+    });
+    // Intentionally skip backend upsert here to avoid request storm/DB connection exhaustion.
   });
 }
 
@@ -1422,7 +1409,6 @@ function seedAccountsFromMap() {
    const mapped = ACCOUNT_OWNER_MAP[mapKey] || ACCOUNT_OWNER_MAP[mapKey.toLowerCase()] || ACCOUNT_OWNER_MAP[mapKey.toUpperCase()];
    if (mapped) {
      item.accountManager = mapped;
-     item.owner = mapped;
    }
  }
  const ts = new Date().toISOString();
@@ -2418,6 +2404,13 @@ function openActivityModal(activity = null) {
 
 async function saveActivity(e, id) {
  e.preventDefault();
+ if (window.__activitySaveInFlight) return;
+ window.__activitySaveInFlight = true;
+ const submitBtn = e.target?.querySelector('button[type="submit"]');
+ if (submitBtn) {
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Saving...';
+ }
  const formData = Object.fromEntries(new FormData(e.target));
  const existing = id ? state.data.activities.find(a => a.id === id) : null;
  const payload = {
@@ -2441,6 +2434,12 @@ async function saveActivity(e, id) {
  render();
  } catch (err) {
  alert(`Could not save activity to shared backend: ${err.message}`);
+ } finally {
+  window.__activitySaveInFlight = false;
+  if (submitBtn) {
+   submitBtn.disabled = false;
+   submitBtn.textContent = 'Save Activity';
+  }
  }
 }
 
@@ -2796,12 +2795,16 @@ async function saveOpportunity(e, id) {
  }
  }
 
- function deleteAccount(id) {
- if (confirm('Delete this account?')) {
- state.data.accounts = state.data.accounts.filter(a => a.id !== id);
- saveData();
- closeModal();
- render();
+ async function deleteAccount(id) {
+ if (!confirm('Delete this account?')) return;
+ try {
+  await deleteAccountFromApi(id);
+  state.data.accounts = await fetchAccountsFromApi();
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  alert(`Could not delete account from shared backend: ${err.message}`);
  }
  }
 
@@ -4634,4 +4637,4 @@ async function saveRFPOpportunity(e) {
 }
 </script>
 </body>
-</html>
+</html> 
