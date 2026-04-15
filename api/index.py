@@ -1,3 +1,5 @@
+"""Vercel API entrypoint for DNISPL CRM."""
+
 from pathlib import Path
 import importlib.util
 
