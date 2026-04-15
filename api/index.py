@@ -6,10 +6,11 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from io import StringIO
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+from flask import Flask, jsonify, request, make_response
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from flask import Flask, jsonify, request
+
 
 
 def utc_now() -> str:
@@ -71,6 +72,15 @@ def add_cors_headers(resp):
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     return resp
+
+@app.before_request
+def handle_options():
+    if request.method == "OPTIONS":
+        resp = make_response()
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        return resp, 200
 
 
 def get_conn():
