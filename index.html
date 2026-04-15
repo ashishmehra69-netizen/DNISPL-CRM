@@ -567,7 +567,7 @@ function getWinProbSafe(opp) {
   return 25;
  }
 }
- const CRM_API_BASE = '';
+ const CRM_API_BASE = 'https://dnispl-crm-demo.vercel.app';
  
  // ═══════════════════════════════════════════════════════════════
  
@@ -1329,11 +1329,11 @@ async function loadData() {
  }
 
  const dataPromise = Promise.allSettled([
-  withTimeout(fetchAccountsFromApi(), 8000, 'accounts'),
-  withTimeout(fetchActivitiesFromApi(), 8000, 'activities'),
-  withTimeout(fetchLeadsFromApi(), 8000, 'leads'),
-  withTimeout(fetchContactsFromApi(), 8000, 'contacts'),
-  withTimeout(fetchOpportunitiesFromApi(), 8000, 'opportunities')
+  withTimeout(fetchAccountsFromApi(), 15000, 'accounts'),
+  withTimeout(fetchActivitiesFromApi(), 15000, 'activities'),
+  withTimeout(fetchLeadsFromApi(), 15000, 'leads'),
+  withTimeout(fetchContactsFromApi(), 15000, 'contacts'),
+  withTimeout(fetchOpportunitiesFromApi(), 15000, 'opportunities')
 ]);
 
 window.render?.(); // show local/cached data immediately
