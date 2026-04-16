@@ -1062,6 +1062,175 @@ def list_accounts():
         conn.close()
 
 
+@app.route("/api/bootstrap", methods=["GET"])
+def bootstrap_data():
+    viewer_email = (request.args.get("viewer_email") or "").strip()
+    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
+
+    payload = {
+        "accounts": [],
+        "activities": [],
+        "leads": [],
+        "contacts": [],
+        "opportunities": [],
+    }
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if _is_supervisor(viewer_role):
+                cur.execute(
+                    """
+                    SELECT a.id, a.account_name, a.created_at, a.updated_at,
+                           a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode,
+                           a.suspect_q1, a.suspect_q2, a.suspect_q3, a.suspect_q4, a.suspect_q5,
+                           a.suspect_q6, a.suspect_q7, a.suspect_q8, a.suspect_q9, a.suspect_q10, a.suspect_score,
+                           u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
+                    FROM accounts a
+                    LEFT JOIN users u ON u.id = a.account_manager_id
+                    ORDER BY a.account_name
+                    """
+                )
+                payload["accounts"] = cur.fetchall()
+            elif viewer_email:
+                cur.execute("SELECT id FROM users WHERE lower(email)=lower(%s)", (viewer_email,))
+                manager = cur.fetchone()
+                if manager:
+                    cur.execute(
+                        """
+                        SELECT a.id, a.account_name, a.created_at, a.updated_at,
+                               a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode,
+                               a.suspect_q1, a.suspect_q2, a.suspect_q3, a.suspect_q4, a.suspect_q5,
+                               a.suspect_q6, a.suspect_q7, a.suspect_q8, a.suspect_q9, a.suspect_q10, a.suspect_score,
+                               u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
+                        FROM accounts a
+                        LEFT JOIN users u ON u.id = a.account_manager_id
+                        WHERE a.account_manager_id = %s
+                        ORDER BY a.account_name
+                        """,
+                        (int(manager["id"]),),
+                    )
+                    payload["accounts"] = cur.fetchall()
+
+            if _is_supervisor(viewer_role):
+                cur.execute(
+                    """
+                    SELECT id, type, subject, notes, date, owner, account_id, account_name, created_at, updated_at
+                    FROM activities
+                    ORDER BY date DESC, updated_at DESC
+                    """
+                )
+                payload["activities"] = cur.fetchall()
+            elif viewer_email:
+                cur.execute(
+                    """
+                    SELECT id, type, subject, notes, date, owner, account_id, account_name, created_at, updated_at
+                    FROM activities
+                    WHERE lower(owner)=lower(%s)
+                    ORDER BY date DESC, updated_at DESC
+                    """,
+                    (viewer_email,),
+                )
+                payload["activities"] = cur.fetchall()
+
+            if _is_supervisor(viewer_role):
+                cur.execute(
+                    """
+                    SELECT id, name, company, email, phone, source, status, notes, owner, created_at, updated_at
+                    FROM leads
+                    ORDER BY updated_at DESC
+                    """
+                )
+                payload["leads"] = cur.fetchall()
+            elif viewer_email:
+                cur.execute(
+                    """
+                    SELECT id, name, company, email, phone, source, status, notes, owner, created_at, updated_at
+                    FROM leads
+                    WHERE lower(owner)=lower(%s)
+                    ORDER BY updated_at DESC
+                    """,
+                    (viewer_email,),
+                )
+                payload["leads"] = cur.fetchall()
+
+            if _is_supervisor(viewer_role):
+                cur.execute(
+                    """
+                    SELECT id, name, title, email, phone, role_type, influence_level, emotion, account_id, owner, created_at, updated_at
+                    FROM contacts
+                    ORDER BY updated_at DESC
+                    """
+                )
+                payload["contacts"] = cur.fetchall()
+            elif viewer_email:
+                cur.execute(
+                    """
+                    SELECT id, name, title, email, phone, role_type, influence_level, emotion, account_id, owner, created_at, updated_at
+                    FROM contacts
+                    WHERE lower(owner)=lower(%s)
+                    ORDER BY updated_at DESC
+                    """,
+                    (viewer_email,),
+                )
+                payload["contacts"] = cur.fetchall()
+
+            opp_all = """
+                SELECT id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
+                       assigned_presales, assigned_purchase, sales_comments, requirements,
+                       presales_architecture, presales_questions, boq, purchase_costing,
+                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
+                       purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
+                       assignment_due_at, sales_submitted_at, presales_escalated_at,
+                       intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
+                       intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
+                       intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
+                       intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
+                       intake_competitors, intake_win_strategy, created_at, updated_at
+                FROM opportunities
+                ORDER BY updated_at DESC
+            """
+            opp_scoped = """
+                SELECT id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
+                       assigned_presales, assigned_purchase, sales_comments, requirements,
+                       presales_architecture, presales_questions, boq, purchase_costing,
+                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
+                       purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
+                       assignment_due_at, sales_submitted_at, presales_escalated_at,
+                       intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
+                       intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
+                       intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
+                       intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
+                       intake_competitors, intake_win_strategy, created_at, updated_at
+                FROM opportunities
+                WHERE lower(owner)=lower(%s)
+                   OR lower(sales_owner)=lower(%s)
+                   OR lower(assigned_presales)=lower(%s)
+                   OR lower(assigned_purchase)=lower(%s)
+                ORDER BY updated_at DESC
+            """
+
+            if _is_supervisor(viewer_role):
+                cur.execute(opp_all)
+                rows = cur.fetchall()
+                if enforce_opportunity_sla(conn, rows):
+                    cur.execute(opp_all)
+                    rows = cur.fetchall()
+                payload["opportunities"] = rows
+            elif viewer_email:
+                cur.execute(opp_scoped, (viewer_email, viewer_email, viewer_email, viewer_email))
+                rows = cur.fetchall()
+                if enforce_opportunity_sla(conn, rows):
+                    cur.execute(opp_scoped, (viewer_email, viewer_email, viewer_email, viewer_email))
+                    rows = cur.fetchall()
+                payload["opportunities"] = rows
+        return jsonify(payload)
+    except Exception as exc:
+        return jsonify({"error": f"bootstrap failed: {exc}", **payload}), 200
+    finally:
+        conn.close()
+
+
 @app.route("/api/accounts", methods=["POST"])
 def create_or_update_account():
     data = request.get_json(silent=True) or {}
@@ -1924,6 +2093,8 @@ def list_aop_plans():
                     item.update(pd)
                 out.append(item)
             return jsonify(out)
+    except Exception as exc:
+        return jsonify([])
     finally:
         conn.close()
 
@@ -1997,6 +2168,8 @@ def list_aop_actuals():
                     (fy_year, viewer_email),
                 )
             return jsonify(cur.fetchall())
+    except Exception as exc:
+        return jsonify([])
     finally:
         conn.close()
 
