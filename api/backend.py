@@ -1,5 +1,10 @@
 import csv
 import json
+import base64
+import hashlib
+import hmac
+import urllib.parse
+import urllib.request
 import os
 import smtplib
 import threading
@@ -45,6 +50,13 @@ SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "").strip()
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "").strip()
 SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER or "noreply@dnispl.com")
+
+MS_CLIENT_ID = os.environ.get("MS_CLIENT_ID", "").strip()
+MS_CLIENT_SECRET = os.environ.get("MS_CLIENT_SECRET", "").strip()
+MS_TENANT_ID = os.environ.get("MS_TENANT_ID", "common").strip() or "common"
+MS_REDIRECT_URI = os.environ.get("MS_REDIRECT_URI", "").strip()
+MS_OAUTH_SCOPES = os.environ.get("MS_OAUTH_SCOPES", "offline_access openid profile email Mail.Send")
+OAUTH_STATE_SECRET = os.environ.get("OAUTH_STATE_SECRET", os.environ.get("PASSWORD", "crm2026")).strip() or "crm2026"
 
 if not DATABASE_URL:
     raise RuntimeError(
@@ -235,6 +247,11 @@ def init_db() -> None:
             cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS account_name TEXT;")
             cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();")
             cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();")
+            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS mom_sent_at TIMESTAMPTZ;")
+            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS mom_sent_to TEXT;")
+            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS mom_send_status TEXT;")
+            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS mom_send_error TEXT;")
+            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS mom_payload TEXT;")
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS leads (
@@ -412,6 +429,236 @@ def compute_suspect_score(data: dict) -> int:
 
 def _is_supervisor(viewer_role: str) -> bool:
     return (viewer_role or "").strip().lower() in ("supervisor", "admin")
+
+
+def _normalize_email(value: str) -> str:
+    return (value or "").strip().lower()
+
+
+def _split_emails(value: str):
+    if not value:
+        return []
+    out = []
+    for part in str(value).replace(";", ",").split(","):
+        e = _normalize_email(part)
+        if e and "@" in e and e not in out:
+            out.append(e)
+    return out
+
+
+def _build_oauth_state(email: str) -> str:
+    payload = f"{_normalize_email(email)}|{int(time.time())}"
+    sig = hmac.new(OAUTH_STATE_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    raw = f"{payload}|{sig}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("utf-8")
+
+
+def _verify_oauth_state(state: str, max_age_sec: int = 1800) -> str:
+    try:
+        decoded = base64.urlsafe_b64decode((state or "").encode("utf-8")).decode("utf-8")
+        email, ts, sig = decoded.split("|", 2)
+        payload = f"{email}|{ts}"
+        expected = hmac.new(OAUTH_STATE_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return ""
+        if abs(time.time() - int(ts)) > max_age_sec:
+            return ""
+        return _normalize_email(email)
+    except Exception:
+        return ""
+
+
+def _http_form_post(url: str, form_data: dict):
+    body = urllib.parse.urlencode(form_data).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _http_json_request(url: str, method: str = "GET", data=None, headers=None):
+    payload = None if data is None else json.dumps(data).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, method=method.upper())
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+    if data is not None and "Content-Type" not in {k.title(): v for k, v in (headers or {}).items()}:
+        req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=25) as resp:
+        raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+
+def _get_user_row_by_email(email: str):
+    email = _normalize_email(email)
+    if not email:
+        return None
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, email, name, role FROM users WHERE lower(email)=lower(%s)", (email,))
+            row = cur.fetchone()
+            if row:
+                return row
+            cur.execute(
+                "INSERT INTO users (email, name, role, created_at) VALUES (%s, %s, 'account_manager', now()) RETURNING id, email, name, role",
+                (email, email.split("@")[0]),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return row
+    finally:
+        conn.close()
+
+
+def _upsert_o365_tokens(user_id: int, email: str, token_data: dict):
+    conn = get_conn()
+    try:
+        expires_in = int(token_data.get("expires_in") or 3600)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO user_o365_tokens (user_id, email, tenant_id, refresh_token, access_token, expires_at, connected_at, status)
+                VALUES (%s, %s, %s, %s, %s, now() + (%s || ' seconds')::interval, now(), 'active')
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                    email=EXCLUDED.email,
+                    tenant_id=EXCLUDED.tenant_id,
+                    refresh_token=EXCLUDED.refresh_token,
+                    access_token=EXCLUDED.access_token,
+                    expires_at=EXCLUDED.expires_at,
+                    connected_at=now(),
+                    status='active'
+                """,
+                (
+                    int(user_id),
+                    _normalize_email(email),
+                    MS_TENANT_ID,
+                    token_data.get("refresh_token") or "",
+                    token_data.get("access_token") or "",
+                    str(expires_in),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _get_o365_token_row(email: str):
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT user_id, email, tenant_id, refresh_token, access_token, expires_at, status FROM user_o365_tokens WHERE lower(email)=lower(%s)",
+                (_normalize_email(email),),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def _refresh_graph_token_if_needed(token_row: dict):
+    if not token_row:
+        raise ValueError("Microsoft 365 is not connected for this account manager")
+
+    expires_at = token_row.get("expires_at")
+    if expires_at and isinstance(expires_at, datetime):
+        if expires_at > datetime.now(timezone.utc) + timedelta(minutes=5):
+            return token_row.get("access_token") or ""
+
+    refresh_token = (token_row.get("refresh_token") or "").strip()
+    if not refresh_token:
+        raise ValueError("Refresh token missing. Reconnect Microsoft 365.")
+
+    token_url = f"https://login.microsoftonline.com/{MS_TENANT_ID}/oauth2/v2.0/token"
+    refreshed = _http_form_post(
+        token_url,
+        {
+            "client_id": MS_CLIENT_ID,
+            "client_secret": MS_CLIENT_SECRET,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "redirect_uri": MS_REDIRECT_URI,
+            "scope": MS_OAUTH_SCOPES,
+        },
+    )
+
+    _upsert_o365_tokens(int(token_row["user_id"]), token_row.get("email") or "", refreshed)
+    return refreshed.get("access_token") or ""
+
+
+def _send_graph_mail(sender_email: str, to_emails, cc_emails, subject: str, html_body: str):
+    token_row = _get_o365_token_row(sender_email)
+    access_token = _refresh_graph_token_if_needed(token_row)
+    if not access_token:
+        raise ValueError("Could not get Microsoft access token")
+
+    payload = {
+        "message": {
+            "subject": subject,
+            "body": {"contentType": "HTML", "content": html_body},
+            "toRecipients": [{"emailAddress": {"address": e}} for e in to_emails],
+            "ccRecipients": [{"emailAddress": {"address": e}} for e in cc_emails],
+            "replyTo": [{"emailAddress": {"address": _normalize_email(sender_email)}}],
+        },
+        "saveToSentItems": True,
+    }
+
+    return _http_json_request(
+        "https://graph.microsoft.com/v1.0/me/sendMail",
+        method="POST",
+        data=payload,
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+    )
+
+
+def _format_bullets(text: str):
+    lines = [ln.strip(" -	") for ln in str(text or "").splitlines() if ln.strip()]
+    if not lines:
+        return "<li>NA</li>"
+    return "".join([f"<li>{ln}</li>" for ln in lines])
+
+
+def _format_action_rows(text: str):
+    rows = []
+    for ln in str(text or "").splitlines():
+        raw = ln.strip()
+        if not raw:
+            continue
+        parts = [p.strip() for p in raw.split("|")]
+        while len(parts) < 4:
+            parts.append("")
+        rows.append(parts[:4])
+    if not rows:
+        rows = [["NA", "", "", "Open"]]
+    return "".join([f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td></tr>" for r in rows])
+
+
+def _build_mom_html(payload: dict):
+    account_name = payload.get("account_name") or "Account"
+    meeting_date = payload.get("meeting_date") or datetime.now().strftime("%d-%b-%Y")
+    client_name = payload.get("client_name") or "Team"
+    intro = payload.get("mom_intro") or ""
+    discussion = payload.get("mom_discussion") or ""
+    actions = payload.get("mom_actions") or ""
+    next_steps = payload.get("mom_next_steps") or ""
+    am_name = payload.get("account_manager_name") or "Account Manager"
+    am_email = payload.get("account_manager_email") or ""
+
+    return f"""
+    <p>Hi {client_name},</p>
+    <p>Thank you for your time today. Please find the minutes of meeting below.</p>
+    <p><b>Introduction:</b><br>{intro}</p>
+    <p><b>Discussion Points:</b></p>
+    <ul>{_format_bullets(discussion)}</ul>
+    <p><b>Action Points:</b></p>
+    <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse">
+      <tr><th>Action Item</th><th>Owner</th><th>Due Date</th><th>Status</th></tr>
+      {_format_action_rows(actions)}
+    </table>
+    <p><b>Next Steps:</b><br>{next_steps}</p>
+    <p>Please let us know if any point needs correction.</p>
+    <p>Regards,<br>{am_name}<br>{am_email}<br>DNISPL</p>
+    """
 
 
 def send_email_smtp(to_emails, subject: str, body: str, cc_emails=None) -> bool:
@@ -1786,6 +2033,166 @@ def upsert_aop_actual():
             )
         conn.commit()
         return jsonify({"status": "ok", "account_id": account_id, "fy_year": fy_year, "month": month})
+    finally:
+        conn.close()
+
+
+@app.route("/api/oauth/microsoft/start", methods=["GET"])
+def microsoft_oauth_start():
+    viewer_email = _normalize_email(request.args.get("viewer_email") or "")
+    if not viewer_email:
+        return jsonify({"error": "viewer_email required"}), 400
+    if not (MS_CLIENT_ID and MS_CLIENT_SECRET and MS_REDIRECT_URI):
+        return jsonify({"error": "Microsoft OAuth env vars missing"}), 500
+
+    state = _build_oauth_state(viewer_email)
+    params = {
+        "client_id": MS_CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": MS_REDIRECT_URI,
+        "response_mode": "query",
+        "scope": MS_OAUTH_SCOPES,
+        "state": state,
+    }
+    url = f"https://login.microsoftonline.com/{MS_TENANT_ID}/oauth2/v2.0/authorize?" + urllib.parse.urlencode(params)
+    return jsonify({"url": url})
+
+
+@app.route("/api/oauth/microsoft/callback", methods=["GET"])
+def microsoft_oauth_callback():
+    code = (request.args.get("code") or "").strip()
+    state = (request.args.get("state") or "").strip()
+    if not code:
+        return "Missing code", 400
+
+    email = _verify_oauth_state(state)
+    if not email:
+        return "Invalid or expired OAuth state", 400
+
+    token_url = f"https://login.microsoftonline.com/{MS_TENANT_ID}/oauth2/v2.0/token"
+    try:
+        token_data = _http_form_post(
+            token_url,
+            {
+                "client_id": MS_CLIENT_ID,
+                "client_secret": MS_CLIENT_SECRET,
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": MS_REDIRECT_URI,
+                "scope": MS_OAUTH_SCOPES,
+            },
+        )
+
+        user = _get_user_row_by_email(email)
+        _upsert_o365_tokens(int(user["id"]), email, token_data)
+
+        return """
+        <html><body style='font-family:Arial;padding:20px'>
+        <h3>Microsoft 365 connected successfully.</h3>
+        <p>You can close this window and return to CRM.</p>
+        <script>
+          if (window.opener) {
+            window.opener.postMessage({ type: 'ms_o365_connected' }, '*');
+            window.close();
+          }
+        </script>
+        </body></html>
+        """
+    except Exception as exc:
+        return f"OAuth failed: {exc}", 500
+
+
+@app.route("/api/oauth/microsoft/status", methods=["GET"])
+def microsoft_oauth_status():
+    viewer_email = _normalize_email(request.args.get("viewer_email") or "")
+    if not viewer_email:
+        return jsonify({"connected": False, "error": "viewer_email required"}), 400
+    row = _get_o365_token_row(viewer_email)
+    return jsonify({"connected": bool(row and (row.get("status") or "") == "active")})
+
+
+@app.route("/api/mom/send", methods=["POST"])
+def send_mom_mail_endpoint():
+    data = request.get_json(silent=True) or {}
+    viewer_email = _normalize_email(data.get("viewer_email") or "")
+    viewer_role = (data.get("viewer_role") or "account_manager").strip().lower()
+
+    account_id = str(data.get("account_id") or "").strip()
+    to_emails = _split_emails(data.get("to_emails") or "")
+    cc_emails = _split_emails(data.get("cc_emails") or "")
+
+    if not to_emails:
+        return jsonify({"error": "to_emails required"}), 400
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            account_manager_email = viewer_email
+            account_manager_name = (viewer_email.split("@")[0] if viewer_email else "Account Manager")
+            account_name = data.get("account_name") or ""
+
+            if account_id:
+                cur.execute(
+                    """
+                    SELECT a.account_name, u.email AS manager_email, u.name AS manager_name
+                    FROM accounts a
+                    LEFT JOIN users u ON u.id = a.account_manager_id
+                    WHERE CAST(a.id AS TEXT) = %s
+                    """,
+                    (account_id,),
+                )
+                row = cur.fetchone()
+                if row:
+                    account_name = row.get("account_name") or account_name
+                    if row.get("manager_email"):
+                        account_manager_email = _normalize_email(row.get("manager_email"))
+                    if row.get("manager_name"):
+                        account_manager_name = row.get("manager_name")
+
+            if not _is_supervisor(viewer_role) and viewer_email and account_manager_email and viewer_email != account_manager_email:
+                return jsonify({"error": "not allowed to send MoM for this account"}), 403
+
+            if not account_manager_email:
+                return jsonify({"error": "account manager email not found"}), 400
+
+            meeting_date = (data.get("meeting_date") or "").strip() or datetime.now().strftime("%d-%b-%Y")
+            subject = (data.get("subject") or "").strip() or f"Minutes of Meeting | {account_name or 'Account'} | {meeting_date}"
+
+            payload = {
+                "account_name": account_name,
+                "meeting_date": meeting_date,
+                "client_name": data.get("client_name") or "Team",
+                "mom_intro": data.get("mom_intro") or "",
+                "mom_discussion": data.get("mom_discussion") or "",
+                "mom_actions": data.get("mom_actions") or "",
+                "mom_next_steps": data.get("mom_next_steps") or "",
+                "account_manager_name": account_manager_name,
+                "account_manager_email": account_manager_email,
+            }
+            html = _build_mom_html(payload)
+
+            _send_graph_mail(account_manager_email, to_emails, cc_emails, subject, html)
+
+            activity_id = str(data.get("activity_id") or "").strip()
+            if activity_id:
+                cur.execute(
+                    """
+                    UPDATE activities
+                    SET mom_sent_at=now(),
+                        mom_sent_to=%s,
+                        mom_send_status='sent',
+                        mom_send_error=NULL,
+                        mom_payload=%s,
+                        updated_at=now()
+                    WHERE id=%s
+                    """,
+                    (", ".join(to_emails), json.dumps({**payload, "to_emails": to_emails, "cc_emails": cc_emails, "subject": subject}), activity_id),
+                )
+                conn.commit()
+
+            return jsonify({"status": "sent", "from": account_manager_email, "to": to_emails, "cc": cc_emails})
+    except Exception as exc:
+        return jsonify({"error": f"MoM send failed: {exc}"}), 500
     finally:
         conn.close()
 
