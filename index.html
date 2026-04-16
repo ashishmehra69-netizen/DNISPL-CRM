@@ -568,7 +568,6 @@ function getWinProbSafe(opp) {
  }
 }
  const CRM_API_BASE = '';
-
  
  // ═══════════════════════════════════════════════════════════════
  
@@ -597,6 +596,15 @@ function applyLoggedInUi() {
   btn.onclick = openChangePassword;
   actions.insertBefore(btn, actions.firstChild);
  }
+ if (actions && !document.getElementById('connectMsBtn')) {
+  const msBtn = document.createElement('button');
+  msBtn.id = 'connectMsBtn';
+  msBtn.className = 'btn';
+  msBtn.textContent = 'Connect Microsoft 365';
+  msBtn.onclick = openMicrosoftConnect;
+  actions.insertBefore(msBtn, actions.firstChild);
+ }
+ refreshMicrosoftStatus();
 }
 
 function persistSession() {
@@ -1034,6 +1042,82 @@ function openChangePassword() {
  .then(() => alert('Password updated'))
  .catch(err => alert(`Failed: ${err.message}`));
 }
+
+async function refreshMicrosoftStatus() {
+ try {
+  if (!currentUser) return;
+  const r = await fetch(`${CRM_API_BASE}/api/oauth/microsoft/status?viewer_email=${encodeURIComponent(currentUser)}`);
+  if (!r.ok) return;
+  const data = await r.json();
+  const btn = document.getElementById('connectMsBtn');
+  if (btn) {
+   btn.textContent = data.connected ? 'Microsoft 365 Connected' : 'Connect Microsoft 365';
+   btn.style.opacity = data.connected ? '0.9' : '1';
+  }
+ } catch (e) {}
+}
+
+async function openMicrosoftConnect() {
+ try {
+  const r = await fetch(`${CRM_API_BASE}/api/oauth/microsoft/start?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`);
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || 'could not start Microsoft OAuth');
+  const w = window.open(data.url, 'ms_oauth', 'width=560,height=720');
+  if (!w) {
+   alert('Popup blocked. Please allow popups and try again.');
+  }
+ } catch (err) {
+  alert(`Microsoft connect failed: ${err.message}`);
+ }
+}
+
+window.addEventListener('message', (ev) => {
+ if (ev?.data?.type === 'ms_o365_connected') {
+  refreshMicrosoftStatus();
+  alert('Microsoft 365 connected successfully.');
+ }
+});
+
+function setSendMomFlag(shouldSend) {
+ const el = document.getElementById('sendMomFlag');
+ if (el) el.value = shouldSend ? '1' : '0';
+}
+
+function toggleMomSection(isOn) {
+ const sec = document.getElementById('momSection');
+ if (sec) sec.style.display = isOn ? 'block' : 'none';
+}
+
+function buildMomPayloadFromForm(formData, activityPayload) {
+ return {
+  activity_id: activityPayload.id,
+  viewer_email: currentUser,
+  viewer_role: getViewerRoleForApi(),
+  account_id: activityPayload.account_id || '',
+  account_name: activityPayload.account_name || '',
+  meeting_date: fmtDateTime(activityPayload.date || new Date().toISOString()),
+  client_name: formData.momClientName || 'Team',
+  to_emails: formData.momToEmails || '',
+  cc_emails: formData.momCcEmails || '',
+  subject: formData.momSubject || '',
+  mom_intro: formData.momIntro || '',
+  mom_discussion: formData.momDiscussion || '',
+  mom_actions: formData.momActions || '',
+  mom_next_steps: formData.momNextSteps || ''
+ };
+}
+
+async function sendMomEmailFromApi(payload) {
+ const r = await fetch(`${CRM_API_BASE}/api/mom/send`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload)
+ });
+ const data = await r.json().catch(() => ({}));
+ if (!r.ok) throw new Error(data.error || `MoM send failed (${r.status})`);
+ return data;
+}
+
 async function fetchActivitiesFromApi() {
  const url = `${CRM_API_BASE}/api/activities?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
  const resp = await fetch(url);
@@ -2375,6 +2459,7 @@ function openActivityModal(activity = null) {
  <h2>${activity ? 'Edit' : 'Log'} Activity</h2>
  <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(activity?.createdDate || activity?.date || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(activity?.modifiedDate || activity?.date || new Date().toISOString())}</div>
  <form onsubmit="saveActivity(event, ${activity ? `'${activity.id}'` : 'null'})">
+ <input type="hidden" id="sendMomFlag" name="sendMom" value="0">
  <select class="input" required name="type">
  <option value="">Select Type *</option>
  <option value="Call" ${activity?.type === 'Call' ? 'selected' : ''}>📞 Call</option>
@@ -2392,9 +2477,26 @@ function openActivityModal(activity = null) {
  </select>
  <textarea name="notes" placeholder="What did you do? What was discussed?">${activity?.notes || ''}</textarea>
  <input class="input" required type="datetime-local" name="date" value="${activity?.date ? activity.date.slice(0,16) : new Date().toISOString().slice(0,16)}">
+
+ <label style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+  <input type="checkbox" name="momEnabled" value="1" onchange="toggleMomSection(this.checked)"> Send MoM Email to Client
+ </label>
+
+ <div id="momSection" style="display:none; margin-top:12px; padding:12px; border-radius:10px; background:rgba(255,255,255,0.12)">
+  <input class="input" name="momToEmails" placeholder="To Emails* (comma separated)">
+  <input class="input" name="momCcEmails" placeholder="CC Emails (optional)">
+  <input class="input" name="momClientName" placeholder="Client Name" value="Team">
+  <input class="input" name="momSubject" placeholder="Mail Subject" value="Minutes of Meeting | ${(activity?.accountName || 'Account')} | ${fmtDate(new Date().toISOString())}">
+  <textarea name="momIntro" placeholder="Introduction*"></textarea>
+  <textarea name="momDiscussion" placeholder="Discussion Points* (one per line)"></textarea>
+  <textarea name="momActions" placeholder="Action Points* (one per line: Action | Owner | Due Date | Status)"></textarea>
+  <textarea name="momNextSteps" placeholder="Next Steps*"></textarea>
+ </div>
+
  <div style="margin-top:20px">
  <button type="button" class="btn" onclick="closeModal()">Cancel</button>
- <button type="submit" class="btn btn-success">Save Activity</button>
+ <button type="submit" class="btn btn-success" onclick="setSendMomFlag(false)">Save Activity</button>
+ <button type="submit" class="btn" onclick="setSendMomFlag(true)">Save + Send MoM</button>
  ${activity ? `<button type="button" class="btn btn-danger" onclick="deleteActivity('${activity.id}')">Delete</button>` : ''}
  </div>
  </form>
@@ -2428,7 +2530,17 @@ async function saveActivity(e, id) {
  };
 
  try {
- await upsertActivityToApi(payload);
+ const saveRes = await upsertActivityToApi(payload);
+ payload.id = saveRes?.id || payload.id;
+
+ const shouldSendMom = formData.sendMom === '1' || formData.momEnabled === '1';
+ if (shouldSendMom && payload.type === 'Meeting') {
+  if (!formData.momToEmails) {
+   throw new Error('Please provide To Emails before sending MoM');
+  }
+  await sendMomEmailFromApi(buildMomPayloadFromForm(formData, payload));
+ }
+
  state.data.activities = await fetchActivitiesFromApi();
  saveData();
  closeModal();
