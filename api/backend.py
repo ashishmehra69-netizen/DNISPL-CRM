@@ -98,6 +98,7 @@ def get_conn():
                 DATABASE_URL,
                 sslmode="require",
                 connect_timeout=3,
+                options="-c statement_timeout=8000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=10000",
                 application_name="dnispl-crm",
                 keepalives=1,
                 keepalives_idle=30,
@@ -396,6 +397,20 @@ def init_db() -> None:
                 );
                 """
             )
+            # Performance indexes for concurrent access patterns.
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_manager_id ON accounts(account_manager_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_activities_owner ON activities(lower(owner));")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_activities_date ON activities(date);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_leads_owner ON leads(lower(owner));")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(lower(owner));")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_contacts_account_id ON contacts(account_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_owner ON opportunities(lower(owner));")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_sales_owner ON opportunities(lower(sales_owner));")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_assigned_presales ON opportunities(lower(assigned_presales));")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_assigned_purchase ON opportunities(lower(assigned_purchase));")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_account_id ON opportunities(account_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_aop_plans_fy ON aop_plans(fy_year);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_aop_actuals_fy ON aop_actuals(fy_year);")
         conn.commit()
     finally:
         conn.close()
