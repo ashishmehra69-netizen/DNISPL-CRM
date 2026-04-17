@@ -1729,6 +1729,7 @@ function renderLeads(filtered) {
  <h2>🎯 Leads (${filtered.leads.length})</h2>
  ${renderManagerFilterControls(filtered)}
  <button class="btn" type="button" onclick="document.getElementById('leadsCsvInput').click()">Import CSV</button>
+ <button class="btn" type="button" onclick="exportLeadsCsv()">⬇ Export CSV</button>
  </div>
  <div class="grid">
  ${filtered.leads.map(l => `
@@ -1857,6 +1858,7 @@ function renderAccounts(filtered) {
  <h2>🏢 Accounts (${filtered.accounts.length})</h2>
  ${renderManagerFilterControls(filtered)}
  ${isSupervisor ? '<button class="btn" type="button" onclick="document.getElementById(\'accountsCsvInput\').click()">Import CSV</button>' : ''}
+ <button class="btn" type="button" onclick="exportAccountsCsv()">⬇ Export CSV</button>
  </div>
  <div class="grid">
 ${filtered.accounts.map(a => `
@@ -1886,6 +1888,7 @@ ${filtered.accounts.map(a => `
  <div class="card">
  <h2>👥 Contacts (${filtered.contacts.length})</h2>
  ${renderManagerFilterControls(filtered)}
+ <button class="btn" type="button" onclick="exportContactsCsv()">⬇ Export CSV</button>
  </div>
  <div class="grid">
  ${filtered.contacts.map(c => `
@@ -1988,7 +1991,7 @@ ${filtered.accounts.map(a => `
  `;
 }
 
- function renderWorkflow(filtered) {
+function renderWorkflow(filtered) {
  const role = getUserRole();
  const list = filtered.opportunities;
  return `
@@ -1996,6 +1999,7 @@ ${filtered.accounts.map(a => `
  <h2>🔄 Workflow Board (${list.length})</h2>
  ${renderManagerFilterControls(filtered)}
  <div style="opacity:0.85; margin-top:8px">Flow: Sales → Presales → Purchase → Presales → Sales</div>
+ <button class="btn" type="button" onclick="exportWorkflowCsv()">⬇ Export CSV</button>
  </div>
  <div class="grid">
  ${list.map(o => `
@@ -2059,24 +2063,7 @@ ${filtered.accounts.map(a => `
  return '';
  }
 function renderActivities(filtered) {
- const allActivities = [...filtered.activities].sort((a, b) =>
- new Date(b.date || b.modifiedDate || b.createdDate) - new Date(a.date || a.modifiedDate || a.createdDate)
- );
- const today = new Date().toDateString();
- const activities = allActivities.filter(a => {
- const stamp = a.date || a.modifiedDate || a.createdDate;
- if (!stamp) return false;
- const d = new Date(stamp);
- if (isNaN(d.getTime())) return false;
- if (activityFilter.mode === 'all') return true;
- if (activityFilter.mode === 'today') return d.toDateString() === today;
- if (activityFilter.mode === 'range') {
- const fromOK = !activityFilter.from || d >= new Date(activityFilter.from + 'T00:00:00');
- const toOK = !activityFilter.to || d <= new Date(activityFilter.to + 'T23:59:59');
- return fromOK && toOK;
- }
- return true;
- });
+ const activities = getVisibleActivities(filtered.activities || []);
  
  return `
  <div class="card">
@@ -2089,6 +2076,7 @@ function renderActivities(filtered) {
  <label style="font-size:0.85em">To <input class="input" style="display:inline-block; width:auto" type="date" id="activityToDate" value="${activityFilter.to || ''}"></label>
  <button class="btn btn-success" type="button" onclick="applyActivityDateRange()">Apply</button>
  <button class="btn btn-danger" type="button" onclick="clearActivityDateRange()">Clear</button>
+ <button class="btn" type="button" onclick="exportActivitiesCsv()">⬇ Export CSV</button>
  </div>
  </div>
  <div class="grid">
@@ -2128,6 +2116,27 @@ function applyActivityDateRange() {
 function clearActivityDateRange() {
  activityFilter = { mode: 'all', from: '', to: '' };
  render();
+}
+
+function getVisibleActivities(activitiesInput) {
+ const allActivities = [...(activitiesInput || [])].sort((a, b) =>
+  new Date(b.date || b.modifiedDate || b.createdDate) - new Date(a.date || a.modifiedDate || a.createdDate)
+ );
+ const today = new Date().toDateString();
+ return allActivities.filter(a => {
+  const stamp = a.date || a.modifiedDate || a.createdDate;
+  if (!stamp) return false;
+  const d = new Date(stamp);
+  if (isNaN(d.getTime())) return false;
+  if (activityFilter.mode === 'all') return true;
+  if (activityFilter.mode === 'today') return d.toDateString() === today;
+  if (activityFilter.mode === 'range') {
+   const fromOK = !activityFilter.from || d >= new Date(activityFilter.from + 'T00:00:00');
+   const toOK = !activityFilter.to || d <= new Date(activityFilter.to + 'T23:59:59');
+   return fromOK && toOK;
+  }
+  return true;
+ });
 }
 
 function renderDashboard(filtered) {
@@ -2226,6 +2235,144 @@ function exportMonthlyPipeline(month) {
  });
  rows.unshift(['Opportunity','Account','Owner','Stage','Workflow Stage','Value','Win %','Weighted Value','Created']);
  downloadCSV(`pipeline_${m}.csv`, rows);
+}
+
+function exportLeadsCsv() {
+ const filtered = getFilteredData();
+ const leads = filtered.leads || [];
+ if (!leads.length) { alert('No leads to export.'); return; }
+ const rows = leads.map(l => ([
+  l.id || '',
+  l.name || '',
+  l.company || '',
+  l.email || '',
+  l.phone || '',
+  l.source || '',
+  l.status || '',
+  getLeadManagerEmail(l) || '',
+  l.owner || '',
+  l.notes || '',
+  fmtDate(l.createdDate),
+  fmtDate(l.modifiedDate)
+ ]));
+ rows.unshift(['ID','Lead Name','Company','Email','Phone','Source','Status','Account Manager','Record Owner','Notes','Created','Updated']);
+ downloadCSV(`leads_${new Date().toISOString().slice(0,10)}.csv`, rows);
+}
+
+function exportAccountsCsv() {
+ const filtered = getFilteredData();
+ const accounts = filtered.accounts || [];
+ if (!accounts.length) { alert('No accounts to export.'); return; }
+ const rows = accounts.map(a => ([
+  a.id || '',
+  a.name || '',
+  getAccountManagerEmail(a) || '',
+  a.industry || '',
+  a.tier || '',
+  a.location || '',
+  a.companySize || '',
+  a.annualSpend || '',
+  a.mode || '',
+  getAccountSuspectScore(a),
+  getAccountQuestionnaireCompletion(a) + '%',
+  fmtDate(a.createdDate),
+  fmtDate(a.modifiedDate)
+ ]));
+ rows.unshift(['ID','Account Name','Account Manager','Industry','Tier','Location','Company Size','Annual Spend','Mode','Suspect Score','Questionnaire %','Created','Updated']);
+ downloadCSV(`accounts_${new Date().toISOString().slice(0,10)}.csv`, rows);
+}
+
+function exportContactsCsv() {
+ const filtered = getFilteredData();
+ const contacts = filtered.contacts || [];
+ if (!contacts.length) { alert('No contacts to export.'); return; }
+ const rows = contacts.map(c => {
+  const account = state.data.accounts.find(a => String(a.id) === String(c.accountId));
+  return [
+   c.id || '',
+   c.name || '',
+   c.title || '',
+   c.email || '',
+   c.phone || '',
+   c.roleType || '',
+   c.influenceLevel || '',
+   c.emotion || '',
+   account?.name || '',
+   getContactManagerEmail(c) || '',
+   c.owner || '',
+   fmtDate(c.createdDate),
+   fmtDate(c.modifiedDate)
+  ];
+ });
+ rows.unshift(['ID','Contact Name','Title','Email','Phone','Role Type','Influence Level','Emotion','Account','Account Manager','Record Owner','Created','Updated']);
+ downloadCSV(`contacts_${new Date().toISOString().slice(0,10)}.csv`, rows);
+}
+
+function exportActivitiesCsv() {
+ const filtered = getFilteredData();
+ const activities = getVisibleActivities(filtered.activities || []);
+ if (!activities.length) { alert('No activities to export.'); return; }
+ const rows = activities.map(a => ([
+  a.id || '',
+  a.type || '',
+  a.subject || '',
+  a.notes || '',
+  a.accountName || '',
+  getActivityManagerEmail(a) || '',
+  a.owner || '',
+  fmtDateTime(a.date || a.modifiedDate || a.createdDate),
+  fmtDateTime(a.modifiedDate || a.date || a.createdDate),
+  fmtDate(a.createdDate)
+ ]));
+ rows.unshift(['ID','Type','Subject','Notes','Account','Account Manager','Record Owner','Activity Date/Time','Updated','Created']);
+ downloadCSV(`activities_${new Date().toISOString().slice(0,10)}.csv`, rows);
+}
+
+function exportWorkflowCsv() {
+ const filtered = getFilteredData();
+ const list = filtered.opportunities || [];
+ if (!list.length) { alert('No workflow rows to export.'); return; }
+ const rows = list.map(o => ([
+  o.id || '',
+  o.name || '',
+  state.data.accounts.find(a => a.id === o.accountId)?.name || '',
+  o.stage || '',
+  o.workflowStage || 'Sales Review',
+  getWinProbSafe(o) + '%',
+  o.salesOwner || o.owner || '',
+  o.assignedPresales || '',
+  o.assignedPurchase || '',
+  fmtDateTime(o.presalesDueAt),
+  fmtDateTime(o.purchaseDueAt),
+  fmtDate(o.createdDate),
+  fmtDate(o.modifiedDate)
+ ]));
+ rows.unshift(['ID','Opportunity','Account','Stage','Workflow Stage','Win %','Sales','Presales','Purchase','Presales Due','Purchase Due','Created','Updated']);
+ downloadCSV(`workflow_${new Date().toISOString().slice(0,10)}.csv`, rows);
+}
+
+function exportPurchaseCsv() {
+ loadPurchaseOrders();
+ const pos = state.data.purchase_orders || [];
+ if (!pos.length) { alert('No purchase orders to export.'); return; }
+ const rows = pos.map(p => ([
+  p.id || '',
+  p.poNumber || '',
+  p.accountName || '',
+  p.poType || '',
+  p.stage || '',
+  p.vendorName || '',
+  p.oem || '',
+  p.value || 0,
+  p.vendorValue || 0,
+  (p.value || 0) - (p.vendorValue || 0),
+  p.createdBy || '',
+  p.expectedDelivery || '',
+  fmtDate(p.createdDate),
+  fmtDate(p.modifiedDate)
+ ]));
+ rows.unshift(['ID','PO Number','Account','Type','Stage','Vendor','OEM','Customer PO Value (₹)','Vendor Cost (₹)','Gross Margin (₹)','Created By','Expected Delivery','Created','Updated']);
+ downloadCSV(`purchase_orders_${new Date().toISOString().slice(0,10)}.csv`, rows);
 }
 
 function changeTab(tab) {
@@ -3906,6 +4053,9 @@ function renderPurchaseOrders(filtered) {
         <div style="font-size:0.8em; opacity:0.8">Overdue Delivery</div>
         <div style="font-size:1.3em; font-weight:bold; color:${overdueDelivery > 0 ? '#f87171' : '#4ade80'}">${overdueDelivery}</div>
       </div>
+    </div>
+    <div style="margin-top:12px">
+      <button class="btn" type="button" onclick="exportPurchaseCsv()">⬇ Export CSV</button>
     </div>
   </div>
 
