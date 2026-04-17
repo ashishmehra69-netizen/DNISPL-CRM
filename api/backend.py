@@ -17,6 +17,7 @@ from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from flask import Flask, jsonify, request
+from werkzeug.exceptions import HTTPException
 
 
 def utc_now() -> str:
@@ -77,6 +78,8 @@ DATABASE_URL = _strip_sslmode(DATABASE_URL)
 app = Flask(__name__)
 _db_init_done = False
 _db_init_lock = threading.Lock()
+_write_limits = {}
+_write_limits_lock = threading.Lock()
 
 
 @app.after_request
@@ -411,12 +414,59 @@ def ensure_db_initialized():
 
 @app.errorhandler(Exception)
 def _json_exception_handler(exc):
+    if isinstance(exc, HTTPException):
+        return jsonify({"error": exc.description}), exc.code
     return jsonify({"error": f"internal server error: {exc}"}), 500
 
 
 @app.before_request
 def _ensure_init_once():
     ensure_db_initialized()
+
+
+def _client_ip() -> str:
+    xff = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    if xff:
+        return xff
+    xrip = (request.headers.get("x-real-ip") or "").strip()
+    if xrip:
+        return xrip
+    return (request.remote_addr or "").strip()
+
+
+def _is_scanner_path(path: str) -> bool:
+    p = (path or "").lower()
+    if p.startswith("/wp-") or p.startswith("/wordpress") or p.startswith("/xmlrpc"):
+        return True
+    if p.endswith(".php") or "/wp-content/" in p or "/wp-admin/" in p:
+        return True
+    bad = ("/av.php", "/dx.php", "/ms-edit.php", "/admin.php")
+    return p in bad
+
+
+@app.before_request
+def _shield_scanner_noise_and_log():
+    path = request.path or ""
+    if _is_scanner_path(path):
+        print(
+            f"[BOT_BLOCK] ip={_client_ip()} method={request.method} path={path} "
+            f"ua={(request.headers.get('user-agent') or '-')[:160]}"
+        )
+        return jsonify({"error": "not found"}), 404
+
+
+def _rate_limit_write(route_key: str, per_60s: int = 40):
+    ip = _client_ip() or "unknown"
+    now = time.time()
+    key = f"{route_key}:{ip}"
+    with _write_limits_lock:
+        bucket = _write_limits.get(key, [])
+        bucket = [t for t in bucket if now - t < 60]
+        if len(bucket) >= per_60s:
+            return False, ip
+        bucket.append(now)
+        _write_limits[key] = bucket
+    return True, ip
 
 
 def compute_suspect_score(data: dict) -> int:
@@ -1233,6 +1283,11 @@ def bootstrap_data():
 
 @app.route("/api/accounts", methods=["POST"])
 def create_or_update_account():
+    allowed, ip = _rate_limit_write("accounts_post", per_60s=35)
+    if not allowed:
+        print(f"[RATE_LIMIT] route=/api/accounts ip={ip}")
+        return jsonify({"error": "too many requests"}), 429
+
     data = request.get_json(silent=True) or {}
     account_name = (data.get("account_name") or "").strip()
     account_manager = (data.get("account_manager") or "").strip()
@@ -1244,8 +1299,10 @@ def create_or_update_account():
         result = upsert_account(data, manager_id)
         return jsonify({"status": result, "account_name": account_name}), 200
     except ValueError as exc:
+        print(f"[ACCOUNTS_POST_BAD_REQUEST] ip={ip} err={exc}")
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
+        print(f"[ACCOUNTS_POST_ERROR] ip={ip} err={exc}")
         return jsonify({"error": f"account save failed: {exc}"}), 500
 
 
