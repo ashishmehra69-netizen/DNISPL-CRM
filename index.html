@@ -4939,21 +4939,66 @@ async function saveRFPOpportunity(e) {
       o.finalPricingProposal ? 'Yes' : 'No',
       fmtDate(o.createdDate), fmtDate(o.modifiedDate)
     ];
+    });
+    rows.unshift([
+      'ID','Opportunity','Account','Value (₹)','Value (L)',
+      'Stage','Workflow Stage','Sales Owner',
+      'Presales','Purchase',
+      'Win %','Weighted Value (₹)',
+      'Problem Statement','Why Now',
+      'Business Impact','Budget Range',
+      'Decision Timeline','Requirements',
+      'BOQ','Costing','Final Proposal',
+      'Created','Updated'
+    ]);
+    downloadCSV(`opportunities_${new Date().toISOString().slice(0,10)}.csv`, rows);
+   
+  }
+  
+  // --- A11y autofix for form controls (id/name + label-for) ---
+  function fixFormA11y(root = document) {
+    const controls = root.querySelectorAll('input, select, textarea');
+  
+    controls.forEach((el, idx) => {
+      if (!el.id) el.id = `fld_${Date.now()}_${idx}`;
+      if (!el.name) el.name = el.id;
+    });
+  
+    const labels = root.querySelectorAll('label');
+    labels.forEach((label) => {
+      if (label.htmlFor) return;
+      if (label.querySelector('input,select,textarea')) return;
+  
+      let target = label.nextElementSibling;
+      while (target && !target.matches?.('input,select,textarea')) {
+        target = target.nextElementSibling;
+      }
+  
+      if (!target) {
+        target = label.parentElement?.querySelector?.('input,select,textarea') || null;
+      }
+  
+      if (target) {
+        if (!target.id) target.id = `fld_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        if (!target.name) target.name = target.id;
+        label.htmlFor = target.id;
+      }
+    });
+  }
+  
+  window.addEventListener('load', () => {
+    fixFormA11y(document);
   });
-  rows.unshift([
-    'ID','Opportunity','Account','Value (₹)','Value (L)',
-    'Stage','Workflow Stage','Sales Owner',
-    'Presales','Purchase',
-    'Win %','Weighted Value (₹)',
-    'Problem Statement','Why Now',
-    'Business Impact','Budget Range',
-    'Decision Timeline','Requirements',
-    'BOQ','Costing','Final Proposal',
-    'Created','Updated'
-  ]);
-  downloadCSV(`opportunities_${new Date().toISOString().slice(0,10)}.csv`, rows);
- 
-}
-</script>
-</body>
-</html> 
+  
+  const formFixObserver = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      m.addedNodes.forEach((n) => {
+        if (n.nodeType === 1) fixFormA11y(n);
+      });
+    }
+  });
+  formFixObserver.observe(document.body, { childList: true, subtree: true });
+  </script>
+  </body>
+  </html>
+  
