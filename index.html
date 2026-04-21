@@ -1422,7 +1422,9 @@ async function login() {
  }
 
 async function loadData() {
- const savedData = localStorage.getItem('crmData');
+    if (window._loadDataInFlight) return;
+    window._loadDataInFlight = true;
+    const savedData = localStorage.getItem('crmData');
  if (savedData) {
  state.data = JSON.parse(savedData);
  } else {
@@ -1563,6 +1565,7 @@ function seedAccountsFromMap() {
 
  document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
  render();
+ window._loadDataInFlight = false;
 }
 function calculateWinProb(opp) {
  if (opp.stage === 'Closed Won') return 100;
