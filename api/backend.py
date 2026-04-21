@@ -1131,7 +1131,6 @@ def list_accounts():
 def bootstrap_data():
     viewer_email = (request.args.get("viewer_email") or "").strip()
     viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
-
     payload = {
         "accounts": [],
         "activities": [],
@@ -1139,7 +1138,12 @@ def bootstrap_data():
         "contacts": [],
         "opportunities": [],
     }
-
+    _cache_key = f"bootstrap:{viewer_email}:{viewer_role}"
+    _now = time.time()
+    with _write_limits_lock:
+        _cached = _write_limits.get(_cache_key)
+        if _cached and _now - _cached[0] < 10:
+            return jsonify(_cached[1])
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -1289,7 +1293,10 @@ def bootstrap_data():
                     cur.execute(opp_scoped, (viewer_email, viewer_email, viewer_email, viewer_email))
                     rows = cur.fetchall()
                 payload["opportunities"] = rows
+        with _write_limits_lock:
+            _write_limits[f"bootstrap:{viewer_email}:{viewer_role}"] = (time.time(), payload)        
         return jsonify(payload)
+        
     except Exception as exc:
         return jsonify({"error": f"bootstrap failed: {exc}", **payload}), 200
     finally:
