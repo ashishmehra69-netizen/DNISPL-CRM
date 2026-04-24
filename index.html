@@ -4168,57 +4168,103 @@ function renderPurchaseOrders(filtered) {
   const pos = isSupervisor
     ? allPos
     : allPos.filter(p => normalizeEmail(p.owner) === normalizeEmail(currentUser));
-  const totalValue = pos.reduce((s, p) => s + (p.value || 0), 0);
+
+  const totalValue  = pos.reduce((s, p) => s + (p.value || 0), 0);
   const totalVendor = pos.reduce((s, p) => s + (p.vendorValue || 0), 0);
   const totalMargin = totalValue - totalVendor;
-  const marginPct = totalValue > 0 ? ((totalMargin / totalValue) * 100).toFixed(1) : 0;
-  const pendingApprovals = pos.filter(p => p.stage.startsWith('Pending')).length;
-  const overdueDelivery = pos.filter(p => p.expectedDelivery && new Date(p.expectedDelivery) < new Date() && !['Goods Received','Installation Done','Customer Sign-off','Invoiced','Closed'].includes(p.stage)).length;
+  const marginPct   = totalValue > 0 ? ((totalMargin / totalValue) * 100).toFixed(1) : 0;
+  const pendingApprovals = pos.filter(p => (p.stage||'').startsWith('Pending')).length;
   const myApprovals = pos.filter(p => canApproveAtStage(p.stage));
+
+  // Won opps for this user — use full state (not filtered) so nothing is missed
+  const allOpps = state.data.opportunities || [];
+  const wonOpps = allOpps.filter(o => o.stage === 'Closed Won' &&
+    (isSupervisor ||
+      normalizeEmail(o.owner) === normalizeEmail(currentUser) ||
+      normalizeEmail(o.salesOwner) === normalizeEmail(currentUser) ||
+      normalizeEmail(getOpportunityManagerEmail(o)) === normalizeEmail(currentUser)
+    )
+  );
+  const wonOppsWithoutPO = wonOpps.filter(o => !pos.some(p => p.opportunityId === o.id));
 
   const byStage = {};
   PO_STAGES.forEach(s => byStage[s] = []);
   pos.forEach(po => { (byStage[po.stage] || byStage['Draft']).push(po); });
 
   return `
+  <!-- ── Summary bar ── -->
   <div class="card">
-    <h2>📦 Purchase Orders (${pos.length})</h2>
-    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-top:16px">
-      <div class="metric" style="padding:14px; text-align:center">
-        <div style="font-size:0.8em; opacity:0.8">Customer PO Value</div>
-        <div style="font-size:1.3em; font-weight:bold; color:#4ade80">₹${(totalValue/100000).toFixed(1)}L</div>
+    <h2>📦 Purchase Orders</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:14px">
+      <div class="metric" style="padding:12px;text-align:center">
+        <div style="font-size:0.78em;opacity:0.7">Total POs</div>
+        <div style="font-size:1.4em;font-weight:bold">${pos.length}</div>
       </div>
-      <div class="metric" style="padding:14px; text-align:center">
-        <div style="font-size:0.8em; opacity:0.8">Vendor Cost</div>
-        <div style="font-size:1.3em; font-weight:bold; color:#60a5fa">₹${(totalVendor/100000).toFixed(1)}L</div>
+      <div class="metric" style="padding:12px;text-align:center">
+        <div style="font-size:0.78em;opacity:0.7">Customer Value</div>
+        <div style="font-size:1.3em;font-weight:bold;color:#4ade80">₹${(totalValue/100000).toFixed(1)}L</div>
       </div>
-      <div class="metric" style="padding:14px; text-align:center">
-        <div style="font-size:0.8em; opacity:0.8">Gross Margin</div>
-        <div style="font-size:1.3em; font-weight:bold; color:#f59e0b">₹${(totalMargin/100000).toFixed(1)}L (${marginPct}%)</div>
+      <div class="metric" style="padding:12px;text-align:center">
+        <div style="font-size:0.78em;opacity:0.7">Gross Margin</div>
+        <div style="font-size:1.3em;font-weight:bold;color:#f59e0b">₹${(totalMargin/100000).toFixed(1)}L (${marginPct}%)</div>
       </div>
-      <div class="metric" style="padding:14px; text-align:center">
-        <div style="font-size:0.8em; opacity:0.8">Pending Approvals</div>
-        <div style="font-size:1.3em; font-weight:bold; color:${pendingApprovals > 0 ? '#f87171' : '#4ade80'}">${pendingApprovals}</div>
+      <div class="metric" style="padding:12px;text-align:center">
+        <div style="font-size:0.78em;opacity:0.7">Pending Approvals</div>
+        <div style="font-size:1.3em;font-weight:bold;color:${pendingApprovals > 0 ? '#f87171' : '#4ade80'}">${pendingApprovals}</div>
       </div>
-      <div class="metric" style="padding:14px; text-align:center">
-        <div style="font-size:0.8em; opacity:0.8">Overdue Delivery</div>
-        <div style="font-size:1.3em; font-weight:bold; color:${overdueDelivery > 0 ? '#f87171' : '#4ade80'}">${overdueDelivery}</div>
+      <div class="metric" style="padding:12px;text-align:center;${wonOppsWithoutPO.length > 0 ? 'border:2px solid #f59e0b' : ''}">
+        <div style="font-size:0.78em;opacity:0.7">🏆 Won — No PO Yet</div>
+        <div style="font-size:1.3em;font-weight:bold;color:#f59e0b">${wonOppsWithoutPO.length}</div>
       </div>
     </div>
-    <div style="margin-top:12px">
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" type="button" onclick="openPurchaseOrderModal()">+ New PO</button>
       <button class="btn" type="button" onclick="exportPurchaseCsv()">⬇ Export CSV</button>
+      <button class="btn btn-success" type="button" onclick="document.getElementById('wonPoScanInput').click()">🏆 Scan Won PO</button>
     </div>
   </div>
 
+  <!-- ── Won opps waiting for PO ── -->
+  ${wonOppsWithoutPO.length > 0 ? `
+  <div class="card" style="border:2px solid #f59e0b;margin-top:12px">
+    <h3 style="margin-bottom:4px">🏆 Closed Won — PO Placement Pending (${wonOppsWithoutPO.length})</h3>
+    <p style="font-size:0.85em;opacity:0.75;margin-bottom:14px">These opportunities are won but no Purchase Order has been raised yet. Create a PO to proceed.</p>
+    <div class="grid">
+      ${wonOppsWithoutPO.map(o => {
+        const acc = (state.data.accounts||[]).find(a => String(a.id) === String(o.accountId));
+        return `
+        <div style="background:rgba(245,158,11,0.12);border:1px solid #f59e0b;border-radius:12px;padding:16px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+            <div>
+              <div style="font-weight:700;font-size:1em;margin-bottom:4px">🏆 ${o.name}</div>
+              <div style="font-size:0.85em;opacity:0.8">🏢 ${acc?.name || o.accountId || 'No Account'}</div>
+              <div style="font-size:0.82em;opacity:0.7;margin-top:2px">👤 ${formatUserLabel(o.salesOwner || o.owner || 'NA')}</div>
+            </div>
+            <div style="text-align:right;white-space:nowrap">
+              <div style="font-size:1.3em;font-weight:bold;color:#4ade80">₹${((o.value||0)/100000).toFixed(1)}L</div>
+              <span style="background:#22c55e;color:white;padding:2px 8px;border-radius:6px;font-size:0.75em">WON</span>
+            </div>
+          </div>
+          ${o.finalPricingProposal ? `<div style="font-size:0.8em;opacity:0.75;margin-top:8px;padding:6px 8px;background:rgba(0,0,0,0.15);border-radius:6px">📄 ${o.finalPricingProposal.slice(0,120)}${o.finalPricingProposal.length>120?'…':''}</div>` : ''}
+          <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+            <button type="button" class="btn btn-success" onclick="openPurchaseOrderModal(null,'${o.id}','${(acc?.id||o.accountId||'')}','${(acc?.name||'').replace(/'/g,'')}')">+ Create PO</button>
+            <button type="button" class="btn" onclick="document.getElementById('wonPoScanInput').click()">🏆 Scan Won PO</button>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>` : ''}
+
+  <!-- ── Awaiting my approval ── -->
   ${myApprovals.length > 0 ? `
-  <div class="card" style="border:2px solid #f59e0b; margin-top:12px">
+  <div class="card" style="border:2px solid #f59e0b;margin-top:12px">
     <h3>⚡ Awaiting Your Approval (${myApprovals.length})</h3>
     <div class="grid" style="margin-top:10px">
       ${myApprovals.map(po => `
       <div class="item-card" style="border:1px solid #f59e0b">
         <h3>${po.poNumber || 'Draft PO'} — ${po.accountName || 'No Account'}</h3>
-        <div style="color:#4ade80; font-weight:bold">₹${(po.value/100000).toFixed(1)}L</div>
-        <div style="font-size:0.85em; margin:6px 0"><span class="tag" style="background:#f59e0b">${po.stage}</span></div>
+        <div style="color:#4ade80;font-weight:bold">₹${((po.value||0)/100000).toFixed(1)}L</div>
+        <div style="font-size:0.85em;margin:6px 0"><span class="tag" style="background:#f59e0b">${po.stage}</span></div>
         ${getApprovalStatusHTML(po)}
         <div style="margin-top:10px">
           <button type="button" class="btn btn-success" onclick="approveCurrentStage('${po.id}')">✅ Approve Now</button>
@@ -4228,63 +4274,78 @@ function renderPurchaseOrders(filtered) {
     </div>
   </div>` : ''}
 
-  <div style="margin:20px 0">
+  <!-- ── All POs by stage ── -->
+  ${pos.length > 0 ? `
+  <div style="margin-top:20px">
     <h3 style="margin-bottom:12px">📋 PO Pipeline by Stage</h3>
     ${PO_STAGES.map(stage => {
       const stagePOs = byStage[stage] || [];
       if (!stagePOs.length) return '';
       return `
       <div class="card" style="margin-bottom:10px">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px">
-          <span><span class="tag" style="background:${getPOStageColor(stage)}">${stage}</span> <strong>${stagePOs.length} PO${stagePOs.length > 1 ? 's' : ''}</strong></span>
-          <span style="font-size:0.85em; opacity:0.8">₹${(stagePOs.reduce((s,p)=>s+(p.value||0),0)/100000).toFixed(1)}L</span>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span><span class="tag" style="background:${getPOStageColor(stage)}">${stage}</span> <strong>${stagePOs.length} PO${stagePOs.length>1?'s':''}</strong></span>
+          <span style="font-size:0.85em;opacity:0.8">₹${(stagePOs.reduce((s,p)=>s+(p.value||0),0)/100000).toFixed(1)}L</span>
         </div>
         <div class="grid">
           ${stagePOs.map(po => `
           <div class="item-card" onclick="editPurchaseOrder('${po.id}')">
-            <div style="display:flex; justify-content:space-between">
-              <h3 style="font-size:0.9em">${po.poNumber || 'Draft PO'}</h3>
+            <div style="display:flex;justify-content:space-between;align-items:flex-start">
+              <h3 style="font-size:0.9em;margin:0;flex:1">${po.poNumber || 'Draft PO'}</h3>
               <span class="tag" style="font-size:0.75em">${po.poType || 'General'}</span>
             </div>
-            <div style="color:#4ade80; font-weight:bold; margin:4px 0">₹${(po.value/100000).toFixed(1)}L | Vendor: ₹${(po.vendorValue/100000).toFixed(1)}L | Margin: ₹${((po.value-po.vendorValue)/100000).toFixed(1)}L</div>
-            <div style="font-size:0.82em; opacity:0.9"><b>Account:</b> ${po.accountName || 'NA'} | <b>Vendor:</b> ${po.vendorName || 'NA'} | <b>OEM:</b> ${po.oem || 'NA'}</div>
+            <div style="color:#4ade80;font-weight:bold;margin:6px 0">₹${((po.value||0)/100000).toFixed(1)}L
+              ${po.vendorValue ? `<span style="opacity:0.7;font-size:0.85em"> | Vendor ₹${((po.vendorValue||0)/100000).toFixed(1)}L | Margin ₹${(((po.value||0)-(po.vendorValue||0))/100000).toFixed(1)}L</span>` : ''}
+            </div>
+            <div style="font-size:0.82em;opacity:0.85;margin-bottom:6px">
+              🏢 ${po.accountName || 'NA'} | 🏭 ${po.vendorName || 'NA'} | 🔧 ${po.oem || 'NA'}
+            </div>
             ${getApprovalStatusHTML(po)}
-            ${po.scannedPOImage ? `<div style="margin-top:6px"><span class="tag" style="background:#8b5cf6">📄 PO Scan Attached</span></div>` : ''}
-            ${po.expectedDelivery ? `<div style="margin-top:4px; font-size:0.8em">${new Date(po.expectedDelivery) < new Date() && !['Goods Received','Closed','Invoiced','Customer Sign-off'].includes(po.stage) ? `<span class="tag" style="background:#ef4444">⚠ Overdue: ${fmtDate(po.expectedDelivery)}</span>` : `<span class="tag">📅 Delivery: ${fmtDate(po.expectedDelivery)}</span>`}</div>` : ''}
-            <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap">
+            ${po.scannedPOImage ? `<span class="tag" style="background:#8b5cf6;margin-top:6px">📄 PO Scan</span>` : ''}
+            ${po.expectedDelivery ? `<div style="margin-top:4px;font-size:0.8em">
+              ${new Date(po.expectedDelivery)<new Date()&&!['Goods Received','Closed','Invoiced','Customer Sign-off'].includes(po.stage)
+                ? `<span class="tag" style="background:#ef4444">⚠ Overdue: ${fmtDate(po.expectedDelivery)}</span>`
+                : `<span class="tag">📅 ${fmtDate(po.expectedDelivery)}</span>`}
+            </div>` : ''}
+            <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
               <button type="button" class="btn" onclick="event.stopPropagation();editPurchaseOrder('${po.id}')">Edit</button>
-              ${po.stage === 'Draft' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPOForApproval('${po.id}')">Submit for Approval</button>` : ''}
+              ${po.stage==='Draft' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPOForApproval('${po.id}')">Submit for Approval</button>` : ''}
               ${canApproveAtStage(po.stage) ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();approveCurrentStage('${po.id}')">✅ Approve</button>` : ''}
-              ${po.stage === 'CEO Approved' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();issuePOToVendor('${po.id}')">Issue PO to Vendor</button>` : ''}
-              ${po.stage === 'PO Issued to Vendor' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();recordGRN('${po.id}')">Record GRN</button>` : ''}
-              ${po.stage === 'Goods Received' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();markInstallationDone('${po.id}')">Mark Installation Done</button>` : ''}
-              ${po.stage === 'Installation Done' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();customerSignoff('${po.id}')">Customer Sign-off</button>` : ''}
-              ${po.stage === 'Customer Sign-off' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();raiseInvoice('${po.id}')">Raise Invoice</button>` : ''}
-              ${po.stage === 'Invoiced' ? `<button type="button" class="btn" onclick="event.stopPropagation();closePO('${po.id}')">Close PO</button>` : ''}
+              ${po.stage==='CEO Approved' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();issuePOToVendor('${po.id}')">Issue PO to Vendor</button>` : ''}
+              ${po.stage==='PO Issued to Vendor' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();recordGRN('${po.id}')">Record GRN</button>` : ''}
+              ${po.stage==='Goods Received' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();markInstallationDone('${po.id}')">Mark Installation Done</button>` : ''}
+              ${po.stage==='Installation Done' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();customerSignoff('${po.id}')">Customer Sign-off</button>` : ''}
+              ${po.stage==='Customer Sign-off' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();raiseInvoice('${po.id}')">Raise Invoice</button>` : ''}
+              ${po.stage==='Invoiced' ? `<button type="button" class="btn" onclick="event.stopPropagation();closePO('${po.id}')">Close PO</button>` : ''}
             </div>
           </div>`).join('')}
         </div>
       </div>`;
     }).join('')}
-    ${pos.length === 0 ? '<div class="card">No purchase orders yet. Click + to create one.</div>' : ''}
-  </div>
+  </div>` : `
+  <div class="card" style="text-align:center;padding:40px;margin-top:12px">
+    <div style="font-size:3em;margin-bottom:10px">📦</div>
+    <div style="font-size:1.1em;opacity:0.7;margin-bottom:16px">No Purchase Orders yet</div>
+    <button class="btn btn-success" type="button" onclick="openPurchaseOrderModal()">+ Create First PO</button>
+  </div>`}
 
-  <div class="card">
-    <h3>🔄 Approval Flow: Presales → Finance → Implementation → CEO P&L</h3>
-    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:12px; font-size:0.85em">
+  <!-- ── Approval chain reference ── -->
+  <div class="card" style="margin-top:12px">
+    <h3>🔄 Approval Flow</h3>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;font-size:0.85em">
       ${PO_APPROVAL_CHAIN.map((step, i) => `
-        <div style="background:rgba(255,255,255,0.12); padding:8px 14px; border-radius:8px; text-align:center">
+        <div style="background:rgba(255,255,255,0.12);padding:8px 14px;border-radius:8px;text-align:center">
           <div style="font-weight:bold">${step.label}</div>
-          <div style="opacity:0.8; font-size:0.85em">${step.email}</div>
+          <div style="opacity:0.8;font-size:0.82em">${step.email}</div>
         </div>
-        ${i < PO_APPROVAL_CHAIN.length - 1 ? '<div style="font-size:1.5em">→</div>' : ''}
+        ${i < PO_APPROVAL_CHAIN.length-1 ? '<div style="font-size:1.5em">→</div>' : ''}
       `).join('')}
     </div>
   </div>
   `;
 }
 
-function openPurchaseOrderModal(po = null) {
+function openPurchaseOrderModal(po = null, preOppId = '', preAccId = '', preAccName = '') {
   const filtered = getFilteredData();
   document.getElementById('modal').innerHTML = `
   <div class="modal-content">
@@ -4322,13 +4383,13 @@ function openPurchaseOrderModal(po = null) {
       <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Linked Account</label>
       <select class="input" name="accountId">
         <option value="">Select Account</option>
-        ${filtered.accounts.map(a => `<option value="${a.id}" data-name="${a.name}" ${po?.accountId === a.id ? 'selected' : ''}>${a.name}</option>`).join('')}
+        ${filtered.accounts.map(a => `<option value="${a.id}" data-name="${a.name}" ${(po?.accountId || preAccId) === a.id ? 'selected' : ''}>${a.name}</option>`).join('')}
       </select>
 
       <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Linked Opportunity</label>
       <select class="input" name="opportunityId">
         <option value="">Select Opportunity (optional)</option>
-        ${filtered.opportunities.map(o => `<option value="${o.id}" ${po?.opportunityId === o.id ? 'selected' : ''}>${o.name}</option>`).join('')}
+        ${filtered.opportunities.map(o => `<option value="${o.id}" ${(po?.opportunityId || preOppId) === o.id ? 'selected' : ''}>${o.name}${o.stage==='Closed Won'?' 🏆':''}</option>`).join('')}
       </select>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -4692,12 +4753,71 @@ function closePO(id) {
   if (!file) return;
   event.target.value = '';
 
+  // Show loading modal immediately
   document.getElementById('modal').innerHTML = `
   <div class="modal-content">
     <h2>🏆 Won PO Scanner</h2>
     <div id="wonPoStatus" style="padding:16px;background:rgba(255,255,255,0.12);border-radius:8px;margin-bottom:16px">
-      <div style="font-weight:600;margin-bottom:8px">🔄 Reading PO document...</div>
-      <div style="font-size:0.85em;opacity:0.8">AI is extracting all details. This takes 10–15 seconds.</div>
+      <div style="font-weight:600;margin-bottom:8px">⏳ Loading opportunities & reading PO...</div>
+      <div style="font-size:0.85em;opacity:0.8">Fetching your Closed Won opportunities and extracting PO details via AI.</div>
+    </div>
+    <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+  </div>`;
+  document.getElementById('modal').classList.add('show');
+
+  // Ensure opportunities are loaded from server
+  try {
+    await loadDataFromServer();
+  } catch(e) { /* use cached state */ }
+
+  // Compress/resize image before sending to AI (max 1200px, JPEG 0.75)
+  async function prepareImageB64(file) {
+    if (file.type === 'application/pdf') {
+      return new Promise(res => {
+        const r = new FileReader();
+        r.onload = e => res({ b64: e.target.result.split(',')[1] || e.target.result, mime: 'application/pdf' });
+        r.readAsDataURL(file);
+      });
+    }
+    return new Promise(res => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const MAX = 1200;
+        let w = img.width, h = img.height;
+        if (w > MAX || h > MAX) {
+          if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+          else { w = Math.round(w * MAX / h); h = MAX; }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
+        res({ b64: dataUrl.split(',')[1], mime: 'image/jpeg' });
+      };
+      img.src = url;
+    });
+  }
+
+  const { b64, mime } = await prepareImageB64(file);
+
+  // Build the modal with loaded opportunities
+  const closedWonOpps = state.data.opportunities.filter(o =>
+    o.stage === 'Closed Won' && (
+      isSupervisor ||
+      normalizeEmail(o.owner) === normalizeEmail(currentUser) ||
+      normalizeEmail(o.salesOwner) === normalizeEmail(currentUser) ||
+      normalizeEmail(getOpportunityManagerEmail(o)) === normalizeEmail(currentUser)
+    )
+  );
+
+  document.getElementById('modal').innerHTML = `
+  <div class="modal-content">
+    <h2>🏆 Won PO Scanner</h2>
+    <div id="wonPoStatus" style="padding:16px;background:rgba(255,255,255,0.12);border-radius:8px;margin-bottom:16px">
+      <div style="font-weight:600;margin-bottom:8px">🤖 AI is reading the PO document...</div>
+      <div style="font-size:0.85em;opacity:0.8">Extracting all details. This takes 10–20 seconds.</div>
     </div>
     <div id="wonPoContent" style="display:none">
       <div style="background:rgba(255,255,255,0.12);border-radius:10px;padding:14px;margin-bottom:16px">
@@ -4709,13 +4829,15 @@ function closePO(id) {
         <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Link to Opportunity (Closed Won) *</label>
         <select class="input" required name="opportunityId" onchange="wonPoFillAccount(this)">
           <option value="">Select Opportunity *</option>
-          ${state.data.opportunities
-            .filter(o => o.stage === 'Closed Won' && (isSupervisor || normalizeEmail(getOpportunityManagerEmail(o)) === normalizeEmail(currentUser) || normalizeEmail(o.owner) === normalizeEmail(currentUser) || normalizeEmail(o.salesOwner) === normalizeEmail(currentUser)))
-            .map(o => {
-              const acc = state.data.accounts.find(a => a.id === o.accountId);
-              return `<option value="${o.id}" data-account-id="${o.accountId}" data-account-name="${acc?.name || ''}">${o.name}${acc ? ' — ' + acc.name : ''}</option>`;
-            }).join('')}
+          ${closedWonOpps.length === 0
+            ? `<option disabled>— No Closed Won opportunities found —</option>`
+            : closedWonOpps.map(o => {
+                const acc = state.data.accounts.find(a => String(a.id) === String(o.accountId));
+                return `<option value="${o.id}" data-account-id="${o.accountId}" data-account-name="${acc?.name || ''}">${o.name}${acc ? ' — ' + acc.name : ''}</option>`;
+              }).join('')
+          }
         </select>
+        ${closedWonOpps.length === 0 ? `<div style="color:#f87171;font-size:0.85em;margin-top:4px">⚠️ No Closed Won opportunities found. Please mark an opportunity as Closed Won first from the Opportunities tab.</div>` : ''}
 
         <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Account</label>
         <input class="input" name="accountName" id="wonPoAccountName" placeholder="Auto-filled from opportunity" readonly>
@@ -4777,106 +4899,68 @@ function closePO(id) {
   </div>`;
   document.getElementById('modal').classList.add('show');
 
-  const reader = new FileReader();
-  reader.onload = async function(e) {
-    const base64 = e.target.result;
-    try {
-      const wonPoPrompt = `This is a Purchase Order (Won Order) received from a customer. Extract ALL details and return a structured summary with these sections:
+  // Now call AI extraction
+  try {
+    const wonPoPrompt = `This is a Purchase Order (Won Order) received from a customer. Extract ALL details and return a structured summary with these sections:\n\nPO NUMBER:\nPO DATE:\nCUSTOMER / ISSUING COMPANY:\nBILLING ADDRESS:\nDELIVERY / SITE ADDRESS:\nTOTAL PO VALUE (₹):\nPAYMENT TERMS:\nDELIVERY TIMELINE / EXPECTED DATE:\nLINE ITEMS / SCOPE OF SUPPLY:\n  (list every item, quantity, unit price, total — be thorough)\nOEM / BRAND MENTIONED:\nVENDOR / DISTRIBUTOR (if mentioned):\nSPECIAL CONDITIONS OR TERMS:\nAUTHORISED SIGNATORY:\nCONTACT PERSON & DETAILS:\nWARRANTY / AMC TERMS (if mentioned):\nINSTALLATION REQUIREMENTS:\nKEY OBSERVATIONS / RISKS:\n\nExtract every detail visible. Be thorough on line items and scope.`;
 
-PO NUMBER:
-PO DATE:
-CUSTOMER / ISSUING COMPANY:
-BILLING ADDRESS:
-DELIVERY / SITE ADDRESS:
-TOTAL PO VALUE (₹):
-PAYMENT TERMS:
-DELIVERY TIMELINE / EXPECTED DATE:
-LINE ITEMS / SCOPE OF SUPPLY:
-  (list every item, quantity, unit price, total — be thorough)
-OEM / BRAND MENTIONED:
-VENDOR / DISTRIBUTOR (if mentioned):
-SPECIAL CONDITIONS OR TERMS:
-AUTHORISED SIGNATORY:
-CONTACT PERSON & DETAILS:
-WARRANTY / AMC TERMS (if mentioned):
-INSTALLATION REQUIREMENTS:
-KEY OBSERVATIONS / RISKS:
+    const response = await fetch(`${CRM_API_BASE}/api/ai-extract`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_b64: b64, media_type: mime, prompt: wonPoPrompt })
+    });
+    const data = await response.json();
+    const extracted = data?.text || (data?.error ? `Error: ${data.error}` : 'Could not extract details.');
 
-Extract every detail visible. Be thorough on line items and scope.`;
-      const response = await fetch(`${CRM_API_BASE}/api/ai-extract`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image_b64: base64.split(',')[1] || base64,
-          media_type: file.type === 'application/pdf' ? 'application/pdf' : 'image/jpeg',
-          prompt: wonPoPrompt
-        })
-      });
-      const data = await response.json();
-      const extracted = data?.text || 'Could not extract details.';
+    const statusEl = document.getElementById('wonPoStatus');
+    const contentEl = document.getElementById('wonPoContent');
+    const extractedEl = document.getElementById('wonPoExtracted');
 
-      document.getElementById('wonPoStatus').style.display = 'none';
-      document.getElementById('wonPoContent').style.display = 'block';
-      document.getElementById('wonPoExtracted').textContent = extracted;
-      document.getElementById('wonPoHiddenData').value = extracted;
-      document.getElementById('wonPoHiddenImage').value = base64;
+    if (statusEl) statusEl.style.display = 'none';
+    if (extractedEl) extractedEl.textContent = extracted;
+    if (contentEl) contentEl.style.display = 'block';
+    if (document.getElementById('wonPoHiddenData')) document.getElementById('wonPoHiddenData').value = extracted;
+    if (document.getElementById('wonPoHiddenImage')) document.getElementById('wonPoHiddenImage').value = b64.substring(0, 5000);
 
-      // Auto-fill form fields from extracted text
-      function extractField(text, ...labels) {
-        for (const label of labels) {
-          const regex = new RegExp(`${label}[:\\s]+([^\\n]+)`, 'i');
-          const match = text.match(regex);
-          if (match?.[1]?.trim()) return match[1].trim();
-        }
-        return '';
+    // Auto-fill fields from extracted text
+    const lines = extracted.toLowerCase();
+    const getVal = (label) => {
+      const re = new RegExp(label + '[:\\s]+([^\\n]+)', 'i');
+      const m = extracted.match(re);
+      return m ? m[1].trim() : '';
+    };
+    const poNum = getVal('PO NUMBER');
+    const poVal = getVal('TOTAL PO VALUE[^\\n]*');
+    const payTerms = getVal('PAYMENT TERMS');
+    const vendor = getVal('VENDOR[^\\n]*');
+    const oem = getVal('OEM[^\\n]*');
+    const site = getVal('DELIVERY[/ ]*SITE ADDRESS');
+    const scope = getVal('LINE ITEMS[^\\n]*');
+    const delivDate = getVal('DELIVERY TIMELINE[^\\n]*');
+
+    if (poNum && document.getElementById('wonPoNumber')) document.getElementById('wonPoNumber').value = poNum;
+    if (payTerms && document.getElementById('wonPoPaymentTerms')) document.getElementById('wonPoPaymentTerms').value = payTerms;
+    if (vendor && document.getElementById('wonPoVendor')) document.getElementById('wonPoVendor').value = vendor;
+    if (oem && document.getElementById('wonPoOem')) document.getElementById('wonPoOem').value = oem;
+    if (site && document.getElementById('wonPoSite')) document.getElementById('wonPoSite').value = site;
+    if (scope && document.getElementById('wonPoDescription')) document.getElementById('wonPoDescription').value = scope;
+
+    // Try to parse PO value
+    if (poVal) {
+      const numMatch = poVal.replace(/,/g,'').match(/[\d.]+/);
+      if (numMatch && document.getElementById('wonPoValue')) {
+        let v = parseFloat(numMatch[0]);
+        if (v < 1000) v = v * 100000; // assume Lakhs if small number
+        document.getElementById('wonPoValue').value = Math.round(v);
       }
-
-      const poNum = extractField(extracted, 'PO NUMBER', 'PO NO', 'ORDER NUMBER');
-      const poVal = extractField(extracted, 'TOTAL PO VALUE', 'TOTAL VALUE', 'PO VALUE', 'AMOUNT');
-      const payTerms = extractField(extracted, 'PAYMENT TERMS');
-      const delivery = extractField(extracted, 'DELIVERY TIMELINE', 'EXPECTED DATE', 'DELIVERY DATE');
-      const site = extractField(extracted, 'DELIVERY.*ADDRESS', 'SITE ADDRESS', 'BILLING ADDRESS');
-      const vendor = extractField(extracted, 'VENDOR', 'DISTRIBUTOR');
-      const oem = extractField(extracted, 'OEM', 'BRAND');
-      const scope = extractField(extracted, 'LINE ITEMS.*SCOPE', 'SCOPE OF SUPPLY');
-
-      if (poNum) document.getElementById('wonPoNumber').value = poNum;
-      if (payTerms) document.getElementById('wonPoPaymentTerms').value = payTerms;
-      if (site) document.getElementById('wonPoSite').value = site;
-      if (vendor) document.getElementById('wonPoVendor').value = vendor;
-      if (oem) document.getElementById('wonPoOem').value = oem;
-      if (scope) document.getElementById('wonPoDescription').value = scope;
-
-      // Parse value — strip ₹, commas, lakhs etc
-      if (poVal) {
-        const numStr = poVal.replace(/[₹,\s]/g, '').replace(/L$/i, '');
-        const num = parseFloat(numStr);
-        if (!isNaN(num)) {
-          // If it looks like lakhs (small number), convert
-          document.getElementById('wonPoValue').value = num < 1000 ? Math.round(num * 100000) : Math.round(num);
-        }
-      }
-
-      // Try to parse delivery date
-      if (delivery) {
-        const dateMatch = delivery.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
-        if (dateMatch) {
-          const [, d, m, y] = dateMatch;
-          const yr = y.length === 2 ? '20' + y : y;
-          document.getElementById('wonPoDelivery').value = `${yr}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
-        }
-      }
-
-    } catch(err) {
-      document.getElementById('wonPoStatus').innerHTML = `
-        <div style="color:#f87171;font-weight:600">⚠ AI extraction failed</div>
-        <div style="font-size:0.85em;margin-top:6px">${err.message}</div>
-        <div style="font-size:0.85em;margin-top:6px">Fill details manually below.</div>`;
-      document.getElementById('wonPoContent').style.display = 'block';
-      document.getElementById('wonPoHiddenImage').value = base64;
     }
-  };
-  reader.readAsDataURL(file);
+
+  } catch(err) {
+    const statusEl = document.getElementById('wonPoStatus');
+    const contentEl = document.getElementById('wonPoContent');
+    if (statusEl) statusEl.innerHTML = `<div style="color:#f87171;font-weight:600">⚠️ AI extraction failed: ${err.message}<br><span style="font-size:0.85em;opacity:0.8">Check that GROQ_API_KEY is set on the server. You can still fill the form manually below.</span></div>`;
+    if (contentEl) contentEl.style.display = 'block';
+    if (document.getElementById('wonPoExtracted')) document.getElementById('wonPoExtracted').textContent = 'AI extraction failed. Please fill manually.';
+  }
 }
 
 function wonPoFillAccount(sel) {
