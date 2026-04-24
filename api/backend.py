@@ -421,7 +421,8 @@ def init_db() -> None:
             cur.execute("UPDATE opportunities SET owner = 'shashank.raturi@dnispl.com' WHERE lower(owner) = 'shashank.r@dnispl.com';")
             cur.execute("UPDATE opportunities SET sales_owner = 'shashank.raturi@dnispl.com' WHERE lower(sales_owner) = 'shashank.r@dnispl.com';")
             cur.execute("UPDATE users SET email = 'shashank.raturi@dnispl.com' WHERE lower(email) = 'shashank.r@dnispl.com' AND NOT EXISTS (SELECT 1 FROM users WHERE lower(email) = 'shashank.raturi@dnispl.com');")
-           
+            cur.execute("DELETE FROM users WHERE lower(email) = 'shasank.raturi@dnispl.com';")
+            cur.execute("DELETE FROM users WHERE lower(email) = 'shashank.r@dnispl.com';")
         conn.commit()
     finally:
         conn.close()
