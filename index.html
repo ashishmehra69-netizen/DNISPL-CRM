@@ -4019,7 +4019,11 @@ function loadPurchaseOrders() {
 
 function renderPurchaseOrders(filtered) {
   loadPurchaseOrders();
-  const pos = state.data.purchase_orders || [];
+  // Non-supervisors see only their own POs
+  const allPos = state.data.purchase_orders || [];
+  const pos = isSupervisor
+    ? allPos
+    : allPos.filter(p => normalizeEmail(p.owner) === normalizeEmail(currentUser));
   const totalValue = pos.reduce((s, p) => s + (p.value || 0), 0);
   const totalVendor = pos.reduce((s, p) => s + (p.vendorValue || 0), 0);
   const totalMargin = totalValue - totalVendor;
@@ -4284,23 +4288,17 @@ async function handlePOScan(event, poId) {
     const base64 = e.target.result;
     if (statusEl) statusEl.textContent = '🤖 Extracting PO details with AI...';
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await fetch(`${CRM_API_BASE}/api/ai-extract`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1000,
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'image', source: { type: 'base64', media_type: file.type === 'application/pdf' ? 'application/pdf' : 'image/jpeg', data: base64.split(',')[1] }},
-              { type: 'text', text: 'Extract from this Purchase Order document: PO Number, PO Date, Customer Name, Total Value (in INR), Payment Terms, Delivery Address, Scope of Work (what is being supplied/delivered/installed), and any item descriptions or line items. Return as a clean formatted summary with clear section headers.' }
-            ]
-          }]
+          image_b64: base64.split(',')[1] || base64,
+          media_type: file.type === 'application/pdf' ? 'application/pdf' : 'image/jpeg',
+          prompt: 'Extract from this Purchase Order document: PO Number, PO Date, Customer Name, Total Value (in INR), Payment Terms, Delivery Address, Scope of Work (what is being supplied/delivered/installed), and any item descriptions or line items. Return as a clean formatted summary with clear section headers.'
         })
       });
       const data = await response.json();
-      const extracted = data?.content?.[0]?.text || 'Could not extract details.';
+      const extracted = data?.text || 'Could not extract details.';
       window._pendingPOScan = { image: base64, data: extracted, poId };
       if (statusEl) statusEl.innerHTML = `<span style="color:#4ade80">✅ AI Extraction done. Save the PO to attach.</span><br><div style="margin-top:6px; font-size:0.82em; background:rgba(0,0,0,0.2); padding:8px; border-radius:6px">${extracted}</div>`;
     } catch(err) {
@@ -4388,7 +4386,21 @@ function submitPOForApproval(id) {
   savePurchaseOrders();
   closeModal();
   render();
-  alert('PO submitted. Presales (vinod.v@dnispl.com) and Finance (rakesh.uniyal@dnispl.com) can now approve in parallel.');
+  // Send email notifications to presales + finance + supervisor
+  fetch(`${CRM_API_BASE}/api/po-notify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      event: 'submitted',
+      po_number: po.poNumber || 'Draft PO',
+      po_id: po.id,
+      account_name: po.accountName || '',
+      stage: po.stage,
+      creator_email: po.owner || currentUser,
+      value: po.value || 0
+    })
+  }).catch(() => {});
+  alert('PO submitted. Presales (vinod.v@dnispl.com) and Finance (rakesh.uniyal@dnispl.com) can now approve in parallel.\n\nEmail notifications sent to approvers.');
 }
 
 function approveCurrentStage(id) {
@@ -4397,6 +4409,7 @@ function approveCurrentStage(id) {
   if (!po) return;
   const now = new Date().toISOString();
   const me = normalizeEmail(currentUser);
+  let notifyEvent = null;
 
   if (po.stage === 'Pending Presales+Finance Approval') {
     // Presales approves
@@ -4420,22 +4433,42 @@ function approveCurrentStage(id) {
     // Check if both now done — advance to Implementation
     if (po.presalesApprovedBy && po.financeApprovedBy) {
       po.stage = 'Both Approved - Pending Implementation';
-      alert('Both Presales & Finance approved ✅ — forwarded to Implementation (pokhraj.yadav@dnispl.com)');
+      notifyEvent = 'approved';
+      alert('Both Presales & Finance approved ✅ — forwarded to Implementation (pokhraj.yadav@dnispl.com)\n\nEmail notification sent.');
     }
   } else if (po.stage === 'Both Approved - Pending Implementation') {
     po.implementationApprovedBy = currentUser;
     po.implementationApprovedAt = now;
     po.stage = 'Pending CEO Approval';
-    alert('Implementation approved ✅ — forwarded to CEO for P&L sign-off');
+    notifyEvent = 'approved';
+    alert('Implementation approved ✅ — forwarded to CEO (ashish.mehra@dnispl.com) for P&L sign-off\n\nEmail notification sent.');
   } else if (po.stage === 'Pending CEO Approval') {
     po.ceoApprovedBy = currentUser;
     po.ceoApprovedAt = now;
     po.stage = 'CEO Approved';
-    alert('CEO approved ✅ — PO fully approved. Ready to issue to vendor.');
+    notifyEvent = 'ceo_approved';
+    alert('CEO approved ✅ — PO fully approved. Ready to issue to vendor.\n\nEmail notification sent.');
   }
   po.modifiedDate = now;
   savePurchaseOrders();
   render();
+
+  if (notifyEvent) {
+    fetch(`${CRM_API_BASE}/api/po-notify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: notifyEvent,
+        po_number: po.poNumber || 'Draft PO',
+        po_id: po.id,
+        account_name: po.accountName || '',
+        stage: po.stage,
+        creator_email: po.owner || '',
+        approved_by: currentUser,
+        value: po.value || 0
+      })
+    }).catch(() => {});
+  }
 }
 
 function issuePOToVendor(id) {
@@ -4533,7 +4566,7 @@ function closePO(id) {
         <select class="input" required name="opportunityId" onchange="wonPoFillAccount(this)">
           <option value="">Select Opportunity *</option>
           ${state.data.opportunities
-            .filter(o => o.stage === 'Closed Won')
+            .filter(o => o.stage === 'Closed Won' && (isSupervisor || normalizeEmail(getOpportunityManagerEmail(o)) === normalizeEmail(currentUser) || normalizeEmail(o.owner) === normalizeEmail(currentUser) || normalizeEmail(o.salesOwner) === normalizeEmail(currentUser)))
             .map(o => {
               const acc = state.data.accounts.find(a => a.id === o.accountId);
               return `<option value="${o.id}" data-account-id="${o.accountId}" data-account-name="${acc?.name || ''}">${o.name}${acc ? ' — ' + acc.name : ''}</option>`;
@@ -4604,26 +4637,7 @@ function closePO(id) {
   reader.onload = async function(e) {
     const base64 = e.target.result;
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 2000,
-          messages: [{
-            role: 'user',
-            content: [
-              {
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: file.type === 'application/pdf' ? 'application/pdf' : 'image/jpeg',
-                  data: base64.split(',')[1]
-                }
-              },
-              {
-                type: 'text',
-                text: `This is a Purchase Order (Won Order) received from a customer. Extract ALL details and return a structured summary with these sections:
+      const wonPoPrompt = `This is a Purchase Order (Won Order) received from a customer. Extract ALL details and return a structured summary with these sections:
 
 PO NUMBER:
 PO DATE:
@@ -4644,14 +4658,18 @@ WARRANTY / AMC TERMS (if mentioned):
 INSTALLATION REQUIREMENTS:
 KEY OBSERVATIONS / RISKS:
 
-Extract every detail visible. Be thorough on line items and scope.`
-              }
-            ]
-          }]
+Extract every detail visible. Be thorough on line items and scope.`;
+      const response = await fetch(`${CRM_API_BASE}/api/ai-extract`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image_b64: base64.split(',')[1] || base64,
+          media_type: file.type === 'application/pdf' ? 'application/pdf' : 'image/jpeg',
+          prompt: wonPoPrompt
         })
       });
       const data = await response.json();
-      const extracted = data?.content?.[0]?.text || 'Could not extract details.';
+      const extracted = data?.text || 'Could not extract details.';
 
       document.getElementById('wonPoStatus').style.display = 'none';
       document.getElementById('wonPoContent').style.display = 'block';
@@ -4806,17 +4824,7 @@ function saveWonPOFromScan(e) {
   reader.onload = async function(e) {
     const base64 = e.target.result;
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 2000,
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'image', source: { type: 'base64', media_type: file.type === 'application/pdf' ? 'application/pdf' : 'image/jpeg', data: base64.split(',')[1] }},
-              { type: 'text', text: `Extract ALL details from this RFP (Request for Proposal) document and return a structured summary with these sections:
+      const rfpPrompt = `Extract ALL details from this RFP (Request for Proposal) document and return a structured summary with these sections:
 
 RFP NUMBER: (if present)
 ISSUING ORGANIZATION: 
@@ -4833,13 +4841,18 @@ PAYMENT TERMS:
 SPECIAL CONDITIONS OR NOTES:
 WIN STRATEGY HINTS: (any clues about incumbent, preferences, or evaluation weightage)
 
-Be thorough and extract every detail visible in the document.` }
-            ]
-          }]
+Be thorough and extract every detail visible in the document.`;
+      const response = await fetch(`${CRM_API_BASE}/api/ai-extract`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image_b64: base64.split(',')[1] || base64,
+          media_type: file.type === 'application/pdf' ? 'application/pdf' : 'image/jpeg',
+          prompt: rfpPrompt
         })
       });
       const data = await response.json();
-      const extracted = data?.content?.[0]?.text || 'Could not extract details.';
+      const extracted = data?.text || 'Could not extract details.';
 
       document.getElementById('rfpStatus').style.display = 'none';
       document.getElementById('rfpContent').style.display = 'block';
@@ -5004,4 +5017,3 @@ async function saveRFPOpportunity(e) {
   </script>
   </body>
   </html>
-  
