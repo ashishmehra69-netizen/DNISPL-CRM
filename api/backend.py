@@ -2449,6 +2449,150 @@ def send_mom_mail_endpoint():
         conn.close()
 
 
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+# Groq vision model — supports image inputs (base64 or URL)
+GROQ_VISION_MODEL = os.environ.get("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct").strip()
+
+
+@app.route("/api/ai-extract", methods=["POST"])
+def ai_extract():
+    """Proxy AI extraction requests to Groq so the API key stays server-side."""
+    if not GROQ_API_KEY:
+        return jsonify({"error": "AI extraction not configured (GROQ_API_KEY missing)"}), 503
+
+    data = request.get_json(silent=True) or {}
+    prompt = (data.get("prompt") or "").strip()
+    image_b64 = (data.get("image_b64") or "").strip()
+    media_type = (data.get("media_type") or "image/jpeg").strip()
+
+    if not image_b64 or not prompt:
+        return jsonify({"error": "image_b64 and prompt are required"}), 400
+
+    # Strip data-URL prefix if present
+    if "," in image_b64:
+        image_b64 = image_b64.split(",", 1)[1]
+
+    # Groq uses OpenAI-compatible format with image_url containing base64
+    data_url = f"data:{media_type};base64,{image_b64}"
+
+    payload = {
+        "model": GROQ_VISION_MODEL,
+        "max_tokens": 2000,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": data_url},
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt,
+                    },
+                ],
+            }
+        ],
+    }
+
+    try:
+        result = _http_json_request(
+            "https://api.groq.com/openai/v1/chat/completions",
+            method="POST",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json",
+            },
+        )
+        # OpenAI-compatible response format
+        text = ""
+        for choice in (result.get("choices") or []):
+            text += (choice.get("message") or {}).get("content") or ""
+        if not text:
+            text = "Could not extract details."
+        return jsonify({"text": text})
+    except Exception as exc:
+        return jsonify({"error": f"AI extraction failed: {exc}"}), 500
+
+
+@app.route("/api/po-notify", methods=["POST"])
+def po_notify():
+    """Send approval request or approval notification emails for POs via SMTP."""
+    data = request.get_json(silent=True) or {}
+    event = (data.get("event") or "").strip()   # "submitted" | "approved" | "ceo_approved"
+    po_number = (data.get("po_number") or "Draft PO").strip()
+    po_id = (data.get("po_id") or "").strip()
+    account_name = (data.get("account_name") or "").strip()
+    stage = (data.get("stage") or "").strip()
+    creator_email = _normalize_email(data.get("creator_email") or "")
+    approved_by = _normalize_email(data.get("approved_by") or "")
+    value = float(data.get("value") or 0)
+
+    def _val():
+        return f"₹{value/100000:.1f}L" if value >= 100000 else f"₹{int(value):,}"
+
+    if event == "submitted":
+        # Notify presales + finance + supervisor
+        to = [
+            "vinod.v@dnispl.com",        # presales approver
+            "rakesh.uniyal@dnispl.com",  # finance approver
+        ]
+        cc = [SUPERVISOR_EMAIL]
+        if creator_email and creator_email not in to and creator_email not in cc:
+            cc.append(creator_email)
+        subject = f"[PO Approval Required] {po_number} | {account_name} | {_val()}"
+        body = (
+            f"A Purchase Order has been submitted for approval.\n\n"
+            f"PO Number  : {po_number}\n"
+            f"Account    : {account_name}\n"
+            f"Value      : {_val()}\n"
+            f"Current Stage: {stage}\n"
+            f"Created By : {creator_email}\n\n"
+            f"Action Required: Please log in to CRM and approve / reject this PO.\n"
+            f"Both Presales and Finance approvals are needed in parallel before it moves forward."
+        )
+        send_email_smtp(to, subject, body, cc_emails=cc)
+
+    elif event == "approved":
+        # Notify creator + supervisor about the approval step
+        to = [e for e in [creator_email, SUPERVISOR_EMAIL] if e and "@" in e]
+        subject = f"[PO Approved] {po_number} — {stage}"
+        body = (
+            f"Purchase Order stage update:\n\n"
+            f"PO Number  : {po_number}\n"
+            f"Account    : {account_name}\n"
+            f"Value      : {_val()}\n"
+            f"New Stage  : {stage}\n"
+            f"Approved By: {approved_by}\n\n"
+        )
+        # Notify next approver
+        if stage == "Both Approved - Pending Implementation":
+            to.append("pokhraj.yadav@dnispl.com")
+            body += "Action Required: Implementation approval needed from pokhraj.yadav@dnispl.com."
+        elif stage == "Pending CEO Approval":
+            to.append("ashish.mehra@dnispl.com")
+            body += "Action Required: P&L / CEO approval needed from ashish.mehra@dnispl.com."
+        send_email_smtp(list(dict.fromkeys(to)), subject, body)
+
+    elif event == "ceo_approved":
+        to = [e for e in [creator_email, SUPERVISOR_EMAIL, "vinod.v@dnispl.com", "rakesh.uniyal@dnispl.com"] if e and "@" in e]
+        subject = f"[PO Fully Approved] {po_number} — Ready to Issue"
+        body = (
+            f"Purchase Order has been fully approved and is ready to issue to vendor.\n\n"
+            f"PO Number  : {po_number}\n"
+            f"Account    : {account_name}\n"
+            f"Value      : {_val()}\n"
+            f"Approved By (CEO): {approved_by}\n"
+        )
+        send_email_smtp(list(dict.fromkeys(to)), subject, body)
+
+    else:
+        return jsonify({"error": f"unknown event: {event}"}), 400
+
+    return jsonify({"status": "ok", "event": event})
+
+
 if __name__ == "__main__":
     init_db()
     port = int(os.environ.get("PORT", "8001"))
