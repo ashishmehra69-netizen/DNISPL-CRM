@@ -575,6 +575,7 @@ function getWinProbSafe(opp) {
 let currentUser = '';
 let isSupervisor = false;
 let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [], opportunities: [], activities: [], purchase_orders: [] } };
+let oppStageFilter = 'All'; // 'All' | 'Discovery' | 'Proposal' | 'Negotiation' | 'Closed Won' | 'Closed Lost'
 let activityFilter = { mode: 'today', from: '', to: '' };
 let managerFilter = '';
 let slaEngineRunning = false;
@@ -760,11 +761,12 @@ function setManagerFilter(value) {
 }
 
 function openTab(tab, opts = {}) {
- state.activeTab = tab;
- if (opts.activityMode) {
-  activityFilter.mode = opts.activityMode;
- }
- render();
+  if (tab !== 'opportunities') oppStageFilter = 'All';
+  state.activeTab = tab;
+  if (opts.activityMode) {
+    activityFilter.mode = opts.activityMode;
+  }
+  render();
 }
 
 function normalizeActivityFromApi(a) {
@@ -1918,80 +1920,222 @@ ${filtered.accounts.map(a => `
  </div>
  `;
 }
- function renderOpportunities(filtered) {
- return `
- <div class="card">
- <h2>💰 Opportunities (${filtered.opportunities.length})</h2>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:14px">
-    <div class="metric" style="padding:12px;text-align:center">
-      <div style="font-size:0.78em;opacity:0.7">Total Opportunities</div>
-      <div style="font-size:1.4em;font-weight:bold">${filtered.opportunities.length}</div>
+function setOppStageFilter(stage) {
+  oppStageFilter = stage;
+  render();
+}
+
+function renderOpportunities(filtered) {
+  const allOpps = filtered.opportunities;
+  const stages = ['All', 'Discovery', 'Proposal', 'Negotiation', 'Closed Won', 'Closed Lost'];
+  const stageColors = {
+    'All': '#667eea',
+    'Discovery': '#60a5fa',
+    'Proposal': '#f59e0b',
+    'Negotiation': '#a78bfa',
+    'Closed Won': '#22c55e',
+    'Closed Lost': '#f87171'
+  };
+  const stageIcons = {
+    'All': '📋', 'Discovery': '🔍', 'Proposal': '📝',
+    'Negotiation': '🤝', 'Closed Won': '🏆', 'Closed Lost': '❌'
+  };
+
+  // Summary counts (always from full list)
+  const wonOpps   = allOpps.filter(o => o.stage === 'Closed Won');
+  const lostOpps  = allOpps.filter(o => o.stage === 'Closed Lost');
+  const openOpps  = allOpps.filter(o => !['Closed Won','Closed Lost'].includes(o.stage));
+  const wonValue  = wonOpps.reduce((s,o) => s+(o.value||0), 0);
+  const pipeValue = openOpps.reduce((s,o) => s+(o.value||0), 0);
+
+  // Filtered list for current stage tab
+  const viewOpps = oppStageFilter === 'All' ? allOpps : allOpps.filter(o => o.stage === oppStageFilter);
+
+  // Stage pill buttons — clicking 'Closed Won' pill activates won view
+  const pillBar = `
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 4px">
+      ${stages.map(s => {
+        const count = s === 'All' ? allOpps.length : allOpps.filter(o => o.stage === s).length;
+        const active = oppStageFilter === s;
+        const color = stageColors[s];
+        return `<button type="button"
+          onclick="setOppStageFilter('${s}')"
+          style="padding:8px 16px;border-radius:20px;border:2px solid ${color};
+            background:${active ? color : 'transparent'};
+            color:${active ? 'white' : color};
+            font-weight:600;font-size:0.85em;cursor:pointer;transition:all 0.2s">
+          ${stageIcons[s]} ${s} <span style="opacity:0.85">(${count})</span>
+        </button>`;
+      }).join('')}
+    </div>`;
+
+  // Won opportunities — rich expanded cards
+  function renderWonCard(o) {
+    const acc = state.data.accounts.find(a => a.id === o.accountId);
+    const linkedPOs = (state.data.purchase_orders || []).filter(p => p.opportunityId === o.id);
+    return `
+    <div style="background:linear-gradient(135deg,rgba(34,197,94,0.15),rgba(34,197,94,0.05));
+      border:2px solid #22c55e;border-radius:14px;padding:20px;cursor:pointer;margin-bottom:4px"
+      onclick="editOpportunity('${o.id}')">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+        <div style="flex:1;min-width:200px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <span style="font-size:1.5em">🏆</span>
+            <h3 style="margin:0;font-size:1.1em">${o.name}</h3>
+          </div>
+          <div style="font-size:0.88em;opacity:0.8;margin-bottom:4px">🏢 ${acc?.name || o.accountId || 'No Account'}</div>
+          <div style="font-size:0.85em;opacity:0.75">📅 Won: ${fmtDate(o.closureDate || o.closure_date || o.expectedClosureDate || o.updatedDate) || 'N/A'}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:2em;font-weight:bold;color:#4ade80">₹${(o.value/100000).toFixed(1)}L</div>
+          <div style="font-size:0.8em;opacity:0.7">Deal Value</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:14px">
+        <div style="background:rgba(0,0,0,0.2);border-radius:8px;padding:10px">
+          <div style="font-size:0.75em;opacity:0.7;margin-bottom:4px">👤 Sales Owner</div>
+          <div style="font-size:0.9em;font-weight:600">${formatUserLabel(o.salesOwner || o.owner || 'NA')}</div>
+        </div>
+        <div style="background:rgba(0,0,0,0.2);border-radius:8px;padding:10px">
+          <div style="font-size:0.75em;opacity:0.7;margin-bottom:4px">🔧 Presales</div>
+          <div style="font-size:0.9em;font-weight:600">${formatUserLabel(o.assignedPresales || 'NA')}</div>
+        </div>
+        <div style="background:rgba(0,0,0,0.2);border-radius:8px;padding:10px">
+          <div style="font-size:0.75em;opacity:0.7;margin-bottom:4px">📦 Workflow Stage</div>
+          <div style="font-size:0.9em;font-weight:600">${o.workflowStage || 'Sales Review'}</div>
+        </div>
+        <div style="background:rgba(0,0,0,0.2);border-radius:8px;padding:10px">
+          <div style="font-size:0.75em;opacity:0.7;margin-bottom:4px">📋 Linked POs</div>
+          <div style="font-size:0.9em;font-weight:600">${linkedPOs.length > 0 ? linkedPOs.map(p => p.poNumber || 'Draft').join(', ') : 'None yet'}</div>
+        </div>
+      </div>
+
+      ${o.finalPricingProposal ? `
+      <div style="margin-top:12px;background:rgba(0,0,0,0.2);border-radius:8px;padding:10px">
+        <div style="font-size:0.75em;opacity:0.7;margin-bottom:4px">📄 Final Proposal</div>
+        <div style="font-size:0.85em">${o.finalPricingProposal.slice(0,200)}${o.finalPricingProposal.length>200?'…':''}</div>
+      </div>` : ''}
+
+      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" class="btn" onclick="event.stopPropagation();editOpportunity('${o.id}')">✏️ Edit</button>
+        <button type="button" class="btn btn-success" onclick="event.stopPropagation();document.getElementById('wonPoScanInput').click()">🏆 Scan Won PO</button>
+        <span style="background:#22c55e;color:white;padding:6px 14px;border-radius:6px;font-size:0.85em;font-weight:bold;align-self:center">✅ CLOSED WON</span>
+      </div>
+    </div>`;
+  }
+
+  // Standard card for non-Won stages
+  function renderStandardCard(o) {
+    const winProb = getWinProbSafe(o);
+    const stageColor = {'Discovery':'#60a5fa','Proposal':'#f59e0b','Negotiation':'#a78bfa','Closed Lost':'#f87171'}[o.stage] || '#ffffff44';
+    return `
+    <div class="item-card" onclick="editOpportunity('${o.id}')" style="border-left:4px solid ${stageColor}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <h3 style="margin:0;flex:1">${o.name}</h3>
+        <span style="font-size:1.1em;font-weight:bold;color:#4ade80;white-space:nowrap;margin-left:8px">₹${(o.value/100000).toFixed(1)}L</span>
+      </div>
+      <div style="font-size:0.85em;opacity:0.75;margin:6px 0">
+        🏢 ${state.data.accounts.find(a => a.id === o.accountId)?.name || 'No Account'}
+      </div>
+      <div style="margin:8px 0">
+        <span class="tag" style="background:${stageColor}">${o.stage}</span>
+        <span class="tag">${o.workflowStage || 'Sales Review'}</span>
+      </div>
+      <div style="margin:8px 0">
+        <div style="background:rgba(255,255,255,0.1);border-radius:4px;height:6px;overflow:hidden">
+          <div style="height:100%;width:${winProb}%;background:#4ade80;border-radius:4px"></div>
+        </div>
+        <div style="font-size:0.78em;opacity:0.7;margin-top:2px">Win Probability: ${winProb}%</div>
+      </div>
+      <div style="font-size:0.82em;opacity:0.8;margin-top:8px">
+        👤 ${formatUserLabel(o.salesOwner || o.owner || 'NA')}<br>
+        🔧 ${formatUserLabel(o.assignedPresales || 'Unassigned')}
+      </div>
+      <div style="font-size:0.78em;opacity:0.6;margin-top:8px">
+        🎯 Closure: ${fmtDate(o.closureDate || o.closure_date || o.expectedClosureDate || o.expected_closure_date) || 'Not set'}
+      </div>
+      <div style="margin-top:10px">
+        <button type="button" class="btn" onclick="event.stopPropagation();editOpportunity('${o.id}')">Edit</button>
+      </div>
+    </div>`;
+  }
+
+  // Stage-wise grouped view for 'All' tab
+  function renderGrouped() {
+    const groupStages = ['Discovery','Proposal','Negotiation','Closed Won','Closed Lost'];
+    return groupStages.map(stage => {
+      const grpOpps = allOpps.filter(o => o.stage === stage);
+      if (grpOpps.length === 0) return '';
+      const grpValue = grpOpps.reduce((s,o) => s+(o.value||0), 0);
+      const color = stageColors[stage];
+      return `
+      <div style="margin-bottom:24px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:10px 14px;
+          background:rgba(255,255,255,0.07);border-radius:10px;border-left:4px solid ${color}">
+          <span style="font-size:1.2em">${stageIcons[stage]}</span>
+          <span style="font-weight:700;font-size:1.05em">${stage}</span>
+          <span style="background:${color};color:white;padding:2px 10px;border-radius:12px;font-size:0.82em;font-weight:600">${grpOpps.length}</span>
+          <span style="margin-left:auto;font-weight:600;color:#4ade80">₹${(grpValue/100000).toFixed(1)}L</span>
+        </div>
+        ${stage === 'Closed Won'
+          ? `<div style="display:flex;flex-direction:column;gap:12px">${grpOpps.map(renderWonCard).join('')}</div>`
+          : `<div class="grid">${grpOpps.map(renderStandardCard).join('')}</div>`
+        }
+      </div>`;
+    }).join('');
+  }
+
+  // Single-stage view
+  function renderSingleStage() {
+    if (oppStageFilter === 'Closed Won') {
+      if (viewOpps.length === 0) return `<div class="card" style="text-align:center;padding:40px">
+        <div style="font-size:3em">🏆</div>
+        <div style="font-size:1.1em;margin-top:10px;opacity:0.7">No Closed Won opportunities yet</div>
+      </div>`;
+      return `<div style="display:flex;flex-direction:column;gap:12px">${viewOpps.map(renderWonCard).join('')}</div>`;
+    }
+    if (viewOpps.length === 0) return `<div class="card">No opportunities in this stage.</div>`;
+    return `<div class="grid">${viewOpps.map(renderStandardCard).join('')}</div>`;
+  }
+
+  return `
+  <div class="card">
+    <h2>💰 Opportunities</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:14px">
+      <div class="metric" style="padding:12px;text-align:center;cursor:pointer" onclick="setOppStageFilter('All')">
+        <div style="font-size:0.78em;opacity:0.7">Total</div>
+        <div style="font-size:1.4em;font-weight:bold">${allOpps.length}</div>
+      </div>
+      <div class="metric" style="padding:12px;text-align:center;cursor:pointer" onclick="setOppStageFilter('All')">
+        <div style="font-size:0.78em;opacity:0.7">Pipeline Value</div>
+        <div style="font-size:1.4em;font-weight:bold;color:#4ade80">₹${(pipeValue/100000).toFixed(1)}L</div>
+      </div>
+      <div class="metric" style="padding:12px;text-align:center;cursor:pointer;border:${oppStageFilter==='Closed Won'?'2px solid #22c55e':''}" onclick="setOppStageFilter('Closed Won')">
+        <div style="font-size:0.78em;opacity:0.7">🏆 Won</div>
+        <div style="font-size:1.4em;font-weight:bold;color:#22c55e">${wonOpps.length}</div>
+        <div style="font-size:0.75em;color:#4ade80">₹${(wonValue/100000).toFixed(1)}L</div>
+      </div>
+      <div class="metric" style="padding:12px;text-align:center;cursor:pointer" onclick="setOppStageFilter('Closed Lost')">
+        <div style="font-size:0.78em;opacity:0.7">❌ Lost</div>
+        <div style="font-size:1.4em;font-weight:bold;color:#f87171">${lostOpps.length}</div>
+      </div>
+      <div class="metric" style="padding:12px;text-align:center">
+        <div style="font-size:0.78em;opacity:0.7">Open</div>
+        <div style="font-size:1.4em;font-weight:bold">${openOpps.length}</div>
+      </div>
     </div>
-    <div class="metric" style="padding:12px;text-align:center">
-      <div style="font-size:0.78em;opacity:0.7">Pipeline Value</div>
-      <div style="font-size:1.4em;font-weight:bold;color:#4ade80">₹${(filtered.opportunities.reduce((s,o)=>s+(o.value||0),0)/100000).toFixed(1)}L</div>
-    </div>
-    <div class="metric" style="padding:12px;text-align:center">
-      <div style="font-size:0.78em;opacity:0.7">Avg Win Probability</div>
-      <div style="font-size:1.4em;font-weight:bold;color:#fbbf24">${filtered.opportunities.length ? Math.round(filtered.opportunities.reduce((s,o)=>s+getWinProbSafe(o),0)/filtered.opportunities.length) : 0}%</div>
-    </div>
-    <div class="metric" style="padding:12px;text-align:center">
-      <div style="font-size:0.78em;opacity:0.7">Open</div>
-      <div style="font-size:1.4em;font-weight:bold">${filtered.opportunities.filter(o=>!['Closed Won','Closed Lost'].includes(o.stage)).length}</div>
-    </div>
-    <div class="metric" style="padding:12px;text-align:center">
-      <div style="font-size:0.78em;opacity:0.7">Closed Won</div>
-      <div style="font-size:1.4em;font-weight:bold;color:#4ade80">${filtered.opportunities.filter(o=>o.stage==='Closed Won').length}</div>
-    </div>
-    <div class="metric" style="padding:12px;text-align:center">
-      <div style="font-size:0.78em;opacity:0.7">Closed Lost</div>
-      <div style="font-size:1.4em;font-weight:bold;color:#f87171">${filtered.opportunities.filter(o=>o.stage==='Closed Lost').length}</div>
+    ${pillBar}
+    ${renderManagerFilterControls(filtered)}
+    <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px">
+      <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
+      <button class="btn" type="button" onclick="exportOpportunitiesCsv()">⬇ Export CSV</button>
+      <button class="btn" type="button" onclick="document.getElementById('rfpScanInput').click()">📄 Scan RFP</button>
+      <button class="btn btn-success" type="button" onclick="document.getElementById('wonPoScanInput').click()">🏆 Scan Won PO</button>
     </div>
   </div>
- ${renderManagerFilterControls(filtered)}
- <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
- <button class="btn" type="button" onclick="exportOpportunitiesCsv()">⬇ Export CSV</button>
- <button class="btn" type="button" onclick="document.getElementById('rfpScanInput').click()">📄 Scan RFP</button>
- <button class="btn btn-success" type="button" onclick="document.getElementById('wonPoScanInput').click()">🏆 Scan Won PO</button>
- </div>
- <div class="grid">
- ${filtered.opportunities.map(o => {
- const winProb = getWinProbSafe(o);
- return `
- <div class="item-card" onclick="editOpportunity('${o.id}')">
- <h3>${o.name}</h3>
- <div style="font-size:0.85em; opacity:0.75; margin-bottom:6px">
- 🏢 ${state.data.accounts.find(a => a.id === o.accountId)?.name || 'No Account'}
- </div>
- <div style="color:#4ade80; font-weight:bold; font-size:1.2em; margin:10px 0">
- ₹${(o.value / 100000).toFixed(1)}L
- </div>
- <div>
- <span class="tag">${o.stage}</span>
- <span class="tag">${o.workflowStage || 'Sales Review'}</span>
- <span class="tag" style="background:#4ade80; color:white">Win Probability: ${winProb}%</span>
- </div>
- <div style="margin-top:6px; font-size:0.9em; font-weight:bold">
- Win Probability: ${winProb}%
- </div>
- <div style="font-size:0.85em; opacity:0.85; margin-top:10px">
- Sales: ${formatUserLabel(o.salesOwner || o.owner || 'NA')}<br>
- Presales: ${formatUserLabel(o.assignedPresales || 'Unassigned')}<br>
- Purchase: ${formatUserLabel(o.assignedPurchase || 'Unassigned')}
- </div>
- <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
- 📅 Created: ${fmtDate(o.createdDate)}<br>🕒 Updated: ${fmtDate(o.modifiedDate)}<br>🎯 Closure: ${fmtDate(o.closureDate || o.closure_date || o.expectedClosureDate || o.expected_closure_date) || 'Not set'}
-
- </div>
- <div style="margin-top:10px">
- <button type="button" class="btn" onclick="event.stopPropagation();editOpportunity('${o.id}')">Edit</button>
- </div>
- </div>
- `;
- }).join('')}
- ${filtered.opportunities.length === 0 ? '<div class="card">No opportunities yet. Click + to add one!</div>' : ''}
- </div>
- `;
+  ${oppStageFilter === 'All' ? renderGrouped() : renderSingleStage()}
+  `;
 }
 
 function renderWorkflow(filtered) {
@@ -2379,10 +2523,10 @@ function exportPurchaseCsv() {
 }
 
 function changeTab(tab) {
-
- state.activeTab = tab;
- render();
- }
+  if (tab !== 'opportunities') oppStageFilter = 'All';
+  state.activeTab = tab;
+  render();
+}
 
 
 function openAddModal() {
