@@ -548,7 +548,7 @@ def _http_json_request(url: str, method: str = "GET", data=None, headers=None):
         req.add_header(k, v)
     if data is not None and "Content-Type" not in {k.title(): v for k, v in (headers or {}).items()}:
         req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=25) as resp:
+    with urllib.request.urlopen(req, timeout=60) as resp:
         raw = resp.read().decode("utf-8")
         return json.loads(raw) if raw else {}
 
