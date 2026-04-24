@@ -412,12 +412,12 @@ def init_db() -> None:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_aop_plans_fy ON aop_plans(fy_year);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_aop_actuals_fy ON aop_actuals(fy_year);")
             
-            cur.execute("UPDATE accounts SET owner = 'shashank.raturi@dnispl.com' WHERE lower(owner) = 'shasank.raturi@dnispl.com';")
+            
             cur.execute("UPDATE opportunities SET owner = 'shashank.raturi@dnispl.com' WHERE lower(owner) = 'shasank.raturi@dnispl.com';")
             cur.execute("UPDATE opportunities SET sales_owner = 'shashank.raturi@dnispl.com' WHERE lower(sales_owner) = 'shasank.raturi@dnispl.com';")
             cur.execute("UPDATE users SET email = 'shashank.raturi@dnispl.com' WHERE lower(email) = 'shasank.raturi@dnispl.com';")
             
-            cur.execute("UPDATE accounts SET owner = 'shashank.raturi@dnispl.com' WHERE lower(owner) = 'shashank.r@dnispl.com';")
+            
             cur.execute("UPDATE opportunities SET owner = 'shashank.raturi@dnispl.com' WHERE lower(owner) = 'shashank.r@dnispl.com';")
             cur.execute("UPDATE opportunities SET sales_owner = 'shashank.raturi@dnispl.com' WHERE lower(sales_owner) = 'shashank.r@dnispl.com';")
             cur.execute("UPDATE users SET email = 'shashank.raturi@dnispl.com' WHERE lower(email) = 'shashank.r@dnispl.com';")
