@@ -423,6 +423,85 @@ def init_db() -> None:
             cur.execute("UPDATE users SET email = 'shashank.raturi@dnispl.com' WHERE lower(email) = 'shashank.r@dnispl.com' AND NOT EXISTS (SELECT 1 FROM users WHERE lower(email) = 'shashank.raturi@dnispl.com');")
             cur.execute("DELETE FROM users WHERE lower(email) = 'shasank.raturi@dnispl.com';")
             cur.execute("DELETE FROM users WHERE lower(email) = 'shashank.r@dnispl.com';")
+            # Create Ayushi and Mandeep users if not exist
+            cur.execute("""
+                INSERT INTO users (email, name, role, created_at)
+                VALUES ('ayushi.v@dnispl.com', 'Ayushi V', 'account_manager', now())
+                ON CONFLICT (email) DO NOTHING;
+            """)
+            cur.execute("""
+                INSERT INTO users (email, name, role, created_at)
+                VALUES ('mandeep.kaur@dnispl.com', 'Mandeep Kaur', 'account_manager', now())
+                ON CONFLICT (email) DO NOTHING;
+            """)
+            cur.execute("""
+            UPDATE users SET password = 'crm2026'
+            WHERE lower(email) IN ('ayushi.v@dnispl.com', 'mandeep.kaur@dnispl.com')
+            AND (password IS NULL OR password = '');
+        """)
+            
+            # Remove shashank.r, shasank, TBA accounts reassignment — unassign them
+            cur.execute("""
+                UPDATE accounts SET account_manager_id = NULL
+                WHERE account_manager_id IN (
+                    SELECT id FROM users WHERE lower(email) IN ('shashank.r@dnispl.com','shasank.raturi@dnispl.com')
+                    OR lower(name) = 'tba'
+                );
+            """)
+            
+            # Reassign Ayushi accounts
+            cur.execute("""
+                UPDATE accounts SET account_manager_id = (SELECT id FROM users WHERE lower(email)='ayushi.v@dnispl.com')
+                WHERE lower(account_name) IN (
+                    'jamna auto industries ltd','vaaan infra','interra systems india pvt ltd',
+                    'raja s p singh it center','mooz offices gurgaon private limited','netspend india llp',
+                    'kailash hospital and research centre limited','thinksys software private ltd',
+                    'cube highways and transportation asset advisors pvtltd','occl limited',
+                    'ayesa india pvt ltd','fujifilm sonosite india pvt ltd-gurgaon',
+                    'india steel summit private limited','ion trading india private limited',
+                    'cloudconnect communications private limited',
+                    'apeejay surrendra management services private limited',
+                    'clearview hcp consultants india private limited',
+                    'dkms life science lab india private limited','telivus systems private limited',
+                    'infovirgin technology solutions private limited','super cassettes industries limited',
+                    'news nation network private limited','velocis systems private limited',
+                    'sleepersdelle solutions india private limited','bilt graphics paper limited',
+                    'turnberry solutions','nehru world school','dorent services india private limited',
+                    'lavanya international','manav rachna international university',
+                    'pharmalex india private limited','thunderstrike quant research llp',
+                    'escalent consulting india private limited','industrial it solutions private limited',
+                    'esri india technologies private limited','protecon btg private limited',
+                    'deakin international','national association of software & services companies',
+                    'imt ghaziabad','allied nippon limited','usha breco limited',
+                    'premium labels private limited','shrevi information technology private limited',
+                    'jakson engineers limited','nucleus software exports limited','lenskart',
+                    'yokohama india','raksha tpa private limited'
+                );
+            """)
+            
+            # Reassign Mandeep accounts
+            cur.execute("""
+                UPDATE accounts SET account_manager_id = (SELECT id FROM users WHERE lower(email)='mandeep.kaur@dnispl.com')
+                WHERE lower(account_name) IN (
+                    'motilal nehru national institute of technolo','recl','mobikwik',
+                    'nayati healthcare and research private limited','hsil','biba apparels',
+                    'gkb rx lens private limited','wingify','cars24','moglix','indiamart',
+                    'navayuga engineering company limited/vishwasamudra',
+                    'intertek testing services india private limi','dainik jagran',
+                    'mat holdings inc','sheela group','morepen laboratories limited',
+                    'sona blw precision forging limited','nexus buildcon solutions',
+                    'amplifon india private limited','delton cables limited',
+                    'dyson technology india private limited','babel media',
+                    'konica minolta business solution india priva','dorling kindersleyi private limited',
+                    'american e pay/prism hr','asian institute','cera sanitaryware limited',
+                    'dnata international','dynamatic technologies limited','eih limited',
+                    'energizer india private limited','globant india','lumax auto technologies limited',
+                    'pyramid consulting inc','r systems','rajiv gandhi cancer institute',
+                    'richa global exports private limited','rmsi private limited',
+                    'satia industries limited','us tech solutions private limited',
+                    'walson service private limited'
+                );
+            """)
         conn.commit()
     finally:
         conn.close()
