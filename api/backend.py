@@ -434,11 +434,7 @@ def init_db() -> None:
                 VALUES ('mandeep.kaur@dnispl.com', 'Mandeep Kaur', 'account_manager', now())
                 ON CONFLICT (email) DO NOTHING;
             """)
-            cur.execute("""
-            UPDATE users SET password = 'crm2026'
-            WHERE lower(email) IN ('ayushi.v@dnispl.com', 'mandeep.kaur@dnispl.com')
-            AND (password IS NULL OR password = '');
-        """)
+            
             
             # Remove shashank.r, shasank, TBA accounts reassignment — unassign them
             cur.execute("""
