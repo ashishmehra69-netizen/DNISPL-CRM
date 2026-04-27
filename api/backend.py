@@ -406,6 +406,15 @@ def init_db() -> None:
                 );
                 """
             )
+            cur.execute(
+                """
+                ALTER TABLE user_salary ENABLE ROW LEVEL SECURITY;
+                """
+            )
+            cur.execute(
+                """
+                """
+            )
             # Performance indexes for concurrent access patterns.
             cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_manager_id ON accounts(account_manager_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_activities_owner ON activities(lower(owner));")
@@ -2722,19 +2731,16 @@ def kra_report():
             cur.execute("SELECT COALESCE(SUM(value),0) AS won FROM opportunities WHERE lower(owner)=lower(%s) AND lower(workflow_stage) IN ('won','closed won')", (target_email,))
             won_cr = float((cur.fetchone() or {}).get("won") or 0) / 10000000
 
-            cur.execute("SELECT plan_data FROM aop_plans p JOIN accounts a ON CAST(a.id AS TEXT)=p.account_id JOIN users u ON u.id=a.account_manager_id WHERE p.fy_year=%s AND lower(u.email)=lower(%s)", (fy_year, target_email))
-            plan_rows = cur.fetchall()
-            q_target = 0.0
-            for pr in plan_rows:
-                pd = pr.get("plan_data") or {}
-                if isinstance(pd, str):
-                    try: pd = json.loads(pd)
-                    except: pd = {}
-                win = float(pd.get("win_pct") or 0)
-                mr  = pd.get("months_raw") or {}
-                for m in months:
-                    q_target += float(mr.get(m) or 0) * win
-            q_target  = round(q_target, 4)
+            # Build quarter sum from flat columns, multiply by win_pct (stored in target_growth)
+            q_month_map = {"Q1":["apr","may","jun"],"Q2":["jul","aug","sep"],"Q3":["oct","nov","dec"],"Q4":["jan","feb","mar"]}
+            q_prefixes = q_month_map.get(quarter, ["apr","may","jun"])
+            month_sum_expr = " + ".join([f"COALESCE(p.{px}_hardware,0)+COALESCE(p.{px}_software,0)+COALESCE(p.{px}_managed_services,0)" for px in q_prefixes])
+            cur.execute(f"""
+                SELECT COALESCE(SUM(({month_sum_expr}) * COALESCE(p.target_growth, 1)), 0) AS q_target
+                FROM aop_plans p
+                WHERE p.fy_year=%s AND lower(p.account_manager)=lower(%s)
+            """, (fy_year, target_email))
+            q_target = round(float((cur.fetchone() or {}).get("q_target") or 0), 4)
             rev_ach   = min(round(won_cr/q_target*100,1) if q_target > 0 else 0, 150)
 
             cur.execute("SELECT COUNT(DISTINCT a.id) AS total FROM accounts a JOIN users u ON u.id=a.account_manager_id WHERE lower(u.email)=lower(%s)", (target_email,))
@@ -2828,26 +2834,50 @@ def aop_bulk_import():
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             ok = skipped = 0
+            month_map = {
+                "april":"apr","may":"may","june":"jun","july":"jul","august":"aug","september":"sep",
+                "october":"oct","november":"nov","december":"dec","january":"jan","february":"feb","march":"mar"
+            }
             for row in rows:
                 account_name = (row.get("account_name") or "").strip()
                 am_email     = (row.get("am_email") or "").strip().lower()
                 win_pct      = float(row.get("win_pct") or 0)
                 aop_cr       = float(row.get("aop_cr") or 0)
-                months_raw   = row.get("months_raw") or row.get("months") or {}
+                months_raw   = row.get("months_raw") or {}
                 if not account_name or not am_email:
                     skipped += 1; continue
-                cur.execute("SELECT a.id FROM accounts a JOIN users u ON u.id=a.account_manager_id WHERE lower(a.account_name)=lower(%s) AND lower(u.email)=lower(%s) LIMIT 1", (account_name, am_email))
+
+                # Find account
+                cur.execute("SELECT id FROM accounts WHERE lower(account_name)=lower(%s) LIMIT 1", (account_name,))
                 acc = cur.fetchone()
                 if not acc:
-                    cur.execute("SELECT id FROM accounts WHERE lower(account_name)=lower(%s) LIMIT 1", (account_name,))
-                    acc = cur.fetchone()
-                if not acc:
                     skipped += 1; continue
-                plan_data = {"win_pct":win_pct,"aop_cr":aop_cr,"months_raw":months_raw,"am_email":am_email}
-                cur.execute(
-                    "INSERT INTO aop_plans (account_id, fy_year, plan_data, owner, created_at, updated_at) VALUES (%s,'2025-26',%s::jsonb,%s,now(),now()) ON CONFLICT (account_id, fy_year) DO UPDATE SET plan_data=EXCLUDED.plan_data, owner=EXCLUDED.owner, updated_at=now()",
-                    (str(acc["id"]), json.dumps(plan_data), am_email)
-                )
+
+                account_id = str(acc["id"])
+                # Build flat column values — distribute AOP evenly across HW/SW/SV (100%/0%/0% default since we only have total)
+                # Store total in hardware column, win_pct in target_growth
+                col_vals = {}
+                for mname, prefix in month_map.items():
+                    raw = float(months_raw.get(mname) or 0)
+                    col_vals[f"{prefix}_hardware"] = round(raw, 6)
+                    col_vals[f"{prefix}_software"] = 0.0
+                    col_vals[f"{prefix}_managed_services"] = 0.0
+
+                cols = ", ".join(col_vals.keys())
+                placeholders = ", ".join(["%s"] * len(col_vals))
+                update_set = ", ".join([f"{k}=EXCLUDED.{k}" for k in col_vals.keys()])
+
+                cur.execute(f"""
+                    INSERT INTO aop_plans (account_id, account_name, account_manager, fy_year,
+                        current_revenue, target_growth, updated_by, created_at, updated_at, {cols})
+                    VALUES (%s, %s, %s, '2025-26', %s, %s, %s, now(), now(), {placeholders})
+                    ON CONFLICT (account_id, fy_year) DO UPDATE SET
+                        account_manager=EXCLUDED.account_manager,
+                        current_revenue=EXCLUDED.current_revenue,
+                        target_growth=EXCLUDED.target_growth,
+                        updated_by=EXCLUDED.updated_by,
+                        updated_at=now(), {update_set}
+                """, (account_id, account_name, am_email, aop_cr, win_pct, am_email, *col_vals.values()))
                 ok += 1
         conn.commit()
         return jsonify({"status":"ok","imported":ok,"skipped":skipped})
