@@ -5359,7 +5359,7 @@ async function loadReportsData() {
     try {
       const r = await fetch(`${CRM_API_BASE}/api/reports/team?viewer_email=${encodeURIComponent(email)}&viewer_role=${encodeURIComponent(role)}`);
       const d = await r.json();
-      if (Array.isArray(d)) reportsState.team = d;
+      if (Array.isArray(d)) { reportsState.team = d; render(); }
     } catch(e) {}
   }
   if (!reportsState.selectedUser) reportsState.selectedUser = email;
