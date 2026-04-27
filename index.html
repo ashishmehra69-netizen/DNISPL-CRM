@@ -3422,7 +3422,15 @@ async function loadAopData() {
         september:'Sep',october:'Oct',november:'Nov',december:'Dec',
         january:'Jan',february:'Feb',march:'Mar'};
       (Array.isArray(plans) ? plans : []).forEach(p => {
+        // Key by account_id from aop_plans table
         window._aopPlans[p.account_id] = p;
+        // ALSO key by matching accounts.id via account_name
+        const matchedAccount = state.data.accounts.find(a => 
+          (a.name || '').toLowerCase() === (p.account_name || '').toLowerCase()
+        );
+        if (matchedAccount) {
+          window._aopPlans[matchedAccount.id] = p;
+        }
         if (p.months) {
           Object.entries(p.months).forEach(([mname, val]) => {
             const prefix = monthMap[mname];
