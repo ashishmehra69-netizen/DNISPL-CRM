@@ -2858,7 +2858,9 @@ def aop_bulk_import():
                 cols = ", ".join(col_vals.keys())
                 placeholders = ", ".join(["%s"] * len(col_vals))
                 update_set = ", ".join([f"{k}=EXCLUDED.{k}" for k in col_vals.keys()])
-
+                if not col_vals:
+                    skipped += 1
+                    continue
                 cur.execute(f"""
                     INSERT INTO aop_plans (account_id, account_name, account_manager, fy_year,
                         current_revenue, target_growth, updated_by, created_at, updated_at, {cols})
