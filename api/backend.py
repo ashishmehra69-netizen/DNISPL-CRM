@@ -2744,7 +2744,7 @@ def kra_report():
             covered_accts = int((cur.fetchone() or {}).get("covered") or 0)
             cov_pct = round(covered_accts/total_accts*100,1) if total_accts > 0 else 0
 
-            cur.execute("SELECT COUNT(DISTINCT po.account_id) AS c FROM purchase_orders po JOIN accounts a ON CAST(a.id AS TEXT)=po.account_id JOIN users u ON u.id=a.account_manager_id WHERE lower(u.email)=lower(%s) AND lower(po.stage) IN ('ceo approved','fully approved','issued')", (target_email,))
+            cur.execute("SELECT COUNT(DISTINCT o.account_id) AS c FROM opportunities o JOIN accounts a ON CAST(a.id AS TEXT)=o.account_id JOIN users u ON u.id=a.account_manager_id WHERE lower(u.email)=lower(%s) AND lower(o.workflow_stage) IN ('won','closed won')", (target_email,))
             new_act = int((cur.fetchone() or {}).get("c") or 0)
             new_act_ach = min(round(new_act/6*100,1), 150)
 
