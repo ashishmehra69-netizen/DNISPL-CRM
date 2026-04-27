@@ -2179,7 +2179,7 @@ def list_aop_plans():
                 for px, mname in month_map.items():
                     raw = float(r.get(f"{px}_hardware") or 0) + float(r.get(f"{px}_software") or 0) + float(r.get(f"{px}_managed_services") or 0)
                     months[mname] = round(raw * win, 4)
-                out.append({
+                row_out = {
                     "account_id": r.get("account_id"),
                     "account_name": r.get("account_name"),
                     "owner": r.get("account_manager"),
@@ -2188,7 +2188,14 @@ def list_aop_plans():
                     "aop_cr": float(r.get("current_revenue") or 0),
                     "updated_at": str(r.get("updated_at") or ""),
                     "months": months,
-                })
+                }
+                # Add flat fields in format the frontend expects: april_hardware, april_software etc.
+                for px, mname in month_map.items():
+                    raw = float(r.get(f"{px}_hardware") or 0) * win
+                    row_out[f"{mname}_hardware"] = round(raw, 4)
+                    row_out[f"{mname}_software"] = round(float(r.get(f"{px}_software") or 0) * win, 4)
+                    row_out[f"{mname}_managed_services"] = round(float(r.get(f"{px}_managed_services") or 0) * win, 4)
+                out.append(row_out)
             return jsonify(out)
     except Exception as exc:
         return jsonify([])
