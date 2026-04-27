@@ -406,15 +406,7 @@ def init_db() -> None:
                 );
                 """
             )
-            cur.execute(
-                """
-                ALTER TABLE user_salary ENABLE ROW LEVEL SECURITY;
-                """
-            )
-            cur.execute(
-                """
-                """
-            )
+            
             # Performance indexes for concurrent access patterns.
             cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_manager_id ON accounts(account_manager_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_activities_owner ON activities(lower(owner));")
