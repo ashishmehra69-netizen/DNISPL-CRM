@@ -1816,7 +1816,7 @@ function getFilteredData() {
  	else if (state.activeTab === 'activities') content = 		renderActivities(filtered);
  else if (state.activeTab === 'workflow') content = renderWorkflow(filtered);
  else if (state.activeTab === 'purchase') content = renderPurchaseOrders(filtered);
- else if (state.activeTab === 'aop') { loadAopData().then(() => render()); content = renderAop(filtered); }
+ else if (state.activeTab === 'aop') { content = renderAop(filtered); }
  else if (state.activeTab === 'dashboard') content = renderDashboard(filtered);
  else if (state.activeTab === 'reports') { loadReportsData(); content = renderReports(); }
  
@@ -2620,7 +2620,11 @@ function exportPurchaseCsv() {
 function changeTab(tab) {
   if (tab !== 'opportunities') oppStageFilter = 'All';
   state.activeTab = tab;
-  render();
+  if (tab === 'aop') {
+    loadAopData().then(render);
+  } else {
+    render();
+  }
 }
 
 
