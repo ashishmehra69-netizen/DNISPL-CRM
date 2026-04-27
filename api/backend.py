@@ -2150,42 +2150,45 @@ def list_aop_plans():
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            base_cols = """p.account_id, p.account_name, p.account_manager, p.fy_year,
+                p.current_revenue, p.target_growth, p.updated_by, p.updated_at,
+                p.apr_hardware, p.apr_software, p.apr_managed_services,
+                p.may_hardware, p.may_software, p.may_managed_services,
+                p.jun_hardware, p.jun_software, p.jun_managed_services,
+                p.jul_hardware, p.jul_software, p.jul_managed_services,
+                p.aug_hardware, p.aug_software, p.aug_managed_services,
+                p.sep_hardware, p.sep_software, p.sep_managed_services,
+                p.oct_hardware, p.oct_software, p.oct_managed_services,
+                p.nov_hardware, p.nov_software, p.nov_managed_services,
+                p.dec_hardware, p.dec_software, p.dec_managed_services,
+                p.jan_hardware, p.jan_software, p.jan_managed_services,
+                p.feb_hardware, p.feb_software, p.feb_managed_services,
+                p.mar_hardware, p.mar_software, p.mar_managed_services"""
             if _is_supervisor(viewer_role):
-                cur.execute(
-                    "SELECT account_id, fy_year, plan_data, owner, updated_at FROM aop_plans WHERE fy_year=%s",
-                    (fy_year,),
-                )
+                cur.execute(f"SELECT {base_cols} FROM aop_plans p WHERE p.fy_year=%s", (fy_year,))
             else:
                 if not viewer_email:
                     return jsonify([])
-                cur.execute(
-                    """
-                    SELECT p.account_id, p.fy_year, p.plan_data, p.owner, p.updated_at
-                    FROM aop_plans p
-                    JOIN accounts a ON CAST(a.id AS TEXT) = p.account_id
-                    JOIN users u ON u.id = a.account_manager_id
-                    WHERE p.fy_year=%s AND lower(u.email)=lower(%s)
-                    """,
-                    (fy_year, viewer_email),
-                )
+                cur.execute(f"SELECT {base_cols} FROM aop_plans p WHERE p.fy_year=%s AND lower(p.account_manager)=lower(%s)", (fy_year, viewer_email))
             rows = cur.fetchall()
+            month_map = {"apr":"april","may":"may","jun":"june","jul":"july","aug":"august","sep":"september","oct":"october","nov":"november","dec":"december","jan":"january","feb":"february","mar":"march"}
             out = []
             for r in rows:
-                item = {
+                win = float(r.get("target_growth") or 0)
+                months = {}
+                for px, mname in month_map.items():
+                    raw = float(r.get(f"{px}_hardware") or 0) + float(r.get(f"{px}_software") or 0) + float(r.get(f"{px}_managed_services") or 0)
+                    months[mname] = round(raw * win, 4)
+                out.append({
                     "account_id": r.get("account_id"),
+                    "account_name": r.get("account_name"),
+                    "owner": r.get("account_manager"),
                     "fy_year": r.get("fy_year"),
-                    "owner": r.get("owner"),
+                    "win_pct": win,
+                    "aop_cr": float(r.get("current_revenue") or 0),
                     "updated_at": str(r.get("updated_at") or ""),
-                }
-                pd = r.get("plan_data") or {}
-                if isinstance(pd, str):
-                    try:
-                        pd = json.loads(pd)
-                    except Exception:
-                        pd = {}
-                if isinstance(pd, dict):
-                    item.update(pd)
-                out.append(item)
+                    "months": months,
+                })
             return jsonify(out)
     except Exception as exc:
         return jsonify([])
