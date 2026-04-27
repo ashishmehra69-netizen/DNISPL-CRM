@@ -3414,7 +3414,7 @@ async function loadAopData() {
     const [pr, ar] = await withTimeout(Promise.all([
       fetch(`${CRM_API_BASE}/api/aop?${qs}`),
       fetch(`${CRM_API_BASE}/api/aop/actuals?${qs}`)
-    ]), 12000, 'aop');
+    ]), 25000, 'aop');
     if (pr.ok) {
       const plans = await pr.json();
       window._aopPlans = {};
