@@ -3418,7 +3418,22 @@ async function loadAopData() {
     if (pr.ok) {
       const plans = await pr.json();
       window._aopPlans = {};
-      (Array.isArray(plans) ? plans : []).forEach(p => { window._aopPlans[p.account_id] = p; });
+      const monthMap = {april:'Apr',may:'May',june:'Jun',july:'Jul',august:'Aug',
+        september:'Sep',october:'Oct',november:'Nov',december:'Dec',
+        january:'Jan',february:'Feb',march:'Mar'};
+      (Array.isArray(plans) ? plans : []).forEach(p => {
+        window._aopPlans[p.account_id] = p;
+        if (p.months) {
+          Object.entries(p.months).forEach(([mname, val]) => {
+            const prefix = monthMap[mname];
+            if (prefix) {
+              window._aopPlans[p.account_id][`${prefix}_Hardware`] = val;
+              window._aopPlans[p.account_id][`${prefix}_Software`] = 0;
+              window._aopPlans[p.account_id][`${prefix}_Managed_Services`] = 0;
+            }
+          });
+        }
+      });
     } else {
       console.warn('AOP plans API failed', pr.status);
     }
