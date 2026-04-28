@@ -98,7 +98,7 @@ def get_conn():
                 DATABASE_URL,
                 sslmode="require",
                 connect_timeout=3,
-                options="-c statement_timeout=8000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=10000",
+                options="-c statement_timeout=30000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=10000",
                 application_name="dnispl-crm",
                 keepalives=1,
                 keepalives_idle=30,
