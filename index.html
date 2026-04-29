@@ -1487,7 +1487,7 @@ async function loadData() {
 
  let bootstrapLoaded = false;
  try {
-  const boot = await withTimeout(fetchBootstrapFromApi(), 20000, 'bootstrap');
+  const boot = await withTimeout(fetchBootstrapFromApi(), 45000, 'bootstrap');
   state.data.accounts = boot.accounts;
   state.data.activities = boot.activities;
   state.data.leads = boot.leads;
@@ -1500,11 +1500,11 @@ async function loadData() {
 
  if (!bootstrapLoaded) {
   const dataPromise = Promise.allSettled([
-   withTimeout(fetchAccountsFromApi(), 15000, 'accounts'),
-   withTimeout(fetchActivitiesFromApi(), 15000, 'activities'),
-   withTimeout(fetchLeadsFromApi(), 15000, 'leads'),
-   withTimeout(fetchContactsFromApi(), 15000, 'contacts'),
-   withTimeout(fetchOpportunitiesFromApi(), 15000, 'opportunities')
+   withTimeout(fetchAccountsFromApi(), 30000, 'accounts'),
+   withTimeout(fetchActivitiesFromApi(), 30000, 'activities'),
+   withTimeout(fetchLeadsFromApi(), 30000, 'leads'),
+   withTimeout(fetchContactsFromApi(), 30000, 'contacts'),
+   withTimeout(fetchOpportunitiesFromApi(), 30000, 'opportunities')
   ]);
 
   const [accountsResult, activitiesResult, leadsResult, contactsResult, oppsResult] = await dataPromise;
