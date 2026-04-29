@@ -451,7 +451,7 @@ def _json_exception_handler(exc):
 
 @app.before_request
 def _ensure_init_once():
-    ensure_db_initialized()
+    pass  # Schema already initialized
 
 
 def _client_ip() -> str:
