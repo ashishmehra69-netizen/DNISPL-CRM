@@ -5543,7 +5543,10 @@ function renderIncentiveSection() {
 
   return `<div style="display:flex;flex-direction:column;gap:12px">
   <div style="background:rgba(255,255,255,0.08);border-radius:12px;padding:20px">
-    <div style="color:white;font-weight:700;font-size:1.05rem;margin-bottom:12px">💰 Incentive Summary — ${inc.quarter}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+  <div style="color:white;font-weight:700;font-size:1.05rem">💰 Incentive Summary — ${inc.quarter}</div>
+  <button onclick="printIncentiveReport()" style="padding:8px 16px;border-radius:8px;border:none;background:white;color:#667eea;font-weight:600;cursor:pointer;font-size:0.82rem">🖨️ Print / Export PDF</button>
+</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">
       ${[['Fixed Annual','₹'+inc.fixed_annual_lakhs+'L'],['Variable Annual','₹'+inc.variable_annual_lakhs+'L'],
          ['Quarterly Variable','₹'+inc.quarterly_variable_lakhs+'L'],['KRA Score',score+'%'],
@@ -5567,7 +5570,57 @@ function renderIncentiveSection() {
   <div style="color:rgba(255,255,255,0.4);font-size:0.72rem;padding:0 4px">* Manual KRAs must be scored in the KRA tab for full accuracy.</div>
 </div>`;
 }
-
+function printIncentiveReport() {
+  const inc = reportsState.incentive;
+  const kra = reportsState.kra;
+  const score = kra ? overallKraScore(kra.kras || []) : 0;
+  const slab = inc.slabs.find(s => score >= s.min && score <= s.max) || inc.slabs[0];
+  const payout = Math.round(inc.quarterly_variable_lakhs * (slab.payout_pct / 100) * 100) / 100;
+  const win = window.open('', '_blank');
+  win.document.write(`
+    <!DOCTYPE html><html><head><title>Incentive Report</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 32px; color: #1a1a1a; max-width: 720px; margin: 0 auto; }
+      h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+      .meta { font-size: 13px; color: #666; margin-bottom: 24px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 24px; }
+      .stat { background: #f4f4f4; border-radius: 8px; padding: 12px; }
+      .stat label { font-size: 11px; color: #888; display: block; margin-bottom: 4px; }
+      .stat span { font-size: 18px; font-weight: 700; color: #1a1a1a; }
+      .section-title { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+      .slab-row { display: flex; justify-content: space-between; padding: 9px 12px; border-radius: 7px; margin-bottom: 4px; font-size: 13px; }
+      .slab-active { background: #eef2ff; border: 1px solid #c7d2fe; font-weight: 700; }
+      .slab-inactive { background: #f9f9f9; border: 1px solid #e5e7eb; color: #555; }
+      .note { font-size: 11px; color: #999; margin-top: 16px; }
+      @media print { body { padding: 16px; } }
+    </style>
+    </head><body>
+    <h1>Incentive Report</h1>
+    <div class="meta">${inc.quarter} &nbsp;·&nbsp; Generated: ${new Date().toLocaleString()}</div>
+    <div class="grid">
+      ${[['Fixed Annual', '₹'+inc.fixed_annual_lakhs+'L'],
+         ['Variable Annual', '₹'+inc.variable_annual_lakhs+'L'],
+         ['Quarterly Variable', '₹'+inc.quarterly_variable_lakhs+'L'],
+         ['KRA Score', score+'%'],
+         ['Slab', slab.label],
+         ['Payout %', slab.payout_pct+'%'],
+         ['Estimated Payout', '₹'+payout+'L']]
+        .map(([l,v]) => `<div class="stat"><label>${l}</label><span>${v}</span></div>`).join('')}
+    </div>
+    <div class="section-title">Payout Slabs</div>
+    ${inc.slabs.map(s => {
+      const active = score >= s.min && score <= s.max;
+      return `<div class="slab-row ${active ? 'slab-active' : 'slab-inactive'}">
+        <span>${s.label}${active ? ' ◀ Current' : ''}</span>
+        <span>${s.min}–${s.max > 500 ? '∞' : s.max}% → ${s.payout_pct}% = ₹${Math.round(inc.quarterly_variable_lakhs * s.payout_pct / 100 * 100) / 100}L</span>
+      </div>`;
+    }).join('')}
+    <div class="note">* Manual KRAs must be scored in the KRA tab for full accuracy.</div>
+    <script>window.onload = function(){ window.print(); }<\/script>
+    </body></html>
+  `);
+  win.document.close();
+}
 function renderSalarySection() {
   const sal = reportsState.salary||{};
   const viewerEmail = state.currentUser;
