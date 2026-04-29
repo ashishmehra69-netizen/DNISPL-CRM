@@ -5415,6 +5415,7 @@ function renderKraSection() {
   if (!kra || kra.error) return `<div style="color:#fca5a5;padding:20px;background:rgba(255,255,255,0.08);border-radius:12px">⚠️ ${kra?.error||'No KRA data — AOP import may be needed first.'}</div>`;
   const score = overallKraScore(kra.kras||[]);
   return `
+<button onclick="printKraReport()" style="padding:8px 16px;border-radius:8px;border:none;background:white;color:#667eea;font-weight:600;cursor:pointer;margin-bottom:12px;display:block">🖨️ Print / Export PDF</button>
 <div style="background:rgba(255,255,255,0.08);border-radius:12px;padding:20px;margin-bottom:16px">
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
     <div>
@@ -5456,7 +5457,76 @@ ${(kra.kras||[]).map(k=>{
 }).join('')}
 </div>`;
 }
-
+function printKraReport() {
+  const kra = reportsState.kra;
+  const score = overallKraScore(kra.kras || []);
+  const win = window.open('', '_blank');
+  win.document.write(`
+    <!DOCTYPE html><html><head><title>KRA Report</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 32px; color: #1a1a1a; max-width: 720px; margin: 0 auto; }
+      h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+      .meta { font-size: 13px; color: #666; margin-bottom: 24px; }
+      .summary { display: flex; gap: 32px; background: #f4f4f4; border-radius: 10px; padding: 16px 20px; margin-bottom: 24px; }
+      .summary-item label { font-size: 12px; color: #888; display: block; margin-bottom: 4px; }
+      .summary-item span { font-size: 28px; font-weight: 700; }
+      .kra-card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; }
+      .kra-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 10px; }
+      .kra-name { font-size: 14px; font-weight: 600; color: #1a1a1a; }
+      .kra-weight { font-size: 12px; color: #999; font-weight: 400; }
+      .kra-sub { font-size: 12px; color: #666; margin-top: 3px; }
+      .kra-pct { font-size: 20px; font-weight: 700; text-align: right; }
+      .kra-label { font-size: 11px; color: #999; text-align: right; margin-top: 2px; }
+      .bar-track { background: #e5e7eb; border-radius: 4px; height: 5px; }
+      .bar-fill { height: 100%; border-radius: 4px; }
+      @media print { body { padding: 16px; } }
+    </style>
+    </head><body>
+    <h1>KRA Report</h1>
+    <div class="meta">${kra.target_email} &nbsp;·&nbsp; ${kra.quarter} &nbsp;·&nbsp; FY${kra.fy_year} &nbsp;·&nbsp; Generated: ${new Date().toLocaleString()}</div>
+    <div class="summary">
+      <div class="summary-item">
+        <label>Overall KRA Score</label>
+        <span style="color:${kraColor(score)}">${score}%</span>
+      </div>
+      ${kra.q_target_cr ? `
+      <div class="summary-item">
+        <label>Quarter Target</label>
+        <span>₹${kra.q_target_cr}Cr</span>
+      </div>
+      <div class="summary-item">
+        <label>Won</label>
+        <span>₹${kra.won_value_cr || 0}Cr</span>
+      </div>` : ''}
+    </div>
+    ${(kra.kras || []).map(k => {
+      const ms = reportsState.manualScores[k.id];
+      const pct = k.manual && ms !== undefined ? parseFloat(ms) : k.achievement_pct;
+      const bar = pct !== null && pct !== undefined ? Math.min(pct, 100) : 0;
+      const displayPct = pct !== null && pct !== undefined ? pct + '%' : '—';
+      return `
+      <div class="kra-card">
+        <div class="kra-top">
+          <div>
+            <div class="kra-name">${k.name} <span class="kra-weight">(${k.weight}% weight)</span></div>
+            <div class="kra-sub">Target: ${k.target}</div>
+            <div class="kra-sub">Actual: ${k.actual_label}</div>
+          </div>
+          <div>
+            <div class="kra-pct" style="color:${kraColor(pct)}">${displayPct}</div>
+            <div class="kra-label">${kraLabel(pct)}</div>
+          </div>
+        </div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:${bar}%;background:${kraColor(pct)}"></div>
+        </div>
+      </div>`;
+    }).join('')}
+    <script>window.onload = function(){ window.print(); }<\/script>
+    </body></html>
+  `);
+  win.document.close();
+}
 function renderIncentiveSection() {
   const inc = reportsState.incentive;
   const kra = reportsState.kra;
