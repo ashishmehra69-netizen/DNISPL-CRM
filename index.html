@@ -1777,7 +1777,7 @@ function getFilteredData() {
  else if (state.activeTab === 'purchase') content = renderPurchaseOrders(filtered);
  else if (state.activeTab === 'aop') { content = renderAop(filtered); }
  else if (state.activeTab === 'dashboard') content = renderDashboard(filtered);
- else if (state.activeTab === 'reports') { loadReportsData(); content = renderReports(); }
+ else if (state.activeTab === 'reports') { content = renderReports(); }
  
  document.getElementById('content').innerHTML = content;
  }
@@ -2581,6 +2581,8 @@ function changeTab(tab) {
   state.activeTab = tab;
   if (tab === 'aop') {
     loadAopData().then(render);
+  } else if (tab === 'reports') {
+    loadReportsData().then(render);
   } else {
     render();
   }
