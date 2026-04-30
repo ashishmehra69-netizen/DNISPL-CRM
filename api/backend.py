@@ -2474,16 +2474,13 @@ def send_mom_mail_endpoint():
         conn.close()
 
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
-# Groq vision model — supports image inputs (base64 or URL)
-GROQ_VISION_MODEL = os.environ.get("GROQ_VISION_MODEL", "llama-3.2-11b-vision-preview").strip()
-
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 @app.route("/api/ai-extract", methods=["POST"])
 def ai_extract():
-    """Proxy AI extraction requests to Groq so the API key stays server-side."""
-    if not GROQ_API_KEY:
-        return jsonify({"error": "AI extraction not configured (GROQ_API_KEY missing)"}), 503
+    """Proxy AI extraction requests to Google Gemini."""
+    if not GEMINI_API_KEY:
+        return jsonify({"error": "AI extraction not configured (GEMINI_API_KEY missing)"}), 503
 
     data = request.get_json(silent=True) or {}
     prompt = (data.get("prompt") or "").strip()
@@ -2493,47 +2490,26 @@ def ai_extract():
     if not image_b64 or not prompt:
         return jsonify({"error": "image_b64 and prompt are required"}), 400
 
-    # Strip data-URL prefix if present
     if "," in image_b64:
         image_b64 = image_b64.split(",", 1)[1]
 
-    # Groq uses OpenAI-compatible format with image_url containing base64
-    data_url = f"data:{media_type};base64,{image_b64}"
-
     payload = {
-        "model": GROQ_VISION_MODEL,
-        "max_tokens": 2000,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": data_url},
-                    },
-                    {
-                        "type": "text",
-                        "text": prompt,
-                    },
-                ],
-            }
-        ],
+        "contents": [{"parts": [
+            {"inline_data": {"mime_type": media_type, "data": image_b64}},
+            {"text": prompt}
+        ]}]
     }
 
     try:
         result = _http_json_request(
-            "https://api.groq.com/openai/v1/chat/completions",
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
             method="POST",
             data=payload,
-            headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json",
-            },
         )
-        # OpenAI-compatible response format
         text = ""
-        for choice in (result.get("choices") or []):
-            text += (choice.get("message") or {}).get("content") or ""
+        for candidate in (result.get("candidates") or []):
+            for part in (candidate.get("content", {}).get("parts") or []):
+                text += part.get("text", "")
         if not text:
             text = "Could not extract details."
         return jsonify({"text": text})
