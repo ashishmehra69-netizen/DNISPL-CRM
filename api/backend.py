@@ -1,5 +1,6 @@
 import csv
 import json
+import fitz
 import base64
 import hashlib
 import hmac
@@ -2495,14 +2496,29 @@ def send_mom_mail_endpoint():
         return jsonify({"error": f"MoM send failed: {exc}"}), 500
     finally:
         conn.close()
+        
+def _pdf_to_base64_images(pdf_bytes: bytes, max_pages: int = 5, dpi: int = 150):
+    images = []
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        page_count = min(len(doc), max_pages)
+        for i in range(page_count):
+            page = doc[i]
+            pix = page.get_pixmap(dpi=dpi, alpha=False)
+            img_bytes = pix.tobytes("jpeg")
+            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+            images.append(img_b64)
+    finally:
+        doc.close()
+    return images
 
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 
 @app.route("/api/ai-extract", methods=["POST"])
 def ai_extract():
-    if not GEMINI_API_KEY:
-        return jsonify({"error": "AI extraction not configured (GEMINI_API_KEY missing)"}), 503
+    if not GROQ_API_KEY:
+        return jsonify({"error": "AI extraction not configured (GROQ_API_KEY missing)"}), 503
 
     data = request.get_json(silent=True) or {}
     prompt = (data.get("prompt") or "").strip()
@@ -2515,30 +2531,63 @@ def ai_extract():
     if "," in image_b64:
         image_b64 = image_b64.split(",", 1)[1]
 
-    payload = {
-        "contents": [{
-            "parts": [
-                {"inline_data": {"mime_type": media_type, "data": image_b64}},
-                {"text": prompt}
-            ]
-        }]
-    }
-
     try:
+        image_parts = []
+
+        if media_type == "application/pdf":
+            pdf_bytes = base64.b64decode(image_b64)
+            pdf_images = _pdf_to_base64_images(pdf_bytes, max_pages=5, dpi=150)
+
+            if not pdf_images:
+                return jsonify({"error": "Could not read PDF pages"}), 400
+
+            for img_b64 in pdf_images:
+                image_parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{img_b64}"
+                    }
+                })
+        else:
+            image_parts.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{media_type};base64,{image_b64}"
+                }
+            })
+
+        payload = {
+            "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        *image_parts
+                    ]
+                }
+            ],
+            "temperature": 0.2,
+            "max_completion_tokens": 1500
+        }
+
         result = _http_json_request(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}",
+            "https://api.groq.com/openai/v1/chat/completions",
             method="POST",
             data=payload,
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}"
+            },
             timeout=40,
             retries=2,
         )
 
-        text = ""
-        for candidate in (result.get("candidates") or []):
-            for part in (candidate.get("content", {}).get("parts") or []):
-                text += part.get("text", "")
+        text = (
+            (((result.get("choices") or [{}])[0]).get("message") or {}).get("content")
+            or ""
+        ).strip()
 
-        if not text.strip():
+        if not text:
             text = "Could not extract details."
 
         return jsonify({"text": text})
@@ -2546,8 +2595,9 @@ def ai_extract():
     except Exception as exc:
         msg = str(exc)
         if "429" in msg:
-            return jsonify({"error": "AI extraction is temporarily rate-limited. Please wait 15-30 seconds and try again."}), 429
+            return jsonify({"error": "Groq AI extraction is temporarily rate-limited. Please wait 15-30 seconds and try again."}), 429
         return jsonify({"error": f"AI extraction failed: {msg}"}), 500
+
 
 
 @app.route("/api/po-notify", methods=["POST"])
