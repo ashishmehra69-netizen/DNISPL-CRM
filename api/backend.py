@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import urllib.parse
 import urllib.request
+import urllib.error
 import os
 import smtplib
 import threading
@@ -556,16 +557,38 @@ def _http_form_post(url: str, form_data: dict):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _http_json_request(url: str, method: str = "GET", data=None, headers=None):
+def _http_json_request(url: str, method: str = "GET", data=None, headers=None, timeout: int = 25, retries: int = 2):
     payload = None if data is None else json.dumps(data).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, method=method.upper())
-    for k, v in (headers or {}).items():
-        req.add_header(k, v)
-    if data is not None and "Content-Type" not in {k.title(): v for k, v in (headers or {}).items()}:
-        req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=25) as resp:
-        raw = resp.read().decode("utf-8")
-        return json.loads(raw) if raw else {}
+
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(url, data=payload, method=method.upper())
+        for k, v in (headers or {}).items():
+            req.add_header(k, v)
+        if data is not None and "Content-Type" not in {k.title(): v for k, v in (headers or {}).items()}:
+            req.add_header("Content-Type", "application/json")
+
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="ignore") if exc.fp else ""
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+
+            if exc.code == 429 and attempt < retries:
+                wait_sec = int(retry_after) if retry_after and retry_after.isdigit() else (2 * (attempt + 1))
+                time.sleep(wait_sec)
+                continue
+
+            raise RuntimeError(f"HTTP Error {exc.code}: {body or exc.reason}")
+
+        except Exception:
+            if attempt < retries:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            raise
+
 
 
 def _get_user_row_by_email(email: str):
@@ -2478,7 +2501,6 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 @app.route("/api/ai-extract", methods=["POST"])
 def ai_extract():
-    """Proxy AI extraction requests to Google Gemini."""
     if not GEMINI_API_KEY:
         return jsonify({"error": "AI extraction not configured (GEMINI_API_KEY missing)"}), 503
 
@@ -2494,10 +2516,12 @@ def ai_extract():
         image_b64 = image_b64.split(",", 1)[1]
 
     payload = {
-        "contents": [{"parts": [
-            {"inline_data": {"mime_type": media_type, "data": image_b64}},
-            {"text": prompt}
-        ]}]
+        "contents": [{
+            "parts": [
+                {"inline_data": {"mime_type": media_type, "data": image_b64}},
+                {"text": prompt}
+            ]
+        }]
     }
 
     try:
@@ -2505,16 +2529,25 @@ def ai_extract():
             f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}",
             method="POST",
             data=payload,
+            timeout=40,
+            retries=2,
         )
+
         text = ""
         for candidate in (result.get("candidates") or []):
             for part in (candidate.get("content", {}).get("parts") or []):
                 text += part.get("text", "")
-        if not text:
+
+        if not text.strip():
             text = "Could not extract details."
+
         return jsonify({"text": text})
+
     except Exception as exc:
-        return jsonify({"error": f"AI extraction failed: {exc}"}), 500
+        msg = str(exc)
+        if "429" in msg:
+            return jsonify({"error": "AI extraction is temporarily rate-limited. Please wait 15-30 seconds and try again."}), 429
+        return jsonify({"error": f"AI extraction failed: {msg}"}), 500
 
 
 @app.route("/api/po-notify", methods=["POST"])
