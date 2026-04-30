@@ -4984,7 +4984,35 @@ function closePO(id) {
 
   // Now call AI extraction
   try {
-    const wonPoPrompt = `This is a Purchase Order (Won Order) received from a customer. Extract ALL details and return a structured summary with these sections:\n\nPO NUMBER:\nPO DATE:\nCUSTOMER / ISSUING COMPANY:\nBILLING ADDRESS:\nDELIVERY / SITE ADDRESS:\nTOTAL PO VALUE (₹):\nPAYMENT TERMS:\nDELIVERY TIMELINE / EXPECTED DATE:\nLINE ITEMS / SCOPE OF SUPPLY:\n  (list every item, quantity, unit price, total — be thorough)\nOEM / BRAND MENTIONED:\nVENDOR / DISTRIBUTOR (if mentioned):\nSPECIAL CONDITIONS OR TERMS:\nAUTHORISED SIGNATORY:\nCONTACT PERSON & DETAILS:\nWARRANTY / AMC TERMS (if mentioned):\nINSTALLATION REQUIREMENTS:\nKEY OBSERVATIONS / RISKS:\n\nExtract every detail visible. Be thorough on line items and scope.`;
+    const wonPoPrompt = `This is a customer Purchase Order (Won PO). Extract fields and return ONLY valid JSON. Do not add markdown, explanation, or code fences.
+
+Return exactly this JSON shape:
+{
+  "po_number": "",
+  "po_date": "",
+  "customer_name": "",
+  "billing_address": "",
+  "delivery_site_address": "",
+  "total_po_value_inr": "",
+  "payment_terms": "",
+  "expected_delivery_date": "",
+  "line_items_scope": "",
+  "oem_brand": "",
+  "vendor_distributor": "",
+  "special_conditions_terms": "",
+  "authorised_signatory": "",
+  "contact_person_details": "",
+  "warranty_amc_terms": "",
+  "installation_requirements": "",
+  "key_observations_risks": ""
+}
+
+Rules:
+- Use empty string if a field is not found.
+- Keep rupee value as written in document.
+- Keep addresses complete.
+- Put all line items and scope into "line_items_scope".
+- Do not return anything except JSON.`;
 
     const response = await fetch(`${CRM_API_BASE}/api/ai-extract`, {
       method: 'POST',
@@ -4998,42 +5026,166 @@ function closePO(id) {
     const contentEl = document.getElementById('wonPoContent');
     const extractedEl = document.getElementById('wonPoExtracted');
 
+    function tryParseAiJson(raw) {
+      const source = (raw || '').trim();
+      if (!source || source.startsWith('Error:')) return null;
+      try {
+        return JSON.parse(source);
+      } catch (_) {}
+
+      const fenced = source.match(/```json\s*([\s\S]*?)```/i) || source.match(/```\s*([\s\S]*?)```/i);
+      if (fenced?.[1]) {
+        try { return JSON.parse(fenced[1].trim()); } catch (_) {}
+      }
+
+      const start = source.indexOf('{');
+      const end = source.lastIndexOf('}');
+      if (start !== -1 && end !== -1 && end > start) {
+        try { return JSON.parse(source.slice(start, end + 1)); } catch (_) {}
+      }
+      return null;
+    }
+
+    function buildReadableSummary(obj) {
+      if (!obj) return extracted;
+      const rows = [
+        ['PO NUMBER', obj.po_number],
+        ['PO DATE', obj.po_date],
+        ['CUSTOMER / ISSUING COMPANY', obj.customer_name],
+        ['BILLING ADDRESS', obj.billing_address],
+        ['DELIVERY / SITE ADDRESS', obj.delivery_site_address],
+        ['TOTAL PO VALUE (₹)', obj.total_po_value_inr],
+        ['PAYMENT TERMS', obj.payment_terms],
+        ['DELIVERY TIMELINE / EXPECTED DATE', obj.expected_delivery_date],
+        ['LINE ITEMS / SCOPE OF SUPPLY', obj.line_items_scope],
+        ['OEM / BRAND MENTIONED', obj.oem_brand],
+        ['VENDOR / DISTRIBUTOR', obj.vendor_distributor],
+        ['SPECIAL CONDITIONS OR TERMS', obj.special_conditions_terms],
+        ['AUTHORISED SIGNATORY', obj.authorised_signatory],
+        ['CONTACT PERSON & DETAILS', obj.contact_person_details],
+        ['WARRANTY / AMC TERMS', obj.warranty_amc_terms],
+        ['INSTALLATION REQUIREMENTS', obj.installation_requirements],
+        ['KEY OBSERVATIONS / RISKS', obj.key_observations_risks]
+      ];
+      return rows
+        .filter(([, value]) => String(value || '').trim())
+        .map(([label, value]) => `${label}: ${value}`)
+        .join('\n\n');
+    }
+
+    const extractedJson = tryParseAiJson(extracted);
+    const extractedSummary = buildReadableSummary(extractedJson);
+
     if (statusEl) statusEl.style.display = 'none';
-    if (extractedEl) extractedEl.textContent = extracted;
+    if (extractedEl) extractedEl.textContent = extractedSummary;
     if (contentEl) contentEl.style.display = 'block';
-    if (document.getElementById('wonPoHiddenData')) document.getElementById('wonPoHiddenData').value = extracted;
+    if (document.getElementById('wonPoHiddenData')) document.getElementById('wonPoHiddenData').value = extractedSummary;
     if (document.getElementById('wonPoHiddenImage')) document.getElementById('wonPoHiddenImage').value = b64.substring(0, 5000);
 
-    // Auto-fill fields from extracted text
-    const lines = extracted.toLowerCase();
-    const getVal = (label) => {
-      const re = new RegExp(label + '[:\\s]+([^\\n]+)', 'i');
-      const m = extracted.match(re);
-      return m ? m[1].trim() : '';
-    };
-    const poNum = getVal('PO NUMBER');
-    const poVal = getVal('TOTAL PO VALUE[^\\n]*');
-    const payTerms = getVal('PAYMENT TERMS');
-    const vendor = getVal('VENDOR[^\\n]*');
-    const oem = getVal('OEM[^\\n]*');
-    const site = getVal('DELIVERY[/ ]*SITE ADDRESS');
-    const scope = getVal('LINE ITEMS[^\\n]*');
-    const delivDate = getVal('DELIVERY TIMELINE[^\\n]*');
+    // Auto-fill fields from extracted JSON first, text fallback second
+    function cleanExtractedValue(v) {
+      return (v || '')
+        .replace(/^\s*\*\*/g, '')
+        .replace(/\*\*\s*$/g, '')
+        .replace(/\*\*/g, '')
+        .replace(/^[:\-\s|]+/, '')
+        .trim();
+    }
+
+    function extractField(text, ...labels) {
+      const lines = text.split('\n');
+
+      for (const label of labels) {
+        const safeLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+
+          const sameLineRegex = new RegExp(`^\\**\\s*${safeLabel}\\s*\\**\\s*:\\s*(.+)$`, 'i');
+          const sameLineMatch = line.match(sameLineRegex);
+          if (sameLineMatch?.[1]) return cleanExtractedValue(sameLineMatch[1]);
+
+          const onlyLabelRegex = new RegExp(`^\\**\\s*${safeLabel}\\s*\\**\\s*:?\\s*$`, 'i');
+          if (onlyLabelRegex.test(line)) {
+            const nextLine = lines[i + 1] ? cleanExtractedValue(lines[i + 1]) : '';
+            if (nextLine) return nextLine;
+          }
+        }
+      }
+
+      return '';
+    }
+
+    function extractMultilineField(text, ...labels) {
+      const lines = text.split('\n');
+
+      for (const label of labels) {
+        const safeLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          const labelRegex = new RegExp(`^\\**\\s*${safeLabel}\\s*\\**\\s*:?\\s*(.*)$`, 'i');
+          const match = line.match(labelRegex);
+
+          if (match) {
+            const inlineValue = cleanExtractedValue(match[1] || '');
+            if (inlineValue) return inlineValue;
+
+            const collected = [];
+            for (let j = i + 1; j < lines.length; j++) {
+              const next = lines[j].trim();
+              if (!next) break;
+              if (/^\**[A-Z][A-Z0-9\s\/&().,\-]{2,}\**\s*:?\s*$/.test(next)) break;
+              collected.push(cleanExtractedValue(next));
+            }
+            if (collected.length) return collected.join(' ');
+          }
+        }
+      }
+
+      return '';
+    }
+
+    const poNum = extractedJson?.po_number || extractField(extracted, 'PO NUMBER', 'PO NO', 'ORDER NUMBER');
+    const poVal = extractedJson?.total_po_value_inr || extractField(extracted, 'TOTAL PO VALUE (₹)', 'TOTAL PO VALUE', 'TOTAL VALUE', 'PO VALUE', 'AMOUNT');
+    const payTerms = extractedJson?.payment_terms || extractMultilineField(extracted, 'PAYMENT TERMS');
+    const vendor = extractedJson?.vendor_distributor || extractField(extracted, 'VENDOR / DISTRIBUTOR', 'VENDOR', 'DISTRIBUTOR');
+    const oem = extractedJson?.oem_brand || extractField(extracted, 'OEM / BRAND MENTIONED', 'OEM / BRAND', 'OEM', 'BRAND');
+    const site = extractedJson?.delivery_site_address || extractMultilineField(extracted, 'DELIVERY / SITE ADDRESS', 'SITE ADDRESS', 'DELIVERY ADDRESS');
+    const billing = extractedJson?.billing_address || extractMultilineField(extracted, 'BILLING ADDRESS');
+    const scope = extractedJson?.line_items_scope || extractMultilineField(extracted, 'LINE ITEMS / SCOPE OF SUPPLY', 'SCOPE OF SUPPLY', 'LINE ITEMS');
+    const delivDate = extractedJson?.expected_delivery_date || extractField(extracted, 'DELIVERY TIMELINE / EXPECTED DATE', 'DELIVERY TIMELINE', 'EXPECTED DATE', 'DELIVERY DATE');
 
     if (poNum && document.getElementById('wonPoNumber')) document.getElementById('wonPoNumber').value = poNum;
     if (payTerms && document.getElementById('wonPoPaymentTerms')) document.getElementById('wonPoPaymentTerms').value = payTerms;
     if (vendor && document.getElementById('wonPoVendor')) document.getElementById('wonPoVendor').value = vendor;
     if (oem && document.getElementById('wonPoOem')) document.getElementById('wonPoOem').value = oem;
-    if (site && document.getElementById('wonPoSite')) document.getElementById('wonPoSite').value = site;
+    if ((site || billing) && document.getElementById('wonPoSite')) document.getElementById('wonPoSite').value = site || billing;
     if (scope && document.getElementById('wonPoDescription')) document.getElementById('wonPoDescription').value = scope;
 
     // Try to parse PO value
     if (poVal) {
-      const numMatch = poVal.replace(/,/g,'').match(/[\d.]+/);
-      if (numMatch && document.getElementById('wonPoValue')) {
-        let v = parseFloat(numMatch[0]);
-        if (v < 1000) v = v * 100000; // assume Lakhs if small number
+      const normalized = poVal.replace(/₹/g, '').replace(/,/g, '').trim();
+      const lakhMatch = normalized.match(/^([\d.]+)\s*L$/i);
+      const croreMatch = normalized.match(/^([\d.]+)\s*Cr$/i);
+      const numMatch = normalized.match(/[\d.]+/);
+
+      let v = NaN;
+      if (lakhMatch) v = parseFloat(lakhMatch[1]) * 100000;
+      else if (croreMatch) v = parseFloat(croreMatch[1]) * 10000000;
+      else if (numMatch) v = parseFloat(numMatch[0]);
+
+      if (!isNaN(v) && document.getElementById('wonPoValue')) {
         document.getElementById('wonPoValue').value = Math.round(v);
+      }
+    }
+
+    if (delivDate && document.getElementById('wonPoDelivery')) {
+      const dateMatch = delivDate.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+      if (dateMatch) {
+        const [, d, m, y] = dateMatch;
+        const yr = y.length === 2 ? `20${y}` : y;
+        document.getElementById('wonPoDelivery').value = `${yr}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
       }
     }
 
