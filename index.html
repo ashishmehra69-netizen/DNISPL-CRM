@@ -109,7 +109,12 @@ const OPPORTUNITY_INTAKE_REQUIRED_FIELDS = [
  { key: 'intakeBudgetRange', label: 'Budget Range' },
  { key: 'intakeDecisionTimeline', label: 'Decision Timeline' }
 ];
-const SALES_TEAM_USERS = ['rakesh.uniyal@dnispl.com', 'om.prakash@dnispl.com', 'uttkarsha.j@dnispl.com'];
+const SALES_TEAM_USERS = ['rakesh.uniyal@dnispl.com', 'om.prakash@dnispl.com', 'ankit.j@dnispl.com'];
+const SALES_DROPDOWN_BLOCKLIST = new Set([
+  'uttkarsha.j@dnispl.com',
+  'shasank.raturi@dnispl.com',
+  'shashank.raturi@dnispl.com'
+]);
 // Emails that can assign leads to ANY sales person
 const LEAD_ASSIGN_PRIVILEGED_USERS = [
     'vinod.v@dnispl.com',
@@ -196,18 +201,8 @@ const ACCOUNT_OWNER_MAP = {
   'Joyson Anand Abhishek Safety': 'vikrant.tolumbia@dnispl.com',
   'MUNJAL KIRIU INDUSTRIES': 'vikrant.tolumbia@dnispl.com',
   'Airtel': 'soumya.m@dnispl.com',
-  'NTT': 'soumya.m@dnispl.com',
-  'Sify': 'soumya.m@dnispl.com',
-  'Yotta': 'soumya.m@dnispl.com',
-  'Ctrl S': 'soumya.m@dnispl.com',
-  'Crest': 'soumya.m@dnispl.com',
-  'Huges': 'soumya.m@dnispl.com',
-  'Altius': 'soumya.m@dnispl.com',
-  'Tikona': 'soumya.m@dnispl.com',
-  'Den': 'soumya.m@dnispl.com',
-  'Exitel': 'soumya.m@dnispl.com',
-  'Hathway': 'soumya.m@dnispl.com',
-  'Tata': 'soumya.m@dnispl.com',
+  'Airtel payment bank': 'soumya.m@dnispl.com',
+  'Nxtra': 'soumya.m@dnispl.com',
   'LIFE INSURANCE CORP (LIC)': 'a.gupta@dnispl.com',
   'Dalmia Refractories Limited': 'a.gupta@dnispl.com',
   'SANSPAREILS GREENLANDS (SG)': 'a.gupta@dnispl.com',
@@ -464,59 +459,39 @@ const ACCOUNT_OWNER_MAP = {
   'QRG Enterprises': 'om.prakash@dnispl.com',
   'Go2Cloud Solutions Pvt Ltd': 'om.prakash@dnispl.com',
   // ── Uttkarsha J (9 Apr 2026) ──
-  'VERSATILE INFOSECURITY PrivateLimited': 'uttkarsha.j@dnispl.com',
-  'HACH OTT INDIA Private Limited': 'uttkarsha.j@dnispl.com',
-  'ORIFLAME INDIA Private Limited': 'uttkarsha.j@dnispl.com',
-  'OVS INDIA RETAIL PRIVATE Limited': 'uttkarsha.j@dnispl.com',
-  'BROOKPROP PROPERTY MANAGEMENT SERVICES Private Limited': 'uttkarsha.j@dnispl.com',
-  'THINK GAS DISTRIBUTION Private Limited': 'uttkarsha.j@dnispl.com',
-  'MACBEE Private Limited': 'uttkarsha.j@dnispl.com',
-  'KAUTILYA FINANCE INVESTMENT ADVISORS': 'uttkarsha.j@dnispl.com',
-  'SHAKTI SUSTAINABLE ENERGY FOUNDATION': 'uttkarsha.j@dnispl.com',
-  'DAYCO POWER TRANSMISSION PRIVATE Limited': 'uttkarsha.j@dnispl.com',
-  'ESCONET TECHNOLOGIES PRIVATE LIMITE': 'uttkarsha.j@dnispl.com',
-  'AL MAHA FOODS INTERNATIONAL PRIVATE Limited': 'uttkarsha.j@dnispl.com',
-  'GLOBAL FERTILITY SOLUTIONS PRIVATE Limited': 'uttkarsha.j@dnispl.com',
-  'ANSTEL PRIVATE Limited': 'uttkarsha.j@dnispl.com',
-  'TRANSACTION SOLUTIONS INTL INDIA Private Limited': 'uttkarsha.j@dnispl.com',
-  'BINARY GLOBAL HEAD OFFICE': 'uttkarsha.j@dnispl.com',
-  'RATTAN INDIA POWER Limited': 'uttkarsha.j@dnispl.com',
-  'CPU3 GURGAON': 'uttkarsha.j@dnispl.com',
-  'CENTRE FOR SIGHT FAZILI PRIVATE Limited': 'uttkarsha.j@dnispl.com',
-  'CENTRE FOR SIGHT I-MAX EYE CARE PRIVATE Limited': 'uttkarsha.j@dnispl.com',
-  'NAB INDIA CENTRE FOR BLIND WOMEN AND DISABILITY STUDIES': 'uttkarsha.j@dnispl.com',
-  'DR OETKER INDIA Private Limited': 'uttkarsha.j@dnispl.com',
-  'CONFEDERATION OF INDIAN INDUSTRIES': 'uttkarsha.j@dnispl.com',
-  'AUTOZONE INDIA SERVICES LLP': 'uttkarsha.j@dnispl.com',
-  'EDGE AND CLOUD OPC PRIVATE Limited': 'uttkarsha.j@dnispl.com',
-  'GRANT THORNTON BHARAT LLP': 'uttkarsha.j@dnispl.com',
-  'TBWA INDIA PRIVATE Limited': 'uttkarsha.j@dnispl.com',
-  'S & R ASSOCIATES ADVOCATES': 'uttkarsha.j@dnispl.com',
-  'JAPAN CHAMBER OF COMMERCE IN INDIA': 'uttkarsha.j@dnispl.com',
-  'GOURMET INVESTMENTS PRIVATE Limited': 'uttkarsha.j@dnispl.com',
-  'IKROYA TECH PRIVATE Limited': 'uttkarsha.j@dnispl.com',
-  'IRIS SOFTWARE TECHNOLOGIES Private Limited': 'uttkarsha.j@dnispl.com',
-  'IREO': 'uttkarsha.j@dnispl.com',
-  'ENGINEERS INDIA LIMITED': 'uttkarsha.j@dnispl.com',
-  'SHARDUL AMARCHAND MANGALDAS AND CO': 'uttkarsha.j@dnispl.com',
-  'TERI UNIVERSITY': 'uttkarsha.j@dnispl.com',
-  'AMBIENCE LIMITED': 'uttkarsha.j@dnispl.com',
-  'NEWGEN SOFTWARE TECHNOLOGIES P Limited': 'uttkarsha.j@dnispl.com',
-  'AXTRIA INDIA Private Limited': 'uttkarsha.j@dnispl.com',
-  'SMS INDIA Private Limited': 'uttkarsha.j@dnispl.com',
-  'AMERICAN EMBASSY SCHOOL': 'uttkarsha.j@dnispl.com',
-  'QIAGEN GMBH': 'uttkarsha.j@dnispl.com',
-  'EASEMYTRIP': 'uttkarsha.j@dnispl.com',
-  'COLOURTEX INDUSTRIES LIMITED': 'uttkarsha.j@dnispl.com',
-  'RADICO KHAITAN': 'uttkarsha.j@dnispl.com',
-  'EDEN INFRACON PRIVATE Limited': 'uttkarsha.j@dnispl.com',
-  'FUTURESOFT INDIA P Limited': 'uttkarsha.j@dnispl.com',
-  'ASHIANA HOUSING Limited': 'uttkarsha.j@dnispl.com',
-  'BGD METAL AND POWER Limited': 'uttkarsha.j@dnispl.com',
-  'COSMO FILMS Limited': 'uttkarsha.j@dnispl.com',
-  'S S KOTHARI MEHTA AND COMPANY': 'uttkarsha.j@dnispl.com',
-  'SHARE INDIA': 'uttkarsha.j@dnispl.com',
-  'SISL INFOTECH PRIVATE Limited': 'uttkarsha.j@dnispl.com',
+  // ── Ankit J accounts ──
+  'AEGON RELIGARE LIFE INSURANCE': 'ankit.j@dnispl.com',
+  'AUTOZONE INDIA SERVICES LLP': 'ankit.j@dnispl.com',
+  'BIRA CORPORATION LIMITED': 'ankit.j@dnispl.com',
+  'CARDEKHO GIRNARSOFT AUTOMOBILES PVT LTD': 'ankit.j@dnispl.com',
+  'DELHI PRESS LIMITED': 'ankit.j@dnispl.com',
+  'DHFL PHARMERICA': 'ankit.j@dnispl.com',
+  'DFL LIMITED': 'ankit.j@dnispl.com',
+  'GAWAR CONSTRUCTION LTD': 'ankit.j@dnispl.com',
+  'GIRNARSOFT PVT LTD': 'ankit.j@dnispl.com',
+  'MBD GROUP NEW DELHI': 'ankit.j@dnispl.com',
+  'NAGARRO SOFTWARE PRIVATE LIMITED': 'ankit.j@dnispl.com',
+  'NHPC LTD': 'ankit.j@dnispl.com',
+  'OYO ROOMS': 'ankit.j@dnispl.com',
+  'POLICY BAZAAR': 'ankit.j@dnispl.com',
+  'SAFEXPRESS PRIVATE LIMITED': 'ankit.j@dnispl.com',
+  'SHAHI EXPORTS PRIVATE LIMITED': 'ankit.j@dnispl.com',
+  'SHIPROCKET': 'ankit.j@dnispl.com',
+  'TRANSPORT CORPORATION OF INDIA': 'ankit.j@dnispl.com',
+  'UP COOPERATIVE BANK LIMITED': 'ankit.j@dnispl.com',
+  'Altius': 'ankit.j@dnispl.com',
+  'Anonet': 'ankit.j@dnispl.com',
+  'Crest': 'ankit.j@dnispl.com',
+  'Ctrl S': 'ankit.j@dnispl.com',
+  'Den': 'ankit.j@dnispl.com',
+  'Exitel': 'ankit.j@dnispl.com',
+  'Hathway': 'ankit.j@dnispl.com',
+  'Huges': 'ankit.j@dnispl.com',
+  'NTT': 'ankit.j@dnispl.com',
+  'Sify': 'ankit.j@dnispl.com',
+  'Tata': 'ankit.j@dnispl.com',
+  'Tikona': 'ankit.j@dnispl.com',
+  'Yotta': 'ankit.j@dnispl.com',
   // ── Ayushi V ──
   'Jamna Auto Industries Ltd': 'ayushi.v@dnispl.com',
   'Vaaan Infra': 'ayushi.v@dnispl.com',
@@ -2983,19 +2958,41 @@ function getTeamUsers(role) {
         'ashish.mehra@dnispl.com'
     ];
     if (role === 'sales') {
-        SALES_TEAM_USERS.forEach(u => users.add(u));
+        SALES_TEAM_USERS.forEach(u => {
+            if (u && !SALES_DROPDOWN_BLOCKLIST.has(normalizeEmail(u))) users.add(u);
+        });
         const isPrivileged = isSupervisor || LEAD_ASSIGN_PRIVILEGED_USERS.includes(normalizeEmail(currentUser));
         if (isPrivileged) {
-            state.data.leads.forEach(l => l.owner && users.add(l.owner));
-            state.data.accounts.forEach(a => (a.owner || a.accountManager) && users.add(a.owner || a.accountManager));
-            state.data.contacts.forEach(c => c.owner && users.add(c.owner));
-            state.data.opportunities.forEach(o => o.owner && users.add(o.owner));
+            state.data.leads.forEach(l => {
+                const email = normalizeEmail(l.owner);
+                if (email && !SALES_DROPDOWN_BLOCKLIST.has(email)) users.add(l.owner);
+            });
+            state.data.accounts.forEach(a => {
+                const raw = a.owner || a.accountManager;
+                const email = normalizeEmail(raw);
+                if (email && !SALES_DROPDOWN_BLOCKLIST.has(email)) users.add(raw);
+            });
+            state.data.contacts.forEach(c => {
+                const email = normalizeEmail(c.owner);
+                if (email && !SALES_DROPDOWN_BLOCKLIST.has(email)) users.add(c.owner);
+            });
+            state.data.opportunities.forEach(o => {
+                const email = normalizeEmail(o.owner);
+                if (email && !SALES_DROPDOWN_BLOCKLIST.has(email)) users.add(o.owner);
+            });
             Object.values(ACCOUNT_OWNER_MAP).forEach(email => {
-                if (email && email !== 'tba@local.crm') users.add(email);
+                const normalized = normalizeEmail(email);
+                if (normalized && normalized !== 'tba@local.crm' && !SALES_DROPDOWN_BLOCKLIST.has(normalized)) users.add(email);
             });
         }
-        users.add(currentUser || 'sales@company.com');
-        return Array.from(users).filter(u => u && u !== 'tba@local.crm').sort();
+        const normalizedCurrentUser = normalizeEmail(currentUser || 'sales@company.com');
+        if (normalizedCurrentUser && !SALES_DROPDOWN_BLOCKLIST.has(normalizedCurrentUser)) {
+            users.add(currentUser || 'sales@company.com');
+        }
+        return Array.from(users).filter(u => {
+            const email = normalizeEmail(u);
+            return email && email !== 'tba@local.crm' && !SALES_DROPDOWN_BLOCKLIST.has(email);
+        }).sort();
     }
     const opportunities = state.data.opportunities || [];
     opportunities.forEach(o => {
