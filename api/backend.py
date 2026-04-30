@@ -2476,7 +2476,7 @@ def send_mom_mail_endpoint():
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 # Groq vision model — supports image inputs (base64 or URL)
-GROQ_VISION_MODEL = os.environ.get("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct").strip()
+GROQ_VISION_MODEL = os.environ.get("GROQ_VISION_MODEL", "llama-3.2-11b-vision-preview").strip()
 
 
 @app.route("/api/ai-extract", methods=["POST"])
