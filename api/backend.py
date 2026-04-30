@@ -567,6 +567,8 @@ def _http_json_request(url: str, method: str = "GET", data=None, headers=None, t
             req.add_header(k, v)
         if data is not None and "Content-Type" not in {k.title(): v for k, v in (headers or {}).items()}:
             req.add_header("Content-Type", "application/json")
+            
+        req.add_header("User-Agent", "DNISPL-CRM/1.0")
 
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
