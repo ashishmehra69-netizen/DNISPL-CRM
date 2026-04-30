@@ -201,8 +201,18 @@ const ACCOUNT_OWNER_MAP = {
   'Joyson Anand Abhishek Safety': 'vikrant.tolumbia@dnispl.com',
   'MUNJAL KIRIU INDUSTRIES': 'vikrant.tolumbia@dnispl.com',
   'Airtel': 'soumya.m@dnispl.com',
-  'Airtel payment bank': 'soumya.m@dnispl.com',
-  'Nxtra': 'soumya.m@dnispl.com',
+  'NTT': 'soumya.m@dnispl.com',
+  'Sify': 'soumya.m@dnispl.com',
+  'Yotta': 'soumya.m@dnispl.com',
+  'Ctrl S': 'soumya.m@dnispl.com',
+  'Crest': 'soumya.m@dnispl.com',
+  'Huges': 'soumya.m@dnispl.com',
+  'Altius': 'soumya.m@dnispl.com',
+  'Tikona': 'soumya.m@dnispl.com',
+  'Den': 'soumya.m@dnispl.com',
+  'Exitel': 'soumya.m@dnispl.com',
+  'Hathway': 'soumya.m@dnispl.com',
+  'Tata': 'soumya.m@dnispl.com',
   'LIFE INSURANCE CORP (LIC)': 'a.gupta@dnispl.com',
   'Dalmia Refractories Limited': 'a.gupta@dnispl.com',
   'SANSPAREILS GREENLANDS (SG)': 'a.gupta@dnispl.com',
@@ -733,7 +743,7 @@ function getManagerFilterOptions(filtered) {
   ...((filtered.opportunities || []).reduce((acc, o) => acc.concat(getOpportunityManagerEmails(o)), [])),
   ...(filtered.activities || []).map(getActivityManagerEmail)
  ].forEach(email => {
-  if (!email || seen.has(email)) return;
+  if (!email || SALES_DROPDOWN_BLOCKLIST.has(normalizeEmail(email)) || seen.has(email)) return;
   seen.add(email);
   values.push(email);
  });
@@ -1553,6 +1563,15 @@ function seedAccountsFromMap() {
    const mapped = ACCOUNT_OWNER_MAP[mapKey] || ACCOUNT_OWNER_MAP[mapKey.toLowerCase()] || ACCOUNT_OWNER_MAP[mapKey.toUpperCase()];
    if (mapped) {
      item.accountManager = mapped;
+     item.owner = mapped;
+     item.account_manager = mapped;
+   } else {
+     const currentMgr = normalizeEmail(item.accountManager || item.account_manager || item.owner);
+     if (SALES_DROPDOWN_BLOCKLIST.has(currentMgr)) {
+       item.accountManager = '';
+       item.account_manager = '';
+       item.owner = '';
+     }
    }
  }
  const ts = new Date().toISOString();
