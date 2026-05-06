@@ -476,7 +476,7 @@ const ACCOUNT_OWNER_MAP = {
   'CARDEKHO GIRNARSOFT AUTOMOBILES PVT LTD': 'ankit.j@dnispl.com',
   'DELHI PRESS LIMITED': 'ankit.j@dnispl.com',
   'DHFL PHARMERICA': 'ankit.j@dnispl.com',
-  'DLF LIMITED': 'ankit.j@dnispl.com',
+  'DFL LIMITED': 'ankit.j@dnispl.com',
   'GAWAR CONSTRUCTION LTD': 'ankit.j@dnispl.com',
   'GIRNARSOFT PVT LTD': 'ankit.j@dnispl.com',
   'MBD GROUP NEW DELHI': 'ankit.j@dnispl.com',
@@ -1699,7 +1699,7 @@ function getFilteredData() {
     normalizeEmail(o.assignedPresales) === normalizeEmail(currentUser)
    );
    baseData = {
-    leads: [],
+    leads: state.data.leads || [],
     accounts: [],
     contacts: [],
     opportunities: presalesOpps,
@@ -1752,7 +1752,7 @@ function getFilteredData() {
  : (role === 'sales'
  ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'purchase', 'aop', 'reports']
  : role === 'presales'
- ? ['opportunities', 'workflow', 'activities', 'reports']
+ ? ['leads', 'opportunities', 'workflow', 'activities', 'reports']
  : ['opportunities', 'workflow', 'activities']);
  if (!tabs.includes(state.activeTab)) state.activeTab = tabs[0];
  document.getElementById('tabs').innerHTML = tabs.map(t => 
@@ -2613,6 +2613,10 @@ function openAddModal() {
 
  function openOpportunityModal(opp = null) {
  const filtered = getFilteredData();
+ const editorRole = getUserRole();
+ const isPresalesEditor = editorRole === 'presales';
+ const accountRequiredAttr = isPresalesEditor ? '' : 'required';
+ const accountLabel = isPresalesEditor ? 'Select Account (optional)' : 'Select Account *';
  document.getElementById('modal').innerHTML = `
  <div class="modal-content">
  <h2>${opp ? 'Edit' : 'Add'} Opportunity</h2>
@@ -2620,8 +2624,8 @@ function openAddModal() {
  <form onsubmit="saveOpportunity(event, ${opp ? `'${opp.id}'` : 'null'})">
  <input class="input" required name="name" placeholder="Opportunity Name *" value="${opp?.name || ''}">
  
- <select class="input" required name="accountId">
- <option value="">Select Account *</option>
+ <select class="input" ${accountRequiredAttr} name="accountId">
+ <option value="">${accountLabel}</option>
  ${state.data.accounts.map(a => `<option value="${a.id}" ${String(opp?.accountId) === String(a.id) ? 'selected' : ''}>${a.name}</option>`).join('')}
 
  </select>
@@ -3132,14 +3136,16 @@ async function submitPurchaseCosting(id) {
 async function submitFinalPricing(id) {
   const opp = state.data.opportunities.find(o => o.id === id);
   if (!opp) return;
-  const proposal = prompt('Final pricing proposal for sales:', opp.finalPricingProposal || '');
-  if (!proposal) { alert('Final proposal is required.'); return; }
-
   const notes = prompt('Presales notes for sales/client meeting:', opp.presalesComments || '');
+  const proposal = prompt('Final pricing proposal for sales (leave blank if sending comments only):', opp.finalPricingProposal || '');
+  if (!(proposal || '').trim() && !(notes || '').trim()) {
+    alert('Please enter either final proposal details or presales comments for sales.');
+    return;
+  }
   const now = new Date().toISOString();
 
   await updateOpportunityWorkflow(id, {
-    finalPricingProposal: proposal,
+    finalPricingProposal: proposal || opp.finalPricingProposal || '',
     presalesComments: notes || '',
     finalProposalAt: now,
     workflowStage: 'Sales Review (Client Meeting)'
@@ -3251,6 +3257,8 @@ async function saveOpportunity(e, id) {
  e.preventDefault();
  const existing = id ? state.data.opportunities.find(o => o.id === id) : null;
  const nowIso = new Date().toISOString();
+ const editorRole = getUserRole();
+ const isPresalesEditor = editorRole === 'presales';
  const data = Object.fromEntries(new FormData(e.target));
  data.value = parseFloat(data.value || 0);
  data.owner = existing?.owner || currentUser;
@@ -3290,12 +3298,14 @@ async function saveOpportunity(e, id) {
  data.presalesDueAt = existing?.presalesDueAt || addHours(data.salesSubmittedAt, 72);
  data.presalesEscalatedAt = existing?.presalesEscalatedAt || '';
  data.closureDate = data.closureDate || existing?.closureDate || '';
- const missingIntake = OPPORTUNITY_INTAKE_REQUIRED_FIELDS
-  .filter(f => !(data[f.key] || '').trim())
-  .map(f => f.label);
- if (missingIntake.length) {
-  alert('Please fill mandatory Presales Intake fields:\n- ' + missingIntake.join('\n- '));
-  return;
+ if (!isPresalesEditor) {
+  const missingIntake = OPPORTUNITY_INTAKE_REQUIRED_FIELDS
+   .filter(f => !(data[f.key] || '').trim())
+   .map(f => f.label);
+  if (missingIntake.length) {
+   alert('Please fill mandatory Presales Intake fields:\n- ' + missingIntake.join('\n- '));
+   return;
+  }
  }
  const cd = (data.closureDate || '').trim();
  const payload = { ...data, id: id || undefined, closureDate: cd, closure_date: cd, expectedClosureDate: cd, expected_closure_date: cd };
