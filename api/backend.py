@@ -40,6 +40,7 @@ DATABASE_URL = (
     or os.environ.get("SUPABASE_DATABASE_URL")
 )
 PRESALES_OWNER = os.environ.get("PRESALES_OWNER", "vinod.v@dnispl.com")
+SALES_OPS_OWNER = os.environ.get("SALES_OPS_OWNER", "soumya.m@dnispl.com")
 SUPERVISOR_EMAIL = os.environ.get("SUPERVISOR_EMAIL", "ashish.mehra@dnispl.com").strip().lower()
 ESCALATION_EMAILS = [
     e.strip().lower()
@@ -299,12 +300,15 @@ def init_db() -> None:
                     account_id TEXT,
                     value NUMERIC DEFAULT 0,
                     stage TEXT,
+                    deal_type TEXT,
                     owner TEXT,
                     sales_owner TEXT,
                     workflow_stage TEXT,
                     assigned_presales TEXT,
+                    assigned_salesops TEXT,
                     assigned_purchase TEXT,
                     sales_comments TEXT,
+                    sales_ops_comments TEXT,
                     requirements TEXT,
                     presales_architecture TEXT,
                     presales_questions TEXT,
@@ -314,6 +318,8 @@ def init_db() -> None:
                     final_pricing_proposal TEXT,
                     presales_assigned_at TEXT,
                     presales_due_at TEXT,
+                    salesops_assigned_at TEXT,
+                    salesops_due_at TEXT,
                     purchase_assigned_at TEXT,
                     purchase_due_at TEXT,
                     costing_returned_at TEXT,
@@ -321,6 +327,7 @@ def init_db() -> None:
                     assignment_due_at TEXT,
                     sales_submitted_at TEXT,
                     presales_escalated_at TEXT,
+                    oem_pricing_required BOOLEAN DEFAULT FALSE,
                     intake_problem_statement TEXT,
                     intake_why_now TEXT,
                     intake_business_impact TEXT,
@@ -343,6 +350,12 @@ def init_db() -> None:
                 """
             )
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS presales_escalated_at TEXT;")
+            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS deal_type TEXT;")
+            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS assigned_salesops TEXT;")
+            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS sales_ops_comments TEXT;")
+            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS salesops_assigned_at TEXT;")
+            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS salesops_due_at TEXT;")
+            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS oem_pricing_required BOOLEAN DEFAULT FALSE;")
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_problem_statement TEXT;")
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_why_now TEXT;")
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_business_impact TEXT;")
@@ -417,6 +430,7 @@ def init_db() -> None:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_owner ON opportunities(lower(owner));")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_sales_owner ON opportunities(lower(sales_owner));")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_assigned_presales ON opportunities(lower(assigned_presales));")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_assigned_salesops ON opportunities(lower(assigned_salesops));")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_assigned_purchase ON opportunities(lower(assigned_purchase));")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_account_id ON opportunities(account_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_aop_plans_fy ON aop_plans(fy_year);")
@@ -821,6 +835,38 @@ def send_opportunity_assignment_email(opportunity_name: str, opp_id: str, presal
         "Please review requirements and submit solution/proposal within SLA."
     )
     send_email_smtp([presales_target], subject, body, cc_emails=cc_list)
+
+
+def send_salesops_assignment_email(
+    opportunity_name: str,
+    opp_id: str,
+    salesops_email: str,
+    sales_email: str = "",
+    presales_email: str = "",
+    deal_type: str = "",
+    due_iso: str = "",
+    account_manager_email: str = "",
+) -> None:
+    target = (salesops_email or "").strip().lower()
+    if "@" not in target:
+        return
+    cc_list = []
+    for e in [SUPERVISOR_EMAIL, sales_email, presales_email, account_manager_email]:
+        e = (e or "").strip().lower()
+        if e and "@" in e and e != target and e not in cc_list:
+            cc_list.append(e)
+    subject = f"[CRM] Sales Ops Pricing Request: {opportunity_name or opp_id}"
+    body = (
+        f"Opportunity: {opportunity_name or ''}\n"
+        f"Opportunity ID: {opp_id}\n"
+        f"Sales Owner: {sales_email or 'NA'}\n"
+        f"Assigned Sales Ops: {target}\n"
+        f"Assigned Presales: {presales_email or 'NA'}\n"
+        f"Deal Type: {deal_type or 'NA'}\n"
+        f"Pricing Due At: {due_iso or 'NA'}\n\n"
+        "Please coordinate with OEM / distributor and update pricing support in CRM."
+    )
+    send_email_smtp([target], subject, body, cc_emails=cc_list)
 def enforce_opportunity_sla(conn, rows):
     now = datetime.now(timezone.utc)
     changed = False
@@ -1260,12 +1306,12 @@ def bootstrap_data():
                 payload["contacts"] = cur.fetchall()
 
             opp_all = """
-                SELECT id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
-                       assigned_presales, assigned_purchase, sales_comments, requirements,
+                SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
+                       assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
                        presales_architecture, presales_questions, boq, purchase_costing,
-                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
+                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
                        purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                       assignment_due_at, sales_submitted_at, presales_escalated_at,
+                       assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
                        intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
                        intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
                        intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
@@ -1275,12 +1321,12 @@ def bootstrap_data():
                 ORDER BY updated_at DESC
             """
             opp_scoped = """
-                SELECT id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
-                       assigned_presales, assigned_purchase, sales_comments, requirements,
+                SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
+                       assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
                        presales_architecture, presales_questions, boq, purchase_costing,
-                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
+                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
                        purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                       assignment_due_at, sales_submitted_at, presales_escalated_at,
+                       assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
                        intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
                        intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
                        intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
@@ -1290,6 +1336,7 @@ def bootstrap_data():
                 WHERE lower(owner)=lower(%s)
                    OR lower(sales_owner)=lower(%s)
                    OR lower(assigned_presales)=lower(%s)
+                   OR lower(assigned_salesops)=lower(%s)
                    OR lower(assigned_purchase)=lower(%s)
                 ORDER BY updated_at DESC
             """
@@ -1302,10 +1349,10 @@ def bootstrap_data():
                     rows = cur.fetchall()
                 payload["opportunities"] = rows
             elif viewer_email:
-                cur.execute(opp_scoped, (viewer_email, viewer_email, viewer_email, viewer_email))
+                cur.execute(opp_scoped, (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email))
                 rows = cur.fetchall()
                 if enforce_opportunity_sla(conn, rows):
-                    cur.execute(opp_scoped, (viewer_email, viewer_email, viewer_email, viewer_email))
+                    cur.execute(opp_scoped, (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email))
                     rows = cur.fetchall()
                 payload["opportunities"] = rows
         with _write_limits_lock:
@@ -1703,12 +1750,12 @@ def list_opportunities():
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             query_all = """
-                    SELECT id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
-                           assigned_presales, assigned_purchase, sales_comments, requirements,
+                    SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
+                           assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
                            presales_architecture, presales_questions, boq, purchase_costing,
-                           costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
+                           costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
                            purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                           assignment_due_at, sales_submitted_at, presales_escalated_at,
+                           assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
                            intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
                            intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
                            intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
@@ -1718,12 +1765,12 @@ def list_opportunities():
                     ORDER BY updated_at DESC
                     """
             query_scoped = """
-                SELECT id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
-                       assigned_presales, assigned_purchase, sales_comments, requirements,
+                SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
+                       assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
                        presales_architecture, presales_questions, boq, purchase_costing,
-                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
+                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
                        purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                       assignment_due_at, sales_submitted_at, presales_escalated_at,
+                       assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
                        intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
                        intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
                        intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
@@ -1733,9 +1780,10 @@ def list_opportunities():
                 WHERE lower(owner)=lower(%s)
                    OR lower(sales_owner)=lower(%s)
                    OR lower(assigned_presales)=lower(%s)
+                   OR lower(assigned_salesops)=lower(%s)
                    OR lower(assigned_purchase)=lower(%s)
                 ORDER BY updated_at DESC
-                """
+            """
             if _is_supervisor(viewer_role):
                 cur.execute(query_all)
                 rows = cur.fetchall()
@@ -1747,10 +1795,10 @@ def list_opportunities():
             if not viewer_email:
                 return jsonify({"error": "viewer_email is required for non-supervisor access"}), 400
 
-            cur.execute(query_scoped, (viewer_email, viewer_email, viewer_email, viewer_email))
+            cur.execute(query_scoped, (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email))
             rows = cur.fetchall()
             if enforce_opportunity_sla(conn, rows):
-                cur.execute(query_scoped, (viewer_email, viewer_email, viewer_email, viewer_email))
+                cur.execute(query_scoped, (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email))
                 rows = cur.fetchall()
             return jsonify(rows)
     finally:
@@ -1770,12 +1818,15 @@ def upsert_opportunity():
         "account_id": (data.get("account_id") or data.get("accountId") or "").strip(),
         "value": float(data.get("value") or 0),
         "stage": (data.get("stage") or "").strip(),
+        "deal_type": (data.get("deal_type") or data.get("dealType") or "").strip(),
         "owner": owner,
         "sales_owner": (data.get("sales_owner") or data.get("salesOwner") or owner).strip(),
         "workflow_stage": (data.get("workflow_stage") or data.get("workflowStage") or "").strip(),
         "assigned_presales": (data.get("assigned_presales") or data.get("assignedPresales") or "").strip(),
+        "assigned_salesops": (data.get("assigned_salesops") or data.get("assignedSalesOps") or "").strip(),
         "assigned_purchase": (data.get("assigned_purchase") or data.get("assignedPurchase") or "").strip(),
         "sales_comments": (data.get("sales_comments") or data.get("salesComments") or "").strip(),
+        "sales_ops_comments": (data.get("sales_ops_comments") or data.get("salesOpsComments") or "").strip(),
         "requirements": (data.get("requirements") or "").strip(),
         "presales_architecture": (data.get("presales_architecture") or data.get("presalesArchitecture") or "").strip(),
         "presales_questions": (data.get("presales_questions") or data.get("presalesQuestions") or "").strip(),
@@ -1785,6 +1836,8 @@ def upsert_opportunity():
         "final_pricing_proposal": (data.get("final_pricing_proposal") or data.get("finalPricingProposal") or "").strip(),
         "presales_assigned_at": (data.get("presales_assigned_at") or data.get("presalesAssignedAt") or "").strip(),
         "presales_due_at": (data.get("presales_due_at") or data.get("presalesDueAt") or "").strip(),
+        "salesops_assigned_at": (data.get("salesops_assigned_at") or data.get("salesOpsAssignedAt") or "").strip(),
+        "salesops_due_at": (data.get("salesops_due_at") or data.get("salesOpsDueAt") or "").strip(),
         "purchase_assigned_at": (data.get("purchase_assigned_at") or data.get("purchaseAssignedAt") or "").strip(),
         "purchase_due_at": (data.get("purchase_due_at") or data.get("purchaseDueAt") or "").strip(),
         "costing_returned_at": (data.get("costing_returned_at") or data.get("costingReturnedAt") or "").strip(),
@@ -1792,6 +1845,7 @@ def upsert_opportunity():
         "assignment_due_at": (data.get("assignment_due_at") or data.get("assignmentDueAt") or "").strip(),
         "sales_submitted_at": (data.get("sales_submitted_at") or data.get("salesSubmittedAt") or "").strip(),
         "presales_escalated_at": (data.get("presales_escalated_at") or data.get("presalesEscalatedAt") or "").strip(),
+        "oem_pricing_required": str(data.get("oem_pricing_required") or data.get("oemPricingRequired") or "").strip().lower() in ("1", "true", "yes", "y"),
         "intake_problem_statement": (data.get("intake_problem_statement") or data.get("intakeProblemStatement") or "").strip(),
         "intake_why_now": (data.get("intake_why_now") or data.get("intakeWhyNow") or "").strip(),
         "intake_business_impact": (data.get("intake_business_impact") or data.get("intakeBusinessImpact") or "").strip(),
@@ -1810,36 +1864,46 @@ def upsert_opportunity():
         "intake_win_strategy": (data.get("intake_win_strategy") or data.get("intakeWinStrategy") or "").strip(),
     }
 
-    required_intake_fields = [
-        ("intake_problem_statement", "Problem Statement"),
-        ("intake_why_now", "Why Now (Trigger Event)"),
-        ("intake_business_impact", "Business Impact"),
-        ("intake_current_state", "Current State Summary"),
-        ("intake_budget_range", "Budget Range"),
-        ("intake_decision_timeline", "Decision Timeline"),
-    ]
-    missing_intake = [label for key, label in required_intake_fields if not payload.get(key)]
-    if missing_intake:
-        return jsonify({"error": "Mandatory presales intake fields missing", "missing_fields": missing_intake}), 400
-
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, assigned_presales, workflow_stage, sales_owner, owner FROM opportunities WHERE id=%s", (opp_id,))
+            cur.execute("SELECT id, assigned_presales, assigned_salesops, workflow_stage, sales_owner, owner FROM opportunities WHERE id=%s", (opp_id,))
             exists = cur.fetchone()
             prev_assigned_presales = ((exists or {}).get("assigned_presales") or "").strip().lower()
+            prev_assigned_salesops = ((exists or {}).get("assigned_salesops") or "").strip().lower()
             prev_workflow_stage = ((exists or {}).get("workflow_stage") or "").strip()
             prev_sales_owner = ((exists or {}).get("sales_owner") or (exists or {}).get("owner") or "").strip().lower()
+            deal_type_now = (payload.get("deal_type") or "").strip().lower()
+            if deal_type_now in ("hardware", "mixed") or (payload.get("assigned_presales") or "").strip():
+                payload["assigned_salesops"] = SALES_OPS_OWNER
+                payload["oem_pricing_required"] = True
+                payload["salesops_assigned_at"] = payload.get("salesops_assigned_at") or utc_now()
+                payload["salesops_due_at"] = payload.get("salesops_due_at") or (datetime.utcnow() + timedelta(hours=24)).isoformat(timespec="seconds") + "Z"
+
+            required_intake_fields = [
+                ("intake_problem_statement", "Problem Statement"),
+                ("intake_why_now", "Why Now (Trigger Event)"),
+                ("intake_business_impact", "Business Impact"),
+                ("intake_current_state", "Current State Summary"),
+                ("intake_budget_range", "Budget Range"),
+                ("intake_decision_timeline", "Decision Timeline"),
+            ]
+            workflow_now = (payload.get("workflow_stage") or "").strip()
+            requires_intake = (not exists) or workflow_now == "Assigned to Presales"
+            missing_intake = [label for key, label in required_intake_fields if not payload.get(key)]
+            if requires_intake and missing_intake:
+                return jsonify({"error": "Mandatory presales intake fields missing", "missing_fields": missing_intake}), 400
+
             if exists:
                 cur.execute(
                     """
                     UPDATE opportunities
-                    SET name=%s, account_id=%s, value=%s, stage=%s, owner=%s, sales_owner=%s, workflow_stage=%s,
-                        assigned_presales=%s, assigned_purchase=%s, sales_comments=%s, requirements=%s,
+                    SET name=%s, account_id=%s, value=%s, stage=%s, deal_type=%s, owner=%s, sales_owner=%s, workflow_stage=%s,
+                        assigned_presales=%s, assigned_salesops=%s, assigned_purchase=%s, sales_comments=%s, sales_ops_comments=%s, requirements=%s,
                         presales_architecture=%s, presales_questions=%s, boq=%s, purchase_costing=%s,
-                        costing_tat=%s, final_pricing_proposal=%s, presales_assigned_at=%s, presales_due_at=%s,
+                        costing_tat=%s, final_pricing_proposal=%s, presales_assigned_at=%s, presales_due_at=%s, salesops_assigned_at=%s, salesops_due_at=%s,
                         purchase_assigned_at=%s, purchase_due_at=%s, costing_returned_at=%s, final_proposal_at=%s,
-                        assignment_due_at=%s, sales_submitted_at=%s, presales_escalated_at=%s,
+                        assignment_due_at=%s, sales_submitted_at=%s, presales_escalated_at=%s, oem_pricing_required=%s,
                         intake_problem_statement=%s, intake_why_now=%s, intake_business_impact=%s, intake_current_state=%s,
                         intake_budget_range=%s, intake_decision_timeline=%s, intake_risk_if_not_solved=%s,
                         intake_key_stakeholders=%s, intake_in_scope=%s, intake_out_of_scope=%s, intake_current_environment=%s,
@@ -1848,14 +1912,14 @@ def upsert_opportunity():
                     WHERE id=%s
                     """,
                     (
-                        payload["name"], payload["account_id"], payload["value"], payload["stage"], payload["owner"],
-                        payload["sales_owner"], payload["workflow_stage"], payload["assigned_presales"],
-                        payload["assigned_purchase"], payload["sales_comments"], payload["requirements"],
+                        payload["name"], payload["account_id"], payload["value"], payload["stage"], payload["deal_type"], payload["owner"],
+                        payload["sales_owner"], payload["workflow_stage"], payload["assigned_presales"], payload["assigned_salesops"],
+                        payload["assigned_purchase"], payload["sales_comments"], payload["sales_ops_comments"], payload["requirements"],
                         payload["presales_architecture"], payload["presales_questions"], payload["boq"],
                         payload["purchase_costing"], payload["costing_tat"], payload["final_pricing_proposal"],
-                        payload["presales_assigned_at"], payload["presales_due_at"], payload["purchase_assigned_at"],
+                        payload["presales_assigned_at"], payload["presales_due_at"], payload["salesops_assigned_at"], payload["salesops_due_at"], payload["purchase_assigned_at"],
                         payload["purchase_due_at"], payload["costing_returned_at"], payload["final_proposal_at"],
-                        payload["assignment_due_at"], payload["sales_submitted_at"], payload["presales_escalated_at"],
+                        payload["assignment_due_at"], payload["sales_submitted_at"], payload["presales_escalated_at"], payload["oem_pricing_required"],
                         payload["intake_problem_statement"], payload["intake_why_now"], payload["intake_business_impact"], payload["intake_current_state"],
                         payload["intake_budget_range"], payload["intake_decision_timeline"], payload["intake_risk_if_not_solved"],
                         payload["intake_key_stakeholders"], payload["intake_in_scope"], payload["intake_out_of_scope"], payload["intake_current_environment"],
@@ -1868,12 +1932,12 @@ def upsert_opportunity():
                 cur.execute(
                     """
                     INSERT INTO opportunities (
-                        id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
-                        assigned_presales, assigned_purchase, sales_comments, requirements,
+                        id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
+                        assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
                         presales_architecture, presales_questions, boq, purchase_costing,
-                        costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
+                        costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
                         purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                        assignment_due_at, sales_submitted_at, presales_escalated_at,
+                        assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
                         intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
                         intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
                         intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
@@ -1881,23 +1945,23 @@ def upsert_opportunity():
                         intake_competitors, intake_win_strategy, created_at, updated_at
                     )
                     VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s,
+                        %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, now(), now()
                     )
                     """,
                     (
-                        opp_id, payload["name"], payload["account_id"], payload["value"], payload["stage"], payload["owner"],
-                        payload["sales_owner"], payload["workflow_stage"], payload["assigned_presales"],
-                        payload["assigned_purchase"], payload["sales_comments"], payload["requirements"],
+                        opp_id, payload["name"], payload["account_id"], payload["value"], payload["stage"], payload["deal_type"], payload["owner"],
+                        payload["sales_owner"], payload["workflow_stage"], payload["assigned_presales"], payload["assigned_salesops"],
+                        payload["assigned_purchase"], payload["sales_comments"], payload["sales_ops_comments"], payload["requirements"],
                         payload["presales_architecture"], payload["presales_questions"], payload["boq"],
                         payload["purchase_costing"], payload["costing_tat"], payload["final_pricing_proposal"],
-                        payload["presales_assigned_at"], payload["presales_due_at"], payload["purchase_assigned_at"],
+                        payload["presales_assigned_at"], payload["presales_due_at"], payload["salesops_assigned_at"], payload["salesops_due_at"], payload["purchase_assigned_at"],
                         payload["purchase_due_at"], payload["costing_returned_at"], payload["final_proposal_at"],
-                        payload["assignment_due_at"], payload["sales_submitted_at"], payload["presales_escalated_at"],
+                        payload["assignment_due_at"], payload["sales_submitted_at"], payload["presales_escalated_at"], payload["oem_pricing_required"],
                         payload["intake_problem_statement"], payload["intake_why_now"], payload["intake_business_impact"], payload["intake_current_state"],
                         payload["intake_budget_range"], payload["intake_decision_timeline"], payload["intake_risk_if_not_solved"], payload["intake_key_stakeholders"],
                         payload["intake_in_scope"], payload["intake_out_of_scope"], payload["intake_current_environment"], payload["intake_pain_points"],
@@ -1908,6 +1972,7 @@ def upsert_opportunity():
         conn.commit()
 
         current_assigned = (payload.get("assigned_presales") or "").strip().lower()
+        current_salesops = (payload.get("assigned_salesops") or "").strip().lower()
         workflow_now = (payload.get("workflow_stage") or "").strip()
         sales_now = (payload.get("sales_owner") or payload.get("owner") or "").strip().lower()
 
@@ -1957,6 +2022,50 @@ def upsert_opportunity():
                 due_iso,
                 account_manager_email,
             )
+            if current_salesops:
+                send_salesops_assignment_email(
+                    payload.get("name") or "",
+                    opp_id,
+                    current_salesops,
+                    sales_now,
+                    current_assigned,
+                    payload.get("deal_type") or "",
+                    (payload.get("salesops_due_at") or "").strip(),
+                    account_manager_email,
+                )
+        elif current_salesops and (
+            current_salesops != prev_assigned_salesops
+            or status == "created"
+            or str(payload.get("oem_pricing_required") or "").lower() in ("true", "1")
+        ):
+            account_manager_email = ""
+            acc_id = (payload.get("account_id") or "").strip()
+            if acc_id:
+                try:
+                    with conn.cursor(cursor_factory=RealDictCursor) as cur_am:
+                        cur_am.execute(
+                            """
+                            SELECT u.email FROM accounts a
+                            LEFT JOIN users u ON u.id = a.account_manager_id
+                            WHERE CAST(a.id AS TEXT) = %s
+                            """,
+                            (acc_id,),
+                        )
+                        am_row = cur_am.fetchone()
+                        if am_row:
+                            account_manager_email = (am_row.get("email") or "").strip().lower()
+                except Exception as e:
+                    print(f"[CRM] Could not fetch account manager for sales ops CC: {e}")
+            send_salesops_assignment_email(
+                payload.get("name") or "",
+                opp_id,
+                current_salesops,
+                sales_now,
+                current_assigned,
+                payload.get("deal_type") or "",
+                (payload.get("salesops_due_at") or "").strip(),
+                account_manager_email,
+            )
         return jsonify({"status": status, "id": opp_id})
     finally:
         conn.close()
@@ -1969,7 +2078,7 @@ def delete_opportunity(opp_id: str):
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, owner, sales_owner FROM opportunities WHERE id=%s", (opp_id,))
+            cur.execute("SELECT id, owner, sales_owner, assigned_salesops FROM opportunities WHERE id=%s", (opp_id,))
             row = cur.fetchone()
             if not row:
                 return jsonify({"error": "opportunity not found"}), 404
@@ -1979,6 +2088,7 @@ def delete_opportunity(opp_id: str):
                 allowed = {
                     (row.get("owner") or "").lower(),
                     (row.get("sales_owner") or "").lower(),
+                    (row.get("assigned_salesops") or "").lower(),
                 }
                 if viewer_email.lower() not in allowed:
                     return jsonify({"error": "not allowed"}), 403
