@@ -1,12 +1,10 @@
 import csv
 import json
-import fitz
 import base64
 import hashlib
 import hmac
 import urllib.parse
 import urllib.request
-import urllib.error
 import os
 import smtplib
 import threading
@@ -558,40 +556,16 @@ def _http_form_post(url: str, form_data: dict):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _http_json_request(url: str, method: str = "GET", data=None, headers=None, timeout: int = 25, retries: int = 2):
+def _http_json_request(url: str, method: str = "GET", data=None, headers=None):
     payload = None if data is None else json.dumps(data).encode("utf-8")
-
-    for attempt in range(retries + 1):
-        req = urllib.request.Request(url, data=payload, method=method.upper())
-        for k, v in (headers or {}).items():
-            req.add_header(k, v)
-        if data is not None and "Content-Type" not in {k.title(): v for k, v in (headers or {}).items()}:
-            req.add_header("Content-Type", "application/json")
-            
-        req.add_header("User-Agent", "DNISPL-CRM/1.0")
-
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read().decode("utf-8")
-                return json.loads(raw) if raw else {}
-
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="ignore") if exc.fp else ""
-            retry_after = exc.headers.get("Retry-After") if exc.headers else None
-
-            if exc.code == 429 and attempt < retries:
-                wait_sec = int(retry_after) if retry_after and retry_after.isdigit() else (2 * (attempt + 1))
-                time.sleep(wait_sec)
-                continue
-
-            raise RuntimeError(f"HTTP Error {exc.code}: {body or exc.reason}")
-
-        except Exception:
-            if attempt < retries:
-                time.sleep(1.5 * (attempt + 1))
-                continue
-            raise
-
+    req = urllib.request.Request(url, data=payload, method=method.upper())
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+    if data is not None and "Content-Type" not in {k.title(): v for k, v in (headers or {}).items()}:
+        req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
 
 
 def _get_user_row_by_email(email: str):
@@ -1243,7 +1217,7 @@ def bootstrap_data():
                 )
                 payload["activities"] = cur.fetchall()
 
-            if _is_supervisor(viewer_role):
+            if _is_supervisor(viewer_role) or viewer_role == "presales":
                 cur.execute(
                     """
                     SELECT id, name, company, email, phone, source, status, notes, owner, created_at, updated_at
@@ -1494,7 +1468,7 @@ def list_leads():
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if _is_supervisor(viewer_role):
+            if _is_supervisor(viewer_role) or viewer_role == "presales":
                 cur.execute(
                     """
                     SELECT id, name, company, email, phone, source, status, notes, owner, created_at, updated_at
@@ -2498,27 +2472,16 @@ def send_mom_mail_endpoint():
         return jsonify({"error": f"MoM send failed: {exc}"}), 500
     finally:
         conn.close()
-        
-def _pdf_to_base64_images(pdf_bytes: bytes, max_pages: int = 5, dpi: int = 150):
-    images = []
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        page_count = min(len(doc), max_pages)
-        for i in range(page_count):
-            page = doc[i]
-            pix = page.get_pixmap(dpi=dpi, alpha=False)
-            img_bytes = pix.tobytes("jpeg")
-            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-            images.append(img_b64)
-    finally:
-        doc.close()
-    return images
 
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+# Groq vision model — supports image inputs (base64 or URL)
+GROQ_VISION_MODEL = os.environ.get("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct").strip()
+
 
 @app.route("/api/ai-extract", methods=["POST"])
 def ai_extract():
+    """Proxy AI extraction requests to Groq so the API key stays server-side."""
     if not GROQ_API_KEY:
         return jsonify({"error": "AI extraction not configured (GROQ_API_KEY missing)"}), 503
 
@@ -2530,76 +2493,52 @@ def ai_extract():
     if not image_b64 or not prompt:
         return jsonify({"error": "image_b64 and prompt are required"}), 400
 
+    # Strip data-URL prefix if present
     if "," in image_b64:
         image_b64 = image_b64.split(",", 1)[1]
 
+    # Groq uses OpenAI-compatible format with image_url containing base64
+    data_url = f"data:{media_type};base64,{image_b64}"
+
+    payload = {
+        "model": GROQ_VISION_MODEL,
+        "max_tokens": 2000,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": data_url},
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt,
+                    },
+                ],
+            }
+        ],
+    }
+
     try:
-        image_parts = []
-
-        if media_type == "application/pdf":
-            pdf_bytes = base64.b64decode(image_b64)
-            pdf_images = _pdf_to_base64_images(pdf_bytes, max_pages=5, dpi=150)
-
-            if not pdf_images:
-                return jsonify({"error": "Could not read PDF pages"}), 400
-
-            for img_b64 in pdf_images:
-                image_parts.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{img_b64}"
-                    }
-                })
-        else:
-            image_parts.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:{media_type};base64,{image_b64}"
-                }
-            })
-
-        payload = {
-            "model": "meta-llama/llama-4-scout-17b-16e-instruct",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        *image_parts
-                    ]
-                }
-            ],
-            "temperature": 0.2,
-            "max_completion_tokens": 1500
-        }
-
         result = _http_json_request(
             "https://api.groq.com/openai/v1/chat/completions",
             method="POST",
             data=payload,
             headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}"
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json",
             },
-            timeout=40,
-            retries=2,
         )
-
-        text = (
-            (((result.get("choices") or [{}])[0]).get("message") or {}).get("content")
-            or ""
-        ).strip()
-
+        # OpenAI-compatible response format
+        text = ""
+        for choice in (result.get("choices") or []):
+            text += (choice.get("message") or {}).get("content") or ""
         if not text:
             text = "Could not extract details."
-
         return jsonify({"text": text})
-
     except Exception as exc:
-        msg = str(exc)
-        if "429" in msg:
-            return jsonify({"error": "Groq AI extraction is temporarily rate-limited. Please wait 15-30 seconds and try again."}), 429
-        return jsonify({"error": f"AI extraction failed: {msg}"}), 500
-
+        return jsonify({"error": f"AI extraction failed: {exc}"}), 500
 
 
 @app.route("/api/po-notify", methods=["POST"])
