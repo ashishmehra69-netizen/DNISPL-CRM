@@ -88,7 +88,7 @@
 const SUPERVISOR_EMAIL = 'ashish.mehra@dnispl.com';
 const PASSWORD = 'crm2026'; // Simple password for demo
 const PRESALES_OWNER = 'vinod.v@dnispl.com';
-const PURCHASE_OWNER = 'Soumya.m@dnispl.com';
+const PURCHASE_OWNER = 'niharika.s@dnispl.com';
 const SALES_OPS_OWNER = 'soumya.m@dnispl.com';
 const FINANCE_APPROVER = 'rakesh.uniyal@dnispl.com';
 const PRESALES_APPROVER = 'vinod.v@dnispl.com';
@@ -680,7 +680,7 @@ async function restoreSessionIfAny() {
  if (isSupervisor) return 'supervisor';
  const email = (currentUser || '').toLowerCase();
  const PRESALES_USERS = ['vinod.v@dnispl.com'];
- const PURCHASE_USERS = ['soumya.m@dnispl.com'];
+ const PURCHASE_USERS = ['niharika.s@dnispl.com'];
  if (PRESALES_USERS.includes(email)) return 'presales';
  if (PURCHASE_USERS.includes(email)) return 'purchase';
  if (email.includes('presales') || email.includes('pre.sales') || email.includes('solutions')) return 'presales';
@@ -1323,7 +1323,7 @@ async function runSLAEngine() {
    }
 
    // SLA enforcement: 72h window for presales response/proposal
-   const presalesActiveStages = ['Assigned to Presales', 'Awaiting Sales Ops Pricing', 'Pricing Returned to Presales'];
+   const presalesActiveStages = ['Assigned to Presales', 'Awaiting Purchase Costing', 'Costing Returned to Presales'];
    const hasProposal = !!(opp.finalPricingProposal || '').trim();
    if (hasProposal && opp.workflowStage !== 'Final Proposal Shared') {
     opp.workflowStage = 'Final Proposal Shared';
@@ -2247,35 +2247,36 @@ function renderWorkflow(filtered) {
  `;
  }
 
- function renderWorkflowActions(o, role) {
- if (role === 'sales' && (!o.salesOwner || o.salesOwner === currentUser) && ['Sales Review', 'Assigned Back to Sales'].includes(o.workflowStage || 'Sales Review')) {
- const canDirectToPurchase = normalizeEmail(currentUser) === 'rakesh.uniyal@dnispl.com' || isSupervisor;
- return `
- <button type="button" class="btn btn-success" onclick="event.stopPropagation();assignToPresales('${o.id}')">Assign to Presales</button>
- ${canDirectToPurchase ? `<button type="button" class="btn" onclick="event.stopPropagation();assignDirectToPurchase('${o.id}')">Assign Direct to Purchase</button>` : ''}
- `;
- }
- if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Assigned to Presales') {
- return `
- <button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPresalesPack('${o.id}')">Send BOQ to Sales Ops for Pricing
- </button>
- <button type="button" class="btn" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Solution/Proposal to Sales</button>
- `;
- }
- if (normalizeEmail(currentUser) === normalizeEmail(SALES_OPS_OWNER) && o.assignedSalesOps === currentUser && o.workflowStage === 'Awaiting Sales Ops Pricing')
+function renderWorkflowActions(o, role) {
+  if (role === 'sales' && (!o.salesOwner || o.salesOwner === currentUser) && ['Sales Review', 'Assigned Back to Sales'].includes(o.workflowStage || 'Sales Review')) {
+    const canDirectToPurchase = normalizeEmail(currentUser) === 'rakesh.uniyal@dnispl.com' || isSupervisor;
+    return `
+    <button type="button" class="btn btn-success" onclick="event.stopPropagation();assignToPresales('${o.id}')">Assign to Presales</button>
+    ${canDirectToPurchase ? `<button type="button" class="btn" onclick="event.stopPropagation();assignDirectToPurchase('${o.id}')">Assign Direct to Purchase</button>` : ''}
+    `;
+  }
 
- return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPurchaseCosting('${o.id}')">Return Pricing to Presales
- </button>`;
- }
- if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Pricing Returned to Presales')
+  if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Assigned to Presales') {
+    return `
+    <button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPresalesPack('${o.id}')">Send BOQ to Sales Ops for Pricing</button>
+    <button type="button" class="btn" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Solution/Proposal to Sales</button>
+    `;
+  }
 
- return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Final Proposal</button>`;
+  if (normalizeEmail(currentUser) === normalizeEmail(SALES_OPS_OWNER) && o.assignedSalesOps === currentUser && o.workflowStage === 'Awaiting Sales Ops Pricing') {
+    return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPurchaseCosting('${o.id}')">Return Pricing to Presales</button>`;
+  }
+
+  if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Pricing Returned to Presales') {
+    return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Final Proposal</button>`;
+  }
+
+  if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Presales Overdue') {
+    return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Final Proposal (Overdue)</button>`;
+  }
+
+  return '';
 }
- if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Presales Overdue') {
- return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Final Proposal (Overdue)</button>`;
- }
- return '';
- }
 function renderActivities(filtered) {
  const activities = getVisibleActivities(filtered.activities || []);
  
@@ -2368,7 +2369,7 @@ function renderDashboard(filtered) {
  ].filter(Boolean).sort().reverse()[0];
 
  const presalesQueue = filtered.opportunities.filter(o => o.workflowStage === 'Assigned to Presales');
- const purchaseQueue = filtered.opportunities.filter(o => o.workflowStage === 'Awaiting Sales Ops Pricing');
+ const purchaseQueue = filtered.opportunities.filter(o => o.workflowStage === 'Awaiting Purchase Costing');
  const overduePresales = filtered.opportunities.filter(o => isOverdue(o.presalesDueAt));
  const overduePurchase = filtered.opportunities.filter(o => isOverdue(o.purchaseDueAt));
  const duePresalesSoon = filtered.opportunities.filter(o => dueSoon(o.presalesDueAt, 12));
@@ -2716,7 +2717,7 @@ function openAddModal() {
  <textarea name="presalesQuestions" placeholder="Presales Questions">${opp?.presalesQuestions || ''}</textarea>
  <textarea name="presalesComments" placeholder="Presales Notes for Sales (client meeting prep)">${opp?.presalesComments || ''}</textarea>
  <textarea name="boq" placeholder="BOQ">${opp?.boq || ''}</textarea>
- <textarea name="purchaseCosting" placeholder="Sales Ops Pricing">${opp?.purchaseCosting || ''}</textarea>
+ <textarea name="purchaseCosting" placeholder="Purchase Costing">${opp?.purchaseCosting || ''}</textarea>
  <input class="input" type="datetime-local" name="costingTat" value="${opp?.costingTat ? opp.costingTat.slice(0,16) : ''}">
  <textarea name="finalPricingProposal" placeholder="Final Pricing Proposal">${opp?.finalPricingProposal || ''}</textarea>
  <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Expected Closure Date</label>
@@ -2724,9 +2725,8 @@ function openAddModal() {
  <select class="input" name="workflowStage">
  <option value="Sales Review" ${opp?.workflowStage === 'Sales Review' ? 'selected' : ''}>Sales Review</option>
  <option value="Assigned to Presales" ${opp?.workflowStage === 'Assigned to Presales' ? 'selected' : ''}>Assigned to Presales</option>
- <option value="Awaiting Sales Ops Pricing" ${opp?.workflowStage === 'Awaiting Sales Ops Pricing' ? 'selected' : ''}>Awaiting Sales Ops Pricing
- </option>
- <option value="Pricing Returned to Presales" ${opp?.workflowStage === 'Pricing Returned to Presales' ? 'selected' : ''}>Pricing Returned to Presales</option>
+ <option value="Awaiting Purchase Costing" ${opp?.workflowStage === 'Awaiting Purchase Costing' ? 'selected' : ''}>Awaiting Purchase Costing</option>
+ <option value="Costing Returned to Presales" ${opp?.workflowStage === 'Costing Returned to Presales' ? 'selected' : ''}>Costing Returned to Presales</option>
  <option value="Presales Overdue" ${opp?.workflowStage === 'Presales Overdue' ? 'selected' : ''}>Presales Overdue</option>
  <option value="Assigned Back to Sales" ${opp?.workflowStage === 'Assigned Back to Sales' ? 'selected' : ''}>Assigned Back to Sales</option>
  <option value="Sales Review (Client Meeting)" ${opp?.workflowStage === 'Sales Review (Client Meeting)' ? 'selected' : ''}>Sales Review (Client Meeting)</option>
@@ -3131,7 +3131,7 @@ async function assignDirectToPurchase(id) {
   purchaseDueAt: addHours(now, 24),
   salesSubmittedAt: now,
   assignmentDueAt: addHours(now, 4),
-  workflowStage: 'Awaiting Sales Ops Pricing'
+  workflowStage: 'Awaiting Purchase Costing'
  });
 }
 
@@ -3142,22 +3142,20 @@ async function submitPresalesPack(id) {
  const questions = prompt('Presales questions:', opp.presalesQuestions || '');
  const boq = prompt('Enter BOQ details:', opp.boq || '');
  const now = new Date().toISOString();
-if (!boq) {
+ if (!boq) {
  alert('BOQ is required.');
  return;
-}
-await updateOpportunityWorkflow(id, {
+ }
+ await updateOpportunityWorkflow(id, {
  presalesArchitecture: architecture || '',
  presalesQuestions: questions || '',
  boq,
- assignedPurchase: '',
- assignedSalesOps: SALES_OPS_OWNER,
+ assignedPurchase: PURCHASE_OWNER,
  purchaseAssignedAt: now,
  purchaseDueAt: addHours(now, 24),
- workflowStage: 'Awaiting Sales Ops Pricing'
-});
+ workflowStage: 'Awaiting Purchase Costing'
+ });
 }
-
 
 async function submitPurchaseCosting(id) {
  const opp = state.data.opportunities.find(o => o.id === id);
@@ -3174,8 +3172,7 @@ async function submitPurchaseCosting(id) {
  purchaseCosting: costing,
  costingTat: tatISO || opp.costingTat || '',
  costingReturnedAt: now,
- workflowStage: 'Pricing Returned to Presales'
-
+ workflowStage: 'Costing Returned to Presales'
  });
 }
 
