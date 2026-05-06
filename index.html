@@ -89,6 +89,7 @@ const SUPERVISOR_EMAIL = 'ashish.mehra@dnispl.com';
 const PASSWORD = 'crm2026'; // Simple password for demo
 const PRESALES_OWNER = 'vinod.v@dnispl.com';
 const PURCHASE_OWNER = 'niharika.s@dnispl.com';
+const SALES_OPS_OWNER = 'soumya.m@dnispl.com';
 const FINANCE_APPROVER = 'rakesh.uniyal@dnispl.com';
 const PRESALES_APPROVER = 'vinod.v@dnispl.com';
 const IMPLEMENTATION_APPROVER = 'pokhraj.yadav@dnispl.com';
@@ -622,7 +623,7 @@ function applyLoggedInUi() {
  document.getElementById('loginScreen').style.display = 'none';
  document.getElementById('mainScreen').style.display = 'block';
  document.getElementById('userEmail').textContent = currentUser;
- const roleLabel = { supervisor: 'SUPERVISOR', sales: 'SALESPERSON', presales: 'PRESALES', purchase: 'PURCHASE' };
+ const roleLabel = { supervisor: 'SUPERVISOR', sales: 'SALESPERSON', presales: 'PRESALES', purchase: 'PURCHASE', salesops: 'SALES OPS' };
  document.getElementById('userRole').textContent = roleLabel[getUserRole()] || 'SALESPERSON';
  document.getElementById('fabBtn').style.display = 'block';
  const actions = document.getElementById('userActions');
@@ -689,7 +690,11 @@ async function restoreSessionIfAny() {
 
 
 function getViewerRoleForApi() {
- return isSupervisor ? 'supervisor' : 'account_manager';
+ if (isSupervisor) return 'supervisor';
+ const role = getUserRole();
+ if (role === 'presales') return 'presales';
+ if (role === 'purchase') return 'purchase';
+ return 'account_manager';
 }
 
 function normalizeEmail(value) {
@@ -723,9 +728,11 @@ function getOpportunityManagerEmails(opp) {
  const accountMgr = getAccountManagerEmailByAccountId(opp.accountId);
  const salesMgr = normalizeEmail(opp.salesOwner || opp.owner);
  const ownerMgr = normalizeEmail(opp.owner);
+ const salesOpsMgr = normalizeEmail(opp.assignedSalesOps);
  if (accountMgr) set.add(accountMgr);
  if (salesMgr) set.add(salesMgr);
  if (ownerMgr) set.add(ownerMgr);
+ if (salesOpsMgr) set.add(salesOpsMgr);
  return Array.from(set);
 }
 
@@ -903,7 +910,9 @@ function normalizeOpportunityFromApi(o) {
   workflowStage: o.workflow_stage || o.workflowStage || 'Sales Review',
   assignedPresales: o.assigned_presales || o.assignedPresales || '',
   assignedPurchase: o.assigned_purchase || o.assignedPurchase || '',
+  assignedSalesOps: o.assigned_salesops || o.assignedSalesOps || '',
   salesComments: o.sales_comments || o.salesComments || '',
+  salesOpsComments: o.sales_ops_comments || o.salesOpsComments || '',
   presalesComments: o.presales_comments || o.presalesComments || '',
   closureDate: o.closure_date || o.closureDate || o.expected_closure_date || o.expectedClosureDate || '',
   requirements: o.requirements || '',
@@ -915,6 +924,8 @@ function normalizeOpportunityFromApi(o) {
   finalPricingProposal: o.final_pricing_proposal || o.finalPricingProposal || '',
   presalesAssignedAt: o.presales_assigned_at || o.presalesAssignedAt || '',
   presalesDueAt: o.presales_due_at || o.presalesDueAt || '',
+  salesOpsAssignedAt: o.salesops_assigned_at || o.salesOpsAssignedAt || '',
+  salesOpsDueAt: o.salesops_due_at || o.salesOpsDueAt || '',
   purchaseAssignedAt: o.purchase_assigned_at || o.purchaseAssignedAt || '',
   purchaseDueAt: o.purchase_due_at || o.purchaseDueAt || '',
   costingReturnedAt: o.costing_returned_at || o.costingReturnedAt || '',
@@ -922,6 +933,8 @@ function normalizeOpportunityFromApi(o) {
   assignmentDueAt: o.assignment_due_at || o.assignmentDueAt || '',
   salesSubmittedAt: o.sales_submitted_at || o.salesSubmittedAt || '',
   presalesEscalatedAt: o.presales_escalated_at || o.presalesEscalatedAt || '',
+  dealType: o.deal_type || o.dealType || '',
+  oemPricingRequired: String(o.oem_pricing_required || o.oemPricingRequired || '').toLowerCase() === 'true' || String(o.oem_pricing_required || o.oemPricingRequired || '') === '1',
   intakeProblemStatement: o.intake_problem_statement || o.intakeProblemStatement || '',
   intakeWhyNow: o.intake_why_now || o.intakeWhyNow || '',
   intakeBusinessImpact: o.intake_business_impact || o.intakeBusinessImpact || '',
@@ -1310,7 +1323,7 @@ async function runSLAEngine() {
    }
 
    // SLA enforcement: 72h window for presales response/proposal
-   const presalesActiveStages = ['Assigned to Presales', 'Awaiting Purchase Costing', 'Costing Returned'];
+   const presalesActiveStages = ['Assigned to Presales', 'Awaiting Purchase Costing', 'Costing Returned to Presales'];
    const hasProposal = !!(opp.finalPricingProposal || '').trim();
    if (hasProposal && opp.workflowStage !== 'Final Proposal Shared') {
     opp.workflowStage = 'Final Proposal Shared';
@@ -1719,6 +1732,7 @@ function getFilteredData() {
   } else {
    const opportunities = state.data.opportunities.filter(o => {
     if (normalizeEmail(o.owner) === normalizeEmail(currentUser)) return true;
+    if (normalizeEmail(o.assignedSalesOps) === normalizeEmail(currentUser)) return true;
     if (myAccountIds.has(String(o.accountId))) return true;
     return false;
    });
@@ -2208,6 +2222,7 @@ function renderWorkflow(filtered) {
  <div style="font-size:0.85em; line-height:1.5; opacity:0.9">
  <b>Sales:</b> ${formatUserLabel(o.salesOwner || o.owner || 'NA')}<br>
  <b>Presales:</b> ${formatUserLabel(o.assignedPresales || 'Unassigned')}<br>
+ <b>Sales Ops:</b> ${formatUserLabel(o.assignedSalesOps || 'Unassigned')}<br>
  <b>Purchase:</b> ${formatUserLabel(o.assignedPurchase || 'Unassigned')}<br>
  <div style="margin-top:8px">${slaBadge('Presales', o.presalesDueAt)} ${slaBadge('Purchase', o.purchaseDueAt)}</div>
  <div style="margin-top:8px">
@@ -2233,7 +2248,7 @@ function renderWorkflow(filtered) {
  }
 
  function renderWorkflowActions(o, role) {
- if (role === 'sales' && (!o.salesOwner || o.salesOwner === currentUser) && (o.workflowStage || 'Sales Review') === 'Sales Review') {
+ if (role === 'sales' && (!o.salesOwner || o.salesOwner === currentUser) && ['Sales Review', 'Assigned Back to Sales'].includes(o.workflowStage || 'Sales Review')) {
  const canDirectToPurchase = normalizeEmail(currentUser) === 'rakesh.uniyal@dnispl.com' || isSupervisor;
  return `
  <button type="button" class="btn btn-success" onclick="event.stopPropagation();assignToPresales('${o.id}')">Assign to Presales</button>
@@ -2249,9 +2264,9 @@ function renderWorkflow(filtered) {
  if (role === 'purchase' && o.assignedPurchase === currentUser && o.workflowStage === 'Awaiting Purchase Costing') {
  return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPurchaseCosting('${o.id}')">Return Costing</button>`;
  }
- if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Costing Returned') {
+ if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Costing Returned to Presales') {
  return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Final Proposal</button>`;
- }
+}
  if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Presales Overdue') {
  return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Final Proposal (Overdue)</button>`;
  }
@@ -2615,8 +2630,9 @@ function openAddModal() {
  const filtered = getFilteredData();
  const editorRole = getUserRole();
  const isPresalesEditor = editorRole === 'presales';
- const accountRequiredAttr = isPresalesEditor ? '' : 'required';
- const accountLabel = isPresalesEditor ? 'Select Account (optional)' : 'Select Account *';
+ const isSalesOpsEditor = editorRole === 'salesops';
+ const accountRequiredAttr = (isPresalesEditor || isSalesOpsEditor) ? '' : 'required';
+ const accountLabel = (isPresalesEditor || isSalesOpsEditor) ? 'Select Account (optional)' : 'Select Account *';
  document.getElementById('modal').innerHTML = `
  <div class="modal-content">
  <h2>${opp ? 'Edit' : 'Add'} Opportunity</h2>
@@ -2640,6 +2656,14 @@ function openAddModal() {
  <option value="Closed Won" ${opp?.stage === 'Closed Won' ? 'selected' : ''}>Closed Won</option>
  <option value="Closed Lost" ${opp?.stage === 'Closed Lost' ? 'selected' : ''}>Closed Lost</option>
  </select>
+
+ <select class="input" name="dealType">
+ <option value="">Select Deal Type</option>
+ <option value="Hardware" ${opp?.dealType === 'Hardware' ? 'selected' : ''}>Hardware</option>
+ <option value="Software" ${opp?.dealType === 'Software' ? 'selected' : ''}>Software</option>
+ <option value="Managed Services" ${opp?.dealType === 'Managed Services' ? 'selected' : ''}>Managed Services</option>
+ <option value="Mixed" ${opp?.dealType === 'Mixed' ? 'selected' : ''}>Mixed</option>
+ </select>
  
  <select class="input" name="competitionPosition">
  <option value="">Competition Position</option>
@@ -2653,11 +2677,16 @@ function openAddModal() {
  <option value="">Assign Presales</option>
  ${getTeamUsers('presales').map(u => `<option value="${u}" ${opp?.assignedPresales === u ? 'selected' : ''}>${u}</option>`).join('')}
  </select>
+ <select class="input" name="assignedSalesOps">
+ <option value="">Assign Sales Ops / Pricing</option>
+ ${getTeamUsers('salesops').map(u => `<option value="${u}" ${opp?.assignedSalesOps === u ? 'selected' : ''}>${u}</option>`).join('')}
+ </select>
  <select class="input" name="assignedPurchase">
  <option value="">Assign Purchase</option>
  ${getTeamUsers('purchase').map(u => `<option value="${u}" ${opp?.assignedPurchase === u ? 'selected' : ''}>${u}</option>`).join('')}
  </select>
  <textarea name="salesComments" placeholder="Sales Comments">${opp?.salesComments || ''}</textarea>
+ <textarea name="salesOpsComments" placeholder="Sales Ops / OEM Pricing Notes">${opp?.salesOpsComments || ''}</textarea>
  <textarea name="requirements" placeholder="Customer Requirements">${opp?.requirements || ''}</textarea>
  <div style="margin:12px 0 6px; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.14); font-size:0.9em;">
  🧩 <strong>Presales Intake (Filled by Sales)</strong><br>
@@ -2692,8 +2721,9 @@ function openAddModal() {
  <option value="Sales Review" ${opp?.workflowStage === 'Sales Review' ? 'selected' : ''}>Sales Review</option>
  <option value="Assigned to Presales" ${opp?.workflowStage === 'Assigned to Presales' ? 'selected' : ''}>Assigned to Presales</option>
  <option value="Awaiting Purchase Costing" ${opp?.workflowStage === 'Awaiting Purchase Costing' ? 'selected' : ''}>Awaiting Purchase Costing</option>
- <option value="Costing Returned" ${opp?.workflowStage === 'Costing Returned' ? 'selected' : ''}>Costing Returned</option>
+ <option value="Costing Returned to Presales" ${opp?.workflowStage === 'Costing Returned to Presales' ? 'selected' : ''}>Costing Returned to Presales</option>
  <option value="Presales Overdue" ${opp?.workflowStage === 'Presales Overdue' ? 'selected' : ''}>Presales Overdue</option>
+ <option value="Assigned Back to Sales" ${opp?.workflowStage === 'Assigned Back to Sales' ? 'selected' : ''}>Assigned Back to Sales</option>
  <option value="Sales Review (Client Meeting)" ${opp?.workflowStage === 'Sales Review (Client Meeting)' ? 'selected' : ''}>Sales Review (Client Meeting)</option>
  <option value="Final Proposal Shared" ${opp?.workflowStage === 'Final Proposal Shared' ? 'selected' : ''}>Final Proposal Shared</option>
  </select>
@@ -3019,14 +3049,16 @@ function getTeamUsers(role) {
     }
     const opportunities = state.data.opportunities || [];
     opportunities.forEach(o => {
-        if (role === 'presales' && o.assignedPresales) users.add(o.assignedPresales);
-        if (role === 'purchase' && o.assignedPurchase) users.add(o.assignedPurchase);
+    if (role === 'presales' && o.assignedPresales) users.add(o.assignedPresales);
+    if (role === 'purchase' && o.assignedPurchase) users.add(o.assignedPurchase);
+    if (role === 'salesops' && o.assignedSalesOps) users.add(o.assignedSalesOps);
     });
     if (role === 'presales') users.add(PRESALES_OWNER);
     if (role === 'purchase') {
         users.add('purchase@company.com');
         users.add(PURCHASE_OWNER);
     }
+    if (role === 'salesops') users.add(SALES_OPS_OWNER);
     return Array.from(users);
 }
 
@@ -3057,14 +3089,20 @@ async function assignToPresales(id) {
  const now = new Date().toISOString();
  const comments = prompt('Sales comments for presales:', opp.salesComments || '');
  const requirements = prompt('Customer requirements:', opp.requirements || '');
+ const normalizedDealType = String(opp.dealType || '').trim().toLowerCase();
+ const needsSalesOps = ['hardware', 'mixed'].includes(normalizedDealType) || true;
  await updateOpportunityWorkflow(id, {
  assignedPresales: PRESALES_OWNER,
+ assignedSalesOps: needsSalesOps ? SALES_OPS_OWNER : (opp.assignedSalesOps || ''),
  salesComments: comments || '',
  requirements: requirements || '',
  presalesAssignedAt: now,
  presalesDueAt: addHours(now, 72),
+ salesOpsAssignedAt: now,
+ salesOpsDueAt: addHours(now, 24),
  assignmentDueAt: addHours(now, 4),
  salesSubmittedAt: now,
+ oemPricingRequired: needsSalesOps,
  workflowStage: 'Assigned to Presales'
  });
 }
@@ -3129,7 +3167,7 @@ async function submitPurchaseCosting(id) {
  purchaseCosting: costing,
  costingTat: tatISO || opp.costingTat || '',
  costingReturnedAt: now,
- workflowStage: 'Costing Returned'
+ workflowStage: 'Costing Returned to Presales'
  });
 }
 
@@ -3148,7 +3186,7 @@ async function submitFinalPricing(id) {
     finalPricingProposal: proposal || opp.finalPricingProposal || '',
     presalesComments: notes || '',
     finalProposalAt: now,
-    workflowStage: 'Sales Review (Client Meeting)'
+    workflowStage: 'Assigned Back to Sales'
   });
 }
 
@@ -3259,6 +3297,7 @@ async function saveOpportunity(e, id) {
  const nowIso = new Date().toISOString();
  const editorRole = getUserRole();
  const isPresalesEditor = editorRole === 'presales';
+ const isSalesOpsEditor = editorRole === 'salesops';
  const data = Object.fromEntries(new FormData(e.target));
  data.value = parseFloat(data.value || 0);
  data.owner = existing?.owner || currentUser;
@@ -3267,9 +3306,11 @@ async function saveOpportunity(e, id) {
  data.modifiedDate = nowIso;
  data.workflowStage = data.workflowStage || existing?.workflowStage || 'Sales Review';
  data.assignedPresales = data.assignedPresales || existing?.assignedPresales || '';
- data.presalesComments = data.presalesComments || existing?.presalesComments || '';
- data.assignedPurchase = data.assignedPurchase || existing?.assignedPurchase || '';
- data.salesComments = data.salesComments || existing?.salesComments || '';
+ data.assignedSalesOps = data.assignedSalesOps || existing?.assignedSalesOps || '';
+  data.presalesComments = data.presalesComments || existing?.presalesComments || '';
+  data.assignedPurchase = data.assignedPurchase || existing?.assignedPurchase || '';
+  data.salesComments = data.salesComments || existing?.salesComments || '';
+ data.salesOpsComments = data.salesOpsComments || existing?.salesOpsComments || '';
  data.requirements = data.requirements || existing?.requirements || '';
  data.presalesArchitecture = data.presalesArchitecture || existing?.presalesArchitecture || '';
  data.presalesQuestions = data.presalesQuestions || existing?.presalesQuestions || '';
@@ -3296,9 +3337,22 @@ async function saveOpportunity(e, id) {
  data.salesSubmittedAt = existing?.salesSubmittedAt || nowIso;
  data.assignmentDueAt = existing?.assignmentDueAt || addHours(data.salesSubmittedAt, 4);
  data.presalesDueAt = existing?.presalesDueAt || addHours(data.salesSubmittedAt, 72);
+ data.salesOpsAssignedAt = existing?.salesOpsAssignedAt || '';
+ data.salesOpsDueAt = existing?.salesOpsDueAt || '';
  data.presalesEscalatedAt = existing?.presalesEscalatedAt || '';
- data.closureDate = data.closureDate || existing?.closureDate || '';
- if (!isPresalesEditor) {
+ data.dealType = data.dealType || existing?.dealType || '';
+ data.oemPricingRequired = existing?.oemPricingRequired ? '1' : '';
+  data.closureDate = data.closureDate || existing?.closureDate || '';
+ const normalizedDealType = String(data.dealType || '').trim().toLowerCase();
+ const routedToPresales = String(data.workflowStage || '').trim() === 'Assigned to Presales' || !!String(data.assignedPresales || '').trim();
+ const requiresSalesOps = ['hardware', 'mixed'].includes(normalizedDealType) || routedToPresales || !!String(data.assignedSalesOps || '').trim();
+ if (requiresSalesOps) {
+  data.assignedSalesOps = SALES_OPS_OWNER;
+  data.oemPricingRequired = '1';
+  data.salesOpsAssignedAt = data.salesOpsAssignedAt || nowIso;
+  data.salesOpsDueAt = data.salesOpsDueAt || addHours(nowIso, 24);
+ }
+ if (!isPresalesEditor && !isSalesOpsEditor) {
   const missingIntake = OPPORTUNITY_INTAKE_REQUIRED_FIELDS
    .filter(f => !(data[f.key] || '').trim())
    .map(f => f.label);
