@@ -2368,7 +2368,7 @@ function renderDashboard(filtered) {
  ].filter(Boolean).sort().reverse()[0];
 
  const presalesQueue = filtered.opportunities.filter(o => o.workflowStage === 'Assigned to Presales');
- const purchaseQueue = filtered.opportunities.filter(o => o.workflowStage === 'Awaiting Purchase Costing');
+ const purchaseQueue = filtered.opportunities.filter(o => o.workflowStage === 'Awaiting Sales Ops Pricing');
  const overduePresales = filtered.opportunities.filter(o => isOverdue(o.presalesDueAt));
  const overduePurchase = filtered.opportunities.filter(o => isOverdue(o.purchaseDueAt));
  const duePresalesSoon = filtered.opportunities.filter(o => dueSoon(o.presalesDueAt, 12));
@@ -3131,7 +3131,7 @@ async function assignDirectToPurchase(id) {
   purchaseDueAt: addHours(now, 24),
   salesSubmittedAt: now,
   assignmentDueAt: addHours(now, 4),
-  workflowStage: 'Awaiting Purchase Costing'
+  workflowStage: 'Awaiting Sales Ops Pricing'
  });
 }
 
