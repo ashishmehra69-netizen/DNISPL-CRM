@@ -800,29 +800,19 @@ def send_presales_escalation_email(row, presales_due_iso: str) -> None:
 
 
 def send_presales_assignment_email(opportunity_name: str, opp_id: str, presales_email: str, presales_due_iso: str) -> None:
-    try:
-        target = str(presales_email or "").strip().lower()
+    target = (presales_email or "").strip().lower()
+    if "@" not in target:
+        return
+    subject = f"[CRM] New Opportunity Assigned: {opportunity_name or opp_id}"
+    body = (
+        f"Opportunity: {opportunity_name or ''}\n"
+        f"Opportunity ID: {opp_id}\n"
+        f"Assigned To (Presales): {target}\n"
+        f"Presales Due At (72h SLA): {presales_due_iso}\n\n"
+        "Please review requirements and submit solution/proposal within SLA."
+    )
+    send_email_smtp([target], subject, body)
 
-        if "@" not in target:
-            print("[CRM EMAIL] Invalid presales email")
-            return
-
-        subject = f"[CRM] New Opportunity Assigned: {opportunity_name or opp_id}"
-
-        body = (
-            f"Opportunity: {opportunity_name or ''}\n"
-            f"Opportunity ID: {opp_id}\n"
-            f"Assigned To (Presales): {target}\n"
-            f"Presales Due At (72h SLA): {presales_due_iso}\n\n"
-            "Please review requirements and submit solution/proposal within SLA."
-        )
-
-        send_email_smtp([target], subject, body)
-
-        print(f"[CRM EMAIL] Presales email sent to {target}")
-
-    except Exception as e:
-        print(f"[CRM EMAIL ERROR] Presales assignment failed: {str(e)}")
 
 def send_opportunity_assignment_email(opportunity_name: str, opp_id: str, presales_email: str, sales_email: str, presales_due_iso: str, account_manager_email: str = "") -> None:
     presales_target = (presales_email or "").strip().lower()
@@ -2000,55 +1990,30 @@ def upsert_opportunity():
             )
         )
 
-if presales_just_assigned:
-    try:
-        due_iso = str(payload.get("presales_due_at") or "").strip()
+        if presales_just_assigned:
+            due_iso = (payload.get("presales_due_at") or "").strip()
+            if not due_iso:
+                base_dt = parse_iso_dt((payload.get("sales_submitted_at") or "").strip()) or datetime.now(timezone.utc)
+                due_iso = (base_dt + timedelta(hours=72)).isoformat().replace("+00:00", "Z")
 
-        if not due_iso:
-            base_dt = parse_iso_dt(
-                str(payload.get("sales_submitted_at") or "").strip()
-            ) or datetime.now(timezone.utc)
-
-            due_iso = (
-                base_dt + timedelta(hours=72)
-            ).isoformat().replace("+00:00", "Z")
-
-        account_manager_email = ""
-
-        acc_id = str(payload.get("account_id") or "").strip()
-
-        if acc_id:
-            try:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur_am:
-                    cur_am.execute(
-                        """
-                        SELECT u.email
-                        FROM accounts a
-                        LEFT JOIN users u ON u.id = a.account_manager_id
-                        WHERE a.id = %s
-                        """,
-                        (acc_id,)
-                    )
-
-                    am_row = cur_am.fetchone()
-
-                    if am_row:
-                        account_manager_email = str(
-                            am_row.get("email") or ""
-                        ).strip().lower()
-
-            except Exception as e:
-                print(f"[CRM ACCOUNT MANAGER LOOKUP ERROR] {e}")
-
-        send_presales_assignment_email(
-            payload.get("name") or "",
-            opp_id,
-            payload.get("assigned_presales") or "",
-            due_iso,
-        )
-
-    except Exception as e:
-        print(f"[PRESALES FLOW ERROR] {e}")
+            account_manager_email = ""
+            acc_id = (payload.get("account_id") or "").strip()
+            if acc_id:
+                try:
+                    with conn.cursor(cursor_factory=RealDictCursor) as cur_am:
+                        cur_am.execute(
+                            """
+                            SELECT u.email FROM accounts a
+                            LEFT JOIN users u ON u.id = a.account_manager_id
+                            WHERE CAST(a.id AS TEXT) = %s
+                            """,
+                            (acc_id,),
+                        )
+                        am_row = cur_am.fetchone()
+                        if am_row:
+                            account_manager_email = (am_row.get("email") or "").strip().lower()
+                except Exception as e:
+                    print(f"[CRM] Could not fetch account manager for email CC: {e}")
 
             send_opportunity_assignment_email(
                 payload.get("name") or "",
@@ -2075,7 +2040,7 @@ if presales_just_assigned:
             or str(payload.get("oem_pricing_required") or "").lower() in ("true", "1")
         ):
             account_manager_email = ""
-            acc_id = str(payload.get("account_id") or "").strip()
+            acc_id = (payload.get("account_id") or "").strip()
             if acc_id:
                 try:
                     with conn.cursor(cursor_factory=RealDictCursor) as cur_am:
