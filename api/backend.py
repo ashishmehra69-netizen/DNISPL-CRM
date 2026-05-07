@@ -1922,8 +1922,8 @@ def upsert_opportunity():
                         payload["assigned_purchase"], payload["sales_comments"], payload["sales_ops_comments"], payload["requirements"],
                         payload["presales_architecture"], payload["presales_questions"], payload["boq"],
                         payload["purchase_costing"], payload["costing_tat"], payload["final_pricing_proposal"],
-                        payload["presales_assigned_at"], payload["presales_due_at"], payload["salesops_assigned_at"], payload["salesops_due_at"], payload["purchase_assigned_at"],
-                        payload["purchase_due_at"], payload["costing_returned_at"], payload["final_proposal_at"],
+                        payload["presales_assigned_at"], payload["presales_due_at"], payload["salesops_assigned_at"], payload["salesops_due_at"],
+                        payload["purchase_assigned_at"], payload["purchase_due_at"], payload["costing_returned_at"], payload["final_proposal_at"],
                         payload["assignment_due_at"], payload["sales_submitted_at"], payload["presales_escalated_at"], payload["oem_pricing_required"],
                         payload["intake_problem_statement"], payload["intake_why_now"], payload["intake_business_impact"], payload["intake_current_state"],
                         payload["intake_budget_range"], payload["intake_decision_timeline"], payload["intake_risk_if_not_solved"],
@@ -1935,7 +1935,7 @@ def upsert_opportunity():
                     ),
                 )
                 status = "updated"
-            else:
+           else:
                 cur.execute(
                     """
                     INSERT INTO opportunities (
@@ -1970,8 +1970,8 @@ def upsert_opportunity():
                         payload["assigned_purchase"], payload["sales_comments"], payload["sales_ops_comments"], payload["requirements"],
                         payload["presales_architecture"], payload["presales_questions"], payload["boq"],
                         payload["purchase_costing"], payload["costing_tat"], payload["final_pricing_proposal"],
-                        payload["presales_assigned_at"], payload["presales_due_at"], payload["salesops_assigned_at"], payload["salesops_due_at"], payload["purchase_assigned_at"],
-                        payload["purchase_due_at"], payload["costing_returned_at"], payload["final_proposal_at"],
+                        payload["presales_assigned_at"], payload["presales_due_at"], payload["salesops_assigned_at"], payload["salesops_due_at"],
+                        payload["purchase_assigned_at"], payload["purchase_due_at"], payload["costing_returned_at"], payload["final_proposal_at"],
                         payload["assignment_due_at"], payload["sales_submitted_at"], payload["presales_escalated_at"], payload["oem_pricing_required"],
                         payload["intake_problem_statement"], payload["intake_why_now"], payload["intake_business_impact"], payload["intake_current_state"],
                         payload["intake_budget_range"], payload["intake_decision_timeline"], payload["intake_risk_if_not_solved"], payload["intake_key_stakeholders"],
