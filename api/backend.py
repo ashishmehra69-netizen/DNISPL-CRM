@@ -893,12 +893,13 @@ def enforce_opportunity_sla(conn, rows):
                 updates["presales_assigned_at"] = (
                     parse_iso_dt(row.get("presales_assigned_at")) or assignment_due
                 ).isoformat().replace("+00:00", "Z")
-                send_presales_assignment_email(
-                    row.get("name") or "",
-                    row.get("id") or "",
-                    updates["assigned_presales"],
-                    presales_due.isoformat().replace("+00:00", "Z"),
-                )
+                if not (row.get("presales_assigned_at") or "").strip():
+                    send_presales_assignment_email(
+                        row.get("name") or "",
+                        row.get("id") or "",
+                        updates["assigned_presales"],
+                        presales_due.isoformat().replace("+00:00", "Z"),
+                    )
 
             has_proposal = bool((row.get("final_pricing_proposal") or "").strip())
             if has_proposal and workflow_stage != "Final Proposal Shared":
@@ -1950,7 +1951,8 @@ def upsert_opportunity():
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, now(), now()
+                        %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, now(), now()
                     )
                     """,
                     (
@@ -1971,13 +1973,19 @@ def upsert_opportunity():
                 status = "created"
         conn.commit()
 
-        current_assigned = (payload.get("assigned_presales") or "").strip().lower()
-        current_salesops = (payload.get("assigned_salesops") or "").strip().lower()
         workflow_now = (payload.get("workflow_stage") or "").strip()
         sales_now = (payload.get("sales_owner") or payload.get("owner") or "").strip().lower()
 
+        current_assigned = (payload.get("assigned_presales") or "").strip().lower()
+        if workflow_now == "Assigned to Presales" and not current_assigned:
+            current_assigned = PRESALES_OWNER.strip().lower()
+
+        current_salesops = (payload.get("assigned_salesops") or "").strip().lower()
+        if workflow_now == "Assigned to Presales" and not current_salesops:
+            current_salesops = SALES_OPS_OWNER.strip().lower()
+
         # Fire email when:
-        # 1. Presales is assigned AND workflow just moved to "Assigned to Presales"
+        # 1. Workflow just moved to "Assigned to Presales" (manually or on create)
         # 2. OR presales assignee changed while already in that stage
         presales_just_assigned = (
             workflow_now == "Assigned to Presales"
