@@ -1,3295 +1,5945 @@
-import csv
-import json
-import base64
-import hashlib
-import hmac
-import urllib.parse
-import urllib.request
-import os
-import smtplib
-import threading
-import time
-from datetime import datetime, timedelta, timezone
-from email.message import EmailMessage
-from io import StringIO
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
-
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from flask import Flask, jsonify, request
-from werkzeug.exceptions import HTTPException
-
-
-def utc_now() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
-
-
-def parse_iso_dt(value: str):
-    s = (value or "").strip()
-    if not s:
-        return None
-    try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except Exception:
-        return None
-
-
-DATABASE_URL = (
-    os.environ.get("DATABASE_URL")
-    or os.environ.get("SUPABASE_DB_URL")
-    or os.environ.get("SUPABASE_DATABASE_URL")
-)
-PRESALES_OWNER = os.environ.get("PRESALES_OWNER", "vinod.v@dnispl.com")
-SALES_OPS_OWNER = os.environ.get("SALES_OPS_OWNER", "soumya.m@dnispl.com")
-SUPERVISOR_EMAIL = os.environ.get("SUPERVISOR_EMAIL", "ashish.mehra@dnispl.com").strip().lower()
-ESCALATION_EMAILS = [
-    e.strip().lower()
-    for e in os.environ.get("ESCALATION_EMAILS", "ashish.mehra@dnispl.com,a.gupta@dnispl.com").split(",")
-    if e.strip()
-]
-SMTP_HOST = os.environ.get("SMTP_HOST", "").strip()
-SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
-SMTP_USER = os.environ.get("SMTP_USER", "").strip()
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "").strip()
-SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER or "noreply@dnispl.com")
-
-MS_CLIENT_ID = os.environ.get("MS_CLIENT_ID", "").strip()
-MS_CLIENT_SECRET = os.environ.get("MS_CLIENT_SECRET", "").strip()
-MS_TENANT_ID = os.environ.get("MS_TENANT_ID", "common").strip() or "common"
-MS_REDIRECT_URI = os.environ.get("MS_REDIRECT_URI", "").strip()
-MS_OAUTH_SCOPES = os.environ.get("MS_OAUTH_SCOPES", "offline_access openid profile email Mail.Send")
-OAUTH_STATE_SECRET = os.environ.get("OAUTH_STATE_SECRET", os.environ.get("PASSWORD", "crm2026")).strip() or "crm2026"
-
-if not DATABASE_URL:
-    raise RuntimeError(
-        "DATABASE_URL is required (set it to your Supabase Postgres connection string)."
-    )
-
-
-def _strip_sslmode(url: str) -> str:
-    """Remove sslmode from the URL so we can pass it as a kwarg instead."""
-    parsed = urlparse(url)
-    query = dict(parse_qsl(parsed.query))
-    query.pop("sslmode", None)
-    return urlunparse(parsed._replace(query=urlencode(query)))
-
-
-DATABASE_URL = _strip_sslmode(DATABASE_URL)
-
-app = Flask(__name__)
-_db_init_done = False
-_db_init_lock = threading.Lock()
-_write_limits = {}
-_write_limits_lock = threading.Lock()
-
-
-@app.after_request
-def add_cors_headers(resp):
-    resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    return resp
-
-
-def get_conn():
-    last_exc = None
-    for attempt in range(2):
-        try:
-            return psycopg2.connect(
-                DATABASE_URL,
-                sslmode="require",
-                connect_timeout=3,
-                options="-c statement_timeout=30000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=10000",
-                application_name="dnispl-crm",
-                keepalives=1,
-                keepalives_idle=30,
-                keepalives_interval=10,
-                keepalives_count=3,
-            )
-        except Exception as exc:
-            last_exc = exc
-            time.sleep(0.2 * (attempt + 1))
-    raise last_exc
-
-
-def init_db() -> None:
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
-                    email TEXT UNIQUE,
-                    name TEXT,
-                    role TEXT DEFAULT 'account_manager',
-                    created_at TIMESTAMPTZ DEFAULT now()
-                );
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS accounts (
-                    id SERIAL PRIMARY KEY,
-                    account_name TEXT UNIQUE,
-                    account_manager_id INTEGER REFERENCES users(id),
-                    industry TEXT,
-                    tier TEXT,
-                    location TEXT,
-                    company_size TEXT,
-                    annual_spend TEXT,
-                    mode TEXT,
-                    suspect_q1 TEXT,
-                    suspect_q2 TEXT,
-                    suspect_q3 TEXT,
-                    suspect_q4 TEXT,
-                    suspect_q5 TEXT,
-                    suspect_q6 TEXT,
-                    suspect_q7 TEXT,
-                    suspect_q8 TEXT,
-                    suspect_q9 TEXT,
-                    suspect_q10 TEXT,
-                    suspect_score INTEGER DEFAULT 0,
-                    created_at TIMESTAMPTZ DEFAULT now(),
-                    updated_at TIMESTAMPTZ DEFAULT now()
-                );
-                """
-            )
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS industry TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS tier TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS location TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS company_size TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS annual_spend TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS mode TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q1 TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q2 TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q3 TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q4 TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q5 TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q6 TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q7 TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q8 TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q9 TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q10 TEXT;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_score INTEGER DEFAULT 0;")
-            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS account_manager_id INTEGER REFERENCES users(id);")
-            cur.execute(
-                """
-                DO $$
-                BEGIN
-                  IF EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema='public' AND table_name='accounts' AND column_name='account_manager'
-                  ) THEN
-                    INSERT INTO users (email, name, role, created_at)
-                    SELECT DISTINCT
-                      lower(trim(account_manager)) AS email,
-                      split_part(lower(trim(account_manager)), '@', 1) AS name,
-                      'account_manager',
-                      now()
-                    FROM accounts
-                    WHERE account_manager_id IS NULL
-                      AND account_manager IS NOT NULL
-                      AND trim(account_manager) <> ''
-                      AND position('@' in account_manager) > 1
-                    ON CONFLICT (email) DO NOTHING;
-
-                    UPDATE accounts a
-                    SET account_manager_id = u.id
-                    FROM users u
-                    WHERE a.account_manager_id IS NULL
-                      AND lower(trim(a.account_manager)) = lower(u.email);
-                  END IF;
-
-                  IF EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema='public' AND table_name='accounts' AND column_name='account_manager_email'
-                  ) THEN
-                    INSERT INTO users (email, name, role, created_at)
-                    SELECT DISTINCT
-                      lower(trim(account_manager_email)) AS email,
-                      split_part(lower(trim(account_manager_email)), '@', 1) AS name,
-                      'account_manager',
-                      now()
-                    FROM accounts
-                    WHERE account_manager_id IS NULL
-                      AND account_manager_email IS NOT NULL
-                      AND trim(account_manager_email) <> ''
-                      AND position('@' in account_manager_email) > 1
-                    ON CONFLICT (email) DO NOTHING;
-
-                    UPDATE accounts a
-                    SET account_manager_id = u.id
-                    FROM users u
-                    WHERE a.account_manager_id IS NULL
-                      AND lower(trim(a.account_manager_email)) = lower(u.email);
-                  END IF;
-                END $$;
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS activities (
-                    id TEXT PRIMARY KEY,
-                    type TEXT,
-                    subject TEXT,
-                    notes TEXT,
-                    date TEXT,
-                    owner TEXT,
-                    account_id TEXT,
-                    account_name TEXT,
-                    created_at TIMESTAMPTZ DEFAULT now(),
-                    updated_at TIMESTAMPTZ DEFAULT now()
-                );
-                """
-            )
-            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS type TEXT;")
-            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS subject TEXT;")
-            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS notes TEXT;")
-            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS date TEXT;")
-            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS owner TEXT;")
-            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS account_id TEXT;")
-            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS account_name TEXT;")
-            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();")
-            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();")
-            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS mom_sent_at TIMESTAMPTZ;")
-            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS mom_sent_to TEXT;")
-            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS mom_send_status TEXT;")
-            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS mom_send_error TEXT;")
-            cur.execute("ALTER TABLE activities ADD COLUMN IF NOT EXISTS mom_payload TEXT;")
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS leads (
-                    id TEXT PRIMARY KEY,
-                    name TEXT,
-                    company TEXT,
-                    email TEXT,
-                    phone TEXT,
-                    source TEXT,
-                    status TEXT,
-                    notes TEXT,
-                    owner TEXT,
-                    created_at TIMESTAMPTZ DEFAULT now(),
-                    updated_at TIMESTAMPTZ DEFAULT now()
-                );
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS contacts (
-                    id TEXT PRIMARY KEY,
-                    name TEXT,
-                    title TEXT,
-                    email TEXT,
-                    phone TEXT,
-                    role_type TEXT,
-                    influence_level TEXT,
-                    emotion TEXT,
-                    account_id TEXT,
-                    owner TEXT,
-                    created_at TIMESTAMPTZ DEFAULT now(),
-                    updated_at TIMESTAMPTZ DEFAULT now()
-                );
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS opportunities (
-                    id TEXT PRIMARY KEY,
-                    name TEXT,
-                    account_id TEXT,
-                    value NUMERIC DEFAULT 0,
-                    stage TEXT,
-                    deal_type TEXT,
-                    owner TEXT,
-                    sales_owner TEXT,
-                    workflow_stage TEXT,
-                    assigned_presales TEXT,
-                    assigned_salesops TEXT,
-                    assigned_purchase TEXT,
-                    sales_comments TEXT,
-                    sales_ops_comments TEXT,
-                    requirements TEXT,
-                    presales_architecture TEXT,
-                    presales_questions TEXT,
-                    boq TEXT,
-                    purchase_costing TEXT,
-                    costing_tat TEXT,
-                    final_pricing_proposal TEXT,
-                    presales_assigned_at TEXT,
-                    presales_due_at TEXT,
-                    salesops_assigned_at TEXT,
-                    salesops_due_at TEXT,
-                    purchase_assigned_at TEXT,
-                    purchase_due_at TEXT,
-                    costing_returned_at TEXT,
-                    final_proposal_at TEXT,
-                    assignment_due_at TEXT,
-                    sales_submitted_at TEXT,
-                    presales_escalated_at TEXT,
-                    oem_pricing_required BOOLEAN DEFAULT FALSE,
-                    intake_problem_statement TEXT,
-                    intake_why_now TEXT,
-                    intake_business_impact TEXT,
-                    intake_current_state TEXT,
-                    intake_budget_range TEXT,
-                    intake_decision_timeline TEXT,
-                    intake_risk_if_not_solved TEXT,
-                    intake_key_stakeholders TEXT,
-                    intake_in_scope TEXT,
-                    intake_out_of_scope TEXT,
-                    intake_current_environment TEXT,
-                    intake_pain_points TEXT,
-                    intake_compliance_requirements TEXT,
-                    intake_integration_requirements TEXT,
-                    intake_competitors TEXT,
-                    intake_win_strategy TEXT,
-                    created_at TIMESTAMPTZ DEFAULT now(),
-                    updated_at TIMESTAMPTZ DEFAULT now()
-                );
-                """
-            )
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS presales_escalated_at TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS deal_type TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS assigned_salesops TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS sales_ops_comments TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS salesops_assigned_at TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS salesops_due_at TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS oem_pricing_required BOOLEAN DEFAULT FALSE;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_problem_statement TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_why_now TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_business_impact TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_current_state TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_budget_range TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_decision_timeline TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_risk_if_not_solved TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_key_stakeholders TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_in_scope TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_out_of_scope TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_current_environment TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_pain_points TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_compliance_requirements TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_integration_requirements TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_competitors TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_win_strategy TEXT;")
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS aop_plans (
-                    account_id TEXT NOT NULL,
-                    fy_year TEXT NOT NULL,
-                    plan_data JSONB DEFAULT '{}'::jsonb,
-                    owner TEXT,
-                    created_at TIMESTAMPTZ DEFAULT now(),
-                    updated_at TIMESTAMPTZ DEFAULT now(),
-                    PRIMARY KEY (account_id, fy_year)
-                );
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS aop_actuals (
-                    account_id TEXT NOT NULL,
-                    fy_year TEXT NOT NULL,
-                    month TEXT NOT NULL,
-                    hardware NUMERIC DEFAULT 0,
-                    software NUMERIC DEFAULT 0,
-                    managed_services NUMERIC DEFAULT 0,
-                    owner TEXT,
-                    created_at TIMESTAMPTZ DEFAULT now(),
-                    updated_at TIMESTAMPTZ DEFAULT now(),
-                    PRIMARY KEY (account_id, fy_year, month)
-                );
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS user_passwords (
-                    email TEXT PRIMARY KEY,
-                    password TEXT,
-                    updated_at TIMESTAMPTZ DEFAULT now()
-                );
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS user_salary (
-                    email TEXT PRIMARY KEY,
-                    salary_data JSONB DEFAULT '{}'::jsonb,
-                    updated_at TIMESTAMPTZ DEFAULT now()
-                );
-                """
-            )
-            
-            # Performance indexes for concurrent access patterns.
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_manager_id ON accounts(account_manager_id);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_activities_owner ON activities(lower(owner));")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_activities_date ON activities(date);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_leads_owner ON leads(lower(owner));")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(lower(owner));")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_contacts_account_id ON contacts(account_id);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_owner ON opportunities(lower(owner));")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_sales_owner ON opportunities(lower(sales_owner));")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_assigned_presales ON opportunities(lower(assigned_presales));")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_assigned_salesops ON opportunities(lower(assigned_salesops));")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_assigned_purchase ON opportunities(lower(assigned_purchase));")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_account_id ON opportunities(account_id);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_aop_plans_fy ON aop_plans(fy_year);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_aop_actuals_fy ON aop_actuals(fy_year);")
-            # Create Ayushi and Mandeep if not exist
-            cur.execute("""INSERT INTO users (email, name, role, created_at) VALUES ('ayushi.v@dnispl.com','Ayushi V','account_manager',now()) ON CONFLICT (email) DO NOTHING;""")
-            cur.execute("""INSERT INTO users (email, name, role, created_at) VALUES ('mandeep.kaur@dnispl.com','Mandeep Kaur','account_manager',now()) ON CONFLICT (email) DO NOTHING;""")
-            cur.execute("""INSERT INTO user_passwords (email, password) VALUES ('ayushi.v@dnispl.com','crm2026') ON CONFLICT (email) DO NOTHING;""")
-            cur.execute("""INSERT INTO user_passwords (email, password) VALUES ('mandeep.kaur@dnispl.com','crm2026') ON CONFLICT (email) DO NOTHING;""")
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def ensure_db_initialized():
-    global _db_init_done
-    if _db_init_done:
-        return
-    with _db_init_lock:
-        if _db_init_done:
-            return
-        init_db()
-        _db_init_done = True
-
-
-@app.errorhandler(Exception)
-def _json_exception_handler(exc):
-    if isinstance(exc, HTTPException):
-        return jsonify({"error": exc.description}), exc.code
-    return jsonify({"error": f"internal server error: {exc}"}), 500
-
-
-@app.before_request
-def _ensure_init_once():
-    pass  # Schema already initialized
-
-
-def _client_ip() -> str:
-    xff = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-    if xff:
-        return xff
-    xrip = (request.headers.get("x-real-ip") or "").strip()
-    if xrip:
-        return xrip
-    return (request.remote_addr or "").strip()
-
-
-def _is_scanner_path(path: str) -> bool:
-    p = (path or "").lower()
-    if p.startswith("/wp-") or p.startswith("/wordpress") or p.startswith("/xmlrpc"):
-        return True
-    if p.endswith(".php") or "/wp-content/" in p or "/wp-admin/" in p:
-        return True
-    bad = ("/av.php", "/dx.php", "/ms-edit.php", "/admin.php")
-    return p in bad
-
-
-@app.before_request
-def _shield_scanner_noise_and_log():
-    path = request.path or ""
-    if _is_scanner_path(path):
-        print(
-            f"[BOT_BLOCK] ip={_client_ip()} method={request.method} path={path} "
-            f"ua={(request.headers.get('user-agent') or '-')[:160]}"
-        )
-        return jsonify({"error": "not found"}), 404
-
-
-def _rate_limit_write(route_key: str, per_60s: int = 40):
-    ip = _client_ip() or "unknown"
-    now = time.time()
-    key = f"{route_key}:{ip}"
-    with _write_limits_lock:
-        bucket = _write_limits.get(key, [])
-        bucket = [t for t in bucket if now - t < 60]
-        if len(bucket) >= per_60s:
-            return False, ip
-        bucket.append(now)
-        _write_limits[key] = bucket
-    return True, ip
-
-
-def compute_suspect_score(data: dict) -> int:
-    score = 0
-    for idx in range(1, 11):
-        if str(data.get(f"suspect_q{idx}") or "").strip():
-            score += 1
-    return score
-
-
-def _is_supervisor(viewer_role: str) -> bool:
-    return (viewer_role or "").strip().lower() in ("supervisor", "admin")
-
-
-def _normalize_email(value: str) -> str:
-    return (value or "").strip().lower()
-
-
-def _split_emails(value: str):
-    if not value:
-        return []
-    out = []
-    for part in str(value).replace(";", ",").split(","):
-        e = _normalize_email(part)
-        if e and "@" in e and e not in out:
-            out.append(e)
-    return out
-
-
-def _build_oauth_state(email: str) -> str:
-    payload = f"{_normalize_email(email)}|{int(time.time())}"
-    sig = hmac.new(OAUTH_STATE_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-    raw = f"{payload}|{sig}".encode("utf-8")
-    return base64.urlsafe_b64encode(raw).decode("utf-8")
-
-
-def _verify_oauth_state(state: str, max_age_sec: int = 1800) -> str:
-    try:
-        decoded = base64.urlsafe_b64decode((state or "").encode("utf-8")).decode("utf-8")
-        email, ts, sig = decoded.split("|", 2)
-        payload = f"{email}|{ts}"
-        expected = hmac.new(OAUTH_STATE_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(sig, expected):
-            return ""
-        if abs(time.time() - int(ts)) > max_age_sec:
-            return ""
-        return _normalize_email(email)
-    except Exception:
-        return ""
-
-
-def _http_form_post(url: str, form_data: dict):
-    body = urllib.parse.urlencode(form_data).encode("utf-8")
-    req = urllib.request.Request(url, data=body, method="POST")
-    req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def _http_json_request(url: str, method: str = "GET", data=None, headers=None):
-    payload = None if data is None else json.dumps(data).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, method=method.upper())
-    for k, v in (headers or {}).items():
-        req.add_header(k, v)
-    if data is not None and "Content-Type" not in {k.title(): v for k, v in (headers or {}).items()}:
-        req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        raw = resp.read().decode("utf-8")
-        return json.loads(raw) if raw else {}
-
-
-def _get_user_row_by_email(email: str):
-    email = _normalize_email(email)
-    if not email:
-        return None
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, email, name, role FROM users WHERE lower(email)=lower(%s)", (email,))
-            row = cur.fetchone()
-            if row:
-                return row
-            cur.execute(
-                "INSERT INTO users (email, name, role, created_at) VALUES (%s, %s, 'account_manager', now()) RETURNING id, email, name, role",
-                (email, email.split("@")[0]),
-            )
-            row = cur.fetchone()
-        conn.commit()
-        return row
-    finally:
-        conn.close()
-
-
-def _upsert_o365_tokens(user_id: int, email: str, token_data: dict):
-    conn = get_conn()
-    try:
-        expires_in = int(token_data.get("expires_in") or 3600)
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO user_o365_tokens (user_id, email, tenant_id, refresh_token, access_token, expires_at, connected_at, status)
-                VALUES (%s, %s, %s, %s, %s, now() + (%s || ' seconds')::interval, now(), 'active')
-                ON CONFLICT (user_id)
-                DO UPDATE SET
-                    email=EXCLUDED.email,
-                    tenant_id=EXCLUDED.tenant_id,
-                    refresh_token=EXCLUDED.refresh_token,
-                    access_token=EXCLUDED.access_token,
-                    expires_at=EXCLUDED.expires_at,
-                    connected_at=now(),
-                    status='active'
-                """,
-                (
-                    int(user_id),
-                    _normalize_email(email),
-                    MS_TENANT_ID,
-                    token_data.get("refresh_token") or "",
-                    token_data.get("access_token") or "",
-                    str(expires_in),
-                ),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _get_o365_token_row(email: str):
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT user_id, email, tenant_id, refresh_token, access_token, expires_at, status FROM user_o365_tokens WHERE lower(email)=lower(%s)",
-                (_normalize_email(email),),
-            )
-            return cur.fetchone()
-    finally:
-        conn.close()
-
-
-def _refresh_graph_token_if_needed(token_row: dict):
-    if not token_row:
-        raise ValueError("Microsoft 365 is not connected for this account manager")
-
-    expires_at = token_row.get("expires_at")
-    if expires_at and isinstance(expires_at, datetime):
-        if expires_at > datetime.now(timezone.utc) + timedelta(minutes=5):
-            return token_row.get("access_token") or ""
-
-    refresh_token = (token_row.get("refresh_token") or "").strip()
-    if not refresh_token:
-        raise ValueError("Refresh token missing. Reconnect Microsoft 365.")
-
-    token_url = f"https://login.microsoftonline.com/{MS_TENANT_ID}/oauth2/v2.0/token"
-    refreshed = _http_form_post(
-        token_url,
-        {
-            "client_id": MS_CLIENT_ID,
-            "client_secret": MS_CLIENT_SECRET,
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "redirect_uri": MS_REDIRECT_URI,
-            "scope": MS_OAUTH_SCOPES,
-        },
-    )
-
-    _upsert_o365_tokens(int(token_row["user_id"]), token_row.get("email") or "", refreshed)
-    return refreshed.get("access_token") or ""
-
-
-def _send_graph_mail(sender_email: str, to_emails, cc_emails, subject: str, html_body: str):
-    token_row = _get_o365_token_row(sender_email)
-    access_token = _refresh_graph_token_if_needed(token_row)
-    if not access_token:
-        raise ValueError("Could not get Microsoft access token")
-
-    payload = {
-        "message": {
-            "subject": subject,
-            "body": {"contentType": "HTML", "content": html_body},
-            "toRecipients": [{"emailAddress": {"address": e}} for e in to_emails],
-            "ccRecipients": [{"emailAddress": {"address": e}} for e in cc_emails],
-            "replyTo": [{"emailAddress": {"address": _normalize_email(sender_email)}}],
-        },
-        "saveToSentItems": True,
+<!DOCTYPE html>
+<html>
+<head>
+ <meta charset="UTF-8">
+ <link rel="icon" href="data:,">
+ <title>Sales CRM - Simple Version</title>
+ <style>
+ * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
+ body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; color: white; padding: 20px; }
+ .container { max-width: 1200px; margin: 0 auto; }
+ .header { text-align: center; padding: 30px 0; }
+ .header h1 { font-size: 2.5em; margin-bottom: 10px; }
+ .login-box { background: rgba(255,255,255,0.15); padding: 40px; border-radius: 15px; max-width: 400px; margin: 50px auto; text-align: center; }
+ .input { width: 100%; padding: 12px; margin: 10px 0; border-radius: 8px; border: none; font-size: 1em; }
+ .btn { background: white; color: #667eea; border: none; padding: 12px 30px; border-radius: 8px; cursor: pointer; font-weight: bold; margin: 10px 5px; font-size: 1em; }
+ .btn:hover { transform: translateY(-2px); transition: all 0.3s; }
+ .btn-success { background: #4ade80; color: white; }
+ .btn-danger { background: #ff4757; color: white; }
+ .tabs { display: flex; gap: 10px; margin: 20px 0; overflow-x: auto; }
+ .tab { padding: 12px 24px; background: rgba(255,255,255,0.1); border: none; color: white; cursor: pointer; border-radius: 8px; }
+ .tab.active { background: white; color: #667eea; font-weight: bold; }
+ .card { background: rgba(255,255,255,0.15); padding: 20px; border-radius: 12px; margin: 15px 0; }
+ .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; margin: 20px 0; }
+ .item-card { background: rgba(255,255,255,0.1); padding: 15px; border-radius: 10px; cursor: pointer; }
+ .item-card:hover { background: rgba(255,255,255,0.2); }
+ .fab { position: fixed; bottom: 30px; right: 30px; width: 60px; height: 60px; background: white; color: #667eea; border: none; border-radius: 50%; font-size: 2em; cursor: pointer; box-shadow: 0 5px 20px rgba(0,0,0,0.3); }
+ .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; overflow-y: auto; padding: 20px; }
+ .modal.show { display: block; }
+ .modal-content { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 15px; max-width: 600px; margin: 20px auto; }
+ .status { text-align: center; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 8px; margin: 10px 0; }
+ .tag { display: inline-block; padding: 4px 10px; background: rgba(255,255,255,0.2); border-radius: 12px; font-size: 0.85em; margin: 3px; }
+ .metric { background: rgba(255,255,255,0.1); padding: 20px; border-radius: 10px; text-align: center; }
+ .metric-value { font-size: 2em; font-weight: bold; margin: 10px 0; }
+ textarea { width: 100%; padding: 10px; margin: 10px 0; border-radius: 8px; border: none; min-height: 80px; }
+ select { width: 100%; padding: 12px; margin: 10px 0; border-radius: 8px; border: none; }
+ </style>
+</head>
+<body>
+ <div class="container">
+ <div class="header">
+ <h1>🚀 Sales CRM</h1>
+ <p>Simple & Reliable</p>
+ </div>
+ 
+ <div id="loginScreen" style="display:block">
+ <div class="login-box">
+ <h2 style="margin-bottom:20px">Sign In</h2>
+ <input type="email" class="input" id="emailInput" placeholder="Your Email" value="">
+ <input type="password" class="input" id="passwordInput" placeholder="Password" value="crm2026">
+ <button class="btn btn-success" onclick="login()">Sign In</button>
+ <div style="margin-top:20px; font-size:0.9em; opacity:0.8">
+ Password: crm2026<br>
+ Supervisor: ashish.mehra@dnispl.com
+ </div>
+ </div>
+ </div>
+
+ <div id="mainScreen" style="display:none">
+ <div class="status" id="status">Loading...</div>
+ <div class="card">
+ <div style="display:flex; justify-content:space-between; align-items:center">
+ <div>👤 <strong id="userEmail"></strong> <span class="tag" id="userRole"></span></div>
+ <div id="userActions" style="display:flex; gap:8px; align-items:center">
+ <button class="btn" onclick="logout()">Logout</button>
+ </div>
+ </div>
+ </div>
+ <div class="tabs" id="tabs"></div>
+ <div id="content"></div>
+ </div>
+ </div>
+ 
+ <button class="fab" id="fabBtn" onclick="openAddModal()" style="display:none">+</button>
+ <div class="modal" id="modal"></div>
+ <input type="file" id="accountsCsvInput" accept=".csv" style="display:none" onchange="handleAccountsCsv(event)">
+ <input type="file" id="leadsCsvInput" accept=".csv" style="display:none" onchange="handleLeadsCsv(event)">
+ <input type="file" id="oppsCsvInput" accept=".csv" style="display:none" onchange="handleOppsCsv(event)">
+ <input type="file" id="rfpScanInput" accept="image/*,application/pdf" style="display:none" onchange="handleRFPScan(event)">
+ <input type="file" id="wonPoScanInput" accept="image/*,application/pdf" style="display:none" onchange="handleWonPOScan(event)"> 
+
+ <script>
+ // ═══════════════════════════════════════════════════════════════
+ // CONFIGURATION - SIMPLE GOOGLE SHEETS BACKEND
+ // ═══════════════════════════════════════════════════════════════
+ 
+ const SPREADSHEET_ID = 'YOUR_GOOGLE_SHEET_ID_HERE';
+ const API_KEY = 'YOUR_GOOGLE_API_KEY_HERE';
+const SUPERVISOR_EMAIL = 'ashish.mehra@dnispl.com';
+const PASSWORD = 'crm2026'; // Simple password for demo
+const PRESALES_OWNER = 'vinod.v@dnispl.com';
+const PURCHASE_OWNER = 'soumya.m@dnispl.com';
+const SALES_OPS_OWNER = 'soumya.m@dnispl.com';
+const FINANCE_APPROVER = 'rakesh.uniyal@dnispl.com';
+const PRESALES_APPROVER = 'vinod.v@dnispl.com';
+const IMPLEMENTATION_APPROVER = 'pokhraj.yadav@dnispl.com';
+const CEO_APPROVERS = ['ashish.mehra@dnispl.com', 'rakesh.uniyal@dnispl.com'];
+
+const PO_APPROVAL_CHAIN = [
+  { key: 'presales', label: 'Presales Approval', email: 'vinod.v@dnispl.com', role: 'Presales Head' },
+  { key: 'finance', label: 'Finance Approval', email: 'rakesh.uniyal@dnispl.com', role: 'Finance' },
+  { key: 'implementation', label: 'Implementation Approval', email: 'pokhraj.yadav@dnispl.com', role: 'Implementation Head' },
+  { key: 'ceo', label: 'P&L / CEO Approval', email: 'ashish.mehra@dnispl.com', role: 'CEO', alternates: ['rakesh.uniyal@dnispl.com'] }
+];
+const ESCALATION_EMAILS = ['ashish.mehra@dnispl.com', 'a.gupta@dnispl.com'];
+const OPPORTUNITY_INTAKE_REQUIRED_FIELDS = [
+ { key: 'intakeProblemStatement', label: 'Problem Statement' },
+ { key: 'intakeWhyNow', label: 'Why Now (Trigger Event)' },
+ { key: 'intakeBusinessImpact', label: 'Business Impact' },
+ { key: 'intakeCurrentState', label: 'Current State Summary' },
+ { key: 'intakeBudgetRange', label: 'Budget Range' },
+ { key: 'intakeDecisionTimeline', label: 'Decision Timeline' }
+];
+const SALES_TEAM_USERS = ['rakesh.uniyal@dnispl.com', 'om.prakash@dnispl.com', 'ankit.j@dnispl.com'];
+const SALES_DROPDOWN_BLOCKLIST = new Set([
+  'uttkarsha.j@dnispl.com',
+  'shasank.raturi@dnispl.com',
+  'shashank.raturi@dnispl.com'
+]);
+// Emails that can assign leads to ANY sales person
+const LEAD_ASSIGN_PRIVILEGED_USERS = [
+    'vinod.v@dnispl.com',
+    'a.gupta@dnispl.com',
+    'ashish.mehra@dnispl.com',
+    'rakesh.uniyal@dnispl.com'
+];
+const BUILD_VERSION = '2026-03-10-01';
+const SUSPECT_QUESTIONS = [
+ 'What is your organization primary line of business?',
+ 'What is your approximate annual turnover?',
+ 'How many employees do you have?',
+ 'How many locations / branches / plants do you operate?',
+ 'Is your IT centralized or distributed today?',
+ 'Do you have an in-house IT team? If yes, what is its size?',
+ 'Who currently manages your IT infrastructure?',
+ 'What major platforms are you currently using?',
+ 'When was your infrastructure last upgraded?',
+ 'What recurring IT challenges are you facing today?'
+];
+const ACCOUNT_OWNER_MAP = {
+    'Vishal Pipes Limited': 'Om.prakash@dnispl.com',
+  'Uflex': 'Om.prakash@dnispl.com',
+  'TECHBOOKS INTERNATIONAL (Aptara)': 'Om.prakash@dnispl.com',
+  'SIMPA ENERGY INDIA PVT LTD': 'Om.prakash@dnispl.com',
+  'SANSPAREILS GREENLANDS (SG)': 'Om.prakash@dnispl.com',
+  'SANGAM INDIA LTD': 'Om.prakash@dnispl.com',
+  'Rose IT Solutions': 'Om.prakash@dnispl.com',
+  'AGNISYS TECHNOLOGY Private Limited': 'Om.prakash@dnispl.com',
+  'RMSI PRIVATE LTD': 'Om.prakash@dnispl.com',
+  'R SYSTEMS INTERNATIONAL': 'Om.prakash@dnispl.com',
+  'R SYSTEMS': 'Om.prakash@dnispl.com',
+  'PPAP Automotive Ltd': 'Om.prakash@dnispl.com',
+  'PHYSICS WALLAH PVT LTD': 'Om.prakash@dnispl.com',
+  'PGS (PEPO GLOBAL SOURCING)': 'Om.prakash@dnispl.com',
+  'Metro Hospitals & Heart Inst.': 'Om.prakash@dnispl.com',
+  'Manav Rachna Institutions': 'Om.prakash@dnispl.com',
+  'MAHAVIR COLLEGE': 'Om.prakash@dnispl.com',
+  'MAGICBRICKS.COM (Times Internet)': 'Om.prakash@dnispl.com',
+  'MACCAFERRI (India)': 'Om.prakash@dnispl.com',
+  'LOGIX GROUP': 'Om.prakash@dnispl.com',
+  'LENSKART SOLUTIONS Private Limited': 'Om.prakash@dnispl.com',
+  'KRIBHCO': 'Om.prakash@dnispl.com',
+  'K.L. INTERNATIONAL SCHOOL': 'Om.prakash@dnispl.com',
+  'JIL Information Technology (Jaypee)': 'Om.prakash@dnispl.com',
+  'JAIPRAKASH POWER VENTURES': 'Om.prakash@dnispl.com',
+  'INTERARCH BUILDING PRODUCTS': 'Om.prakash@dnispl.com',
+  'INOX WIND LTD': 'Om.prakash@dnispl.com',
+  'INDIA GLYCOLS LTD': 'Om.prakash@dnispl.com',
+  'Honda Cars India Ltd': 'Om.prakash@dnispl.com',
+  'HAVELLS INDIA LIMITED': 'Om.prakash@dnispl.com',
+  'Dharampal Satyapal Limited': 'Om.prakash@dnispl.com',
+  'CTA APPARELS': 'Om.prakash@dnispl.com',
+  'BROOKFIELD INDIA OFFICE PARKS': 'Om.prakash@dnispl.com',
+  'BIBA APPARELS': 'Om.prakash@dnispl.com',
+  'Yashoda Hospital': 'Om.prakash@dnispl.com',
+  'MAHAGUN INDIA Private Limited': 'Om.prakash@dnispl.com',
+  'LAND CRAFT DEVELOPERS Private Limited': 'Om.prakash@dnispl.com',
+  'Institute of Tech & Science (I.T.S)': 'Om.prakash@dnispl.com',
+  'DABUR RESEARCH FOUNDATION': 'Om.prakash@dnispl.com',
+  'Terumo India Private Limited': 'Om.prakash@dnispl.com',
+  'STERLING TOOLS LIMITED': 'Om.prakash@dnispl.com',
+  'SHIVALIK PRINTS LTD': 'Om.prakash@dnispl.com',
+  'SHAHI EXPORTS PRIVATE LIMITED': 'Om.prakash@dnispl.com',
+  'SARVODAYA HOSPITAL & RESEARCH CENTRE': 'Om.prakash@dnispl.com',
+  'RAKSHA TPA Private Limited': 'Om.prakash@dnispl.com',
+  'NHPC LTD': 'Om.prakash@dnispl.com',
+  'Marathon Electric Motors': 'Om.prakash@dnispl.com',
+  'LENSKART': 'Om.prakash@dnispl.com',
+  'YOKOHAMA INDIA': 'Om.prakash@dnispl.com',
+  'TALBRO FORGINGS': 'Om.prakash@dnispl.com',
+  'MITHILA PLYWOOD Private Limited': 'Om.prakash@dnispl.com',
+  'LIBERTY SHOES LIMITED': 'Om.prakash@dnispl.com',
+  'I B COLLEGE': 'Om.prakash@dnispl.com',
+  'BEST FOOD INTERNATIONAL': 'Om.prakash@dnispl.com',
+  'ASIAN INSTITUTE': 'Om.prakash@dnispl.com',
+  'JAKSON ENGINEERS LIMITED': 'Om.prakash@dnispl.com',
+  'ANANT RAJ LIMITED': 'vikrant.tolumbia@dnispl.com',
+  'BIO-MED HEALTH CARE PRODUCTS': 'vikrant.tolumbia@dnispl.com',
+  'DEGANIA MEDICAL DEVICES': 'vikrant.tolumbia@dnispl.com',
+  'Denso International India': 'vikrant.tolumbia@dnispl.com',
+  'DSY Creations': 'vikrant.tolumbia@dnispl.com',
+  'HL Mando Anand': 'vikrant.tolumbia@dnispl.com',
+  'Joyson Anand Abhishek Safety': 'vikrant.tolumbia@dnispl.com',
+  'MUNJAL KIRIU INDUSTRIES': 'vikrant.tolumbia@dnispl.com',
+  'Airtel': 'soumya.m@dnispl.com',
+  'NTT': 'soumya.m@dnispl.com',
+  'Sify': 'soumya.m@dnispl.com',
+  'Yotta': 'soumya.m@dnispl.com',
+  'Ctrl S': 'soumya.m@dnispl.com',
+  'Crest': 'soumya.m@dnispl.com',
+  'Huges': 'soumya.m@dnispl.com',
+  'Altius': 'soumya.m@dnispl.com',
+  'Tikona': 'soumya.m@dnispl.com',
+  'Den': 'soumya.m@dnispl.com',
+  'Exitel': 'soumya.m@dnispl.com',
+  'Hathway': 'soumya.m@dnispl.com',
+  'Tata': 'soumya.m@dnispl.com',
+  'LIFE INSURANCE CORP (LIC)': 'a.gupta@dnispl.com',
+  'Dalmia Refractories Limited': 'a.gupta@dnispl.com',
+  'SANSPAREILS GREENLANDS (SG)': 'a.gupta@dnispl.com',
+  'Manav Rachna Institutions': 'a.gupta@dnispl.com',
+  'MAHAVIR COLLEGE': 'a.gupta@dnispl.com',
+  'MACCAFERRI (India)': 'a.gupta@dnispl.com',
+  'LENSKART SOLUTIONS Private Limited': 'a.gupta@dnispl.com',
+  'K.L. INTERNATIONAL SCHOOL': 'a.gupta@dnispl.com',
+  'Yashoda Hospital': 'a.gupta@dnispl.com',
+  'MAHAGUN INDIA Private Limited': 'a.gupta@dnispl.com',
+  'LAND CRAFT DEVELOPERS Private Limited': 'a.gupta@dnispl.com',
+  'Institute of Tech & Science (I.T.S)': 'a.gupta@dnispl.com',
+  'DABUR RESEARCH FOUNDATION': 'a.gupta@dnispl.com',
+  'Terumo India Private Limited': 'a.gupta@dnispl.com',
+  'STERLING TOOLS LIMITED': 'a.gupta@dnispl.com',
+  'SHIVALIK PRINTS LTD': 'a.gupta@dnispl.com',
+  'SHAHI EXPORTS PRIVATE LIMITED': 'a.gupta@dnispl.com',
+  'SARVODAYA HOSPITAL & RESEARCH CENTRE': 'a.gupta@dnispl.com',
+  'RAKSHA TPA Private Limited': 'a.gupta@dnispl.com',
+  'NHPC LTD': 'a.gupta@dnispl.com',
+  'Marathon Electric Motors': 'a.gupta@dnispl.com',
+  'LENSKART': 'a.gupta@dnispl.com',
+  'YOKOHAMA INDIA': 'a.gupta@dnispl.com',
+  'TALBRO FORGINGS': 'a.gupta@dnispl.com',
+  'LIBERTY SHOES LIMITED': 'a.gupta@dnispl.com',
+  'I B COLLEGE': 'a.gupta@dnispl.com',
+  'BEST FOOD INTERNATIONAL': 'a.gupta@dnispl.com',
+  'ASIAN INSTITUTE': 'a.gupta@dnispl.com',
+  'JCB INDIA LIMITED': 'a.gupta@dnispl.com',
+  'GARDEN REACH SHIPBUILDERS': 'a.gupta@dnispl.com',
+  'MAYFAIR': 'a.gupta@dnispl.com',
+  'MAHINDRA LOGISTICS LTD': 'a.gupta@dnispl.com',
+  'MAHINDRA & MAHINDRA LTD': 'a.gupta@dnispl.com',
+  'KOTHARI INDUSTRIES LIMITED': 'a.gupta@dnispl.com',
+  'ICRA ONLINE LIMITED': 'a.gupta@dnispl.com',
+  'POLICY BAZAAR': 'a.gupta@dnispl.com',
+  // ── Navneet K accounts ──
+  'Phoenix Contact (I) Pvt Ltd': 'navneet.k@dnispl.com',
+  'Akums Drugs and Pharmaceuticals Ltd': 'navneet.k@dnispl.com',
+  'LUMAX INDUSTRIES LIMITED': 'navneet.k@dnispl.com',
+  'GREENLAM INDUSTRIES LIMITED': 'navneet.k@dnispl.com',
+  'Ashiana Housing': 'navneet.k@dnispl.com',
+  'Poly Medicure Limited': 'navneet.k@dnispl.com',
+  'SANT NIRANKARI MISSON': 'navneet.k@dnispl.com',
+  'STONEX INDIA PRIVATE LIMITED': 'navneet.k@dnispl.com',
+  'Hindustan Power': 'navneet.k@dnispl.com',
+  'SATYA MICROCAPITAL LIMITED': 'navneet.k@dnispl.com',
+  'Rockwell Automation': 'navneet.k@dnispl.com',
+  'AWFIS SPACE SOLUTIONS PRIVATE LIMITED': 'navneet.k@dnispl.com',
+  'Bikanervala Foods Private Limited': 'navneet.k@dnispl.com',
+  'Save Financial Services Pvt Ltd': 'navneet.k@dnispl.com',
+  'HUNCH CIRCLE PRIVATE LIMITED': 'navneet.k@dnispl.com',
+  'FENA PRIVATE LIMITED': 'navneet.k@dnispl.com',
+  'INFOMERICS VALUATION AND RATING PRIVATE LIMITED': 'navneet.k@dnispl.com',
+  'ANAND Group': 'navneet.k@dnispl.com',
+  'orient Bell': 'navneet.k@dnispl.com',
+  'Trinity Touch Pvt Ltd': 'navneet.k@dnispl.com',
+  'KAPOOR WATCH COMPANY PRIVATE LTD': 'navneet.k@dnispl.com',
+  'DARK MATTER TECHNOLOGIES INDIA PRIVATE Limited': 'navneet.k@dnispl.com',
+  'PHOENIX FAMILY OFFICE ADVISERS PVT LTD': 'navneet.k@dnispl.com',
+  'INGENUITY BUSINESS SERVICES PVT LTD': 'navneet.k@dnispl.com',
+  'IDVB RECYCLING PRIVATE LTD': 'navneet.k@dnispl.com',
+  'CEASEFIRE INDUSTRIES PVT LTD': 'navneet.k@dnispl.com',
+  'PATH ORG': 'navneet.k@dnispl.com',
+  'ZEACLOUD SERVICES PRIVATE LTD': 'navneet.k@dnispl.com',
+  'ORIENTAL STRUCTURAL ENGINEERS PVT LTD': 'navneet.k@dnispl.com',
+  'HEALTHQUAD CAPITAL ADVISORS PRIVATE LTD': 'navneet.k@dnispl.com',
+  'ADRIANNA PAPELL KD INDIA PRIVATE LTD': 'navneet.k@dnispl.com',
+  'CHRYS CAPITAL': 'navneet.k@dnispl.com',
+  'SPRIX MANABIE EDUCATION PRIVATE LTD': 'navneet.k@dnispl.com',
+  'HASKONINGDHV CONSULTING PRIVATE LTD': 'navneet.k@dnispl.com',
+  'AGARWAL PACKERS AND MOVERS LTD': 'navneet.k@dnispl.com',
+  'THE CHILDREN S INVESTMENT FUND FOUNDATION': 'navneet.k@dnispl.com',
+  'FJR INDIA PRIVATE Limited': 'navneet.k@dnispl.com',
+  'ALTF COWORKING': 'navneet.k@dnispl.com',
+  'EAII ADVISORS PRIVATE LTD': 'navneet.k@dnispl.com',
+  'DELHI STATE COOPERATIVE BANK LTD': 'navneet.k@dnispl.com',
+  'ANUSHA TECHNOVISION PVT LTD': 'navneet.k@dnispl.com',
+  'WHALE CLOUD TECHNOLOGY INDIA PVT LTD': 'navneet.k@dnispl.com',
+  'KHD HUMBOLDT WEDAG INDIA PVT LTD': 'navneet.k@dnispl.com',
+  'DEVANSH AJUKESHAN AND WELFEYAR SOSAITY': 'navneet.k@dnispl.com',
+  'HPPL HINDUSTAN POWER PROJECTS PRIVATE Limited': 'navneet.k@dnispl.com',
+  'AREA27 Private Limited': 'navneet.k@dnispl.com',
+  'ORIFLAME INDIA PRIVATE LTD': 'navneet.k@dnispl.com',
+  'MANSUKH SECURITIES AND FINANCE Limited': 'navneet.k@dnispl.com',
+  'KOCHHAR AND COMPANY': 'navneet.k@dnispl.com',
+  'OGI SOFTWARE PRIVATE Limited': 'navneet.k@dnispl.com',
+  // ── Yash K accounts ──
+  'L M PUBLIC SCHOOL': 'Yash.k@dnispl.com',
+  'LOCON SOLUTIONS PRIVATE Limited': 'Yash.k@dnispl.com',
+  'IDEMITSU FINE COMPOSITES INDIA PRIVATE Limited': 'Yash.k@dnispl.com',
+  'JATO DYNAMICS': 'Yash.k@dnispl.com',
+  'ROOTSTRONG TECHNOLOGIES PRIVATE Limited': 'Yash.k@dnispl.com',
+  'CALLAWAY GOLF Private Limited': 'Yash.k@dnispl.com',
+  'EYE Q VISION': 'Yash.k@dnispl.com',
+  'MGF SOURCING': 'Yash.k@dnispl.com',
+  'INDORAMA SYNTHETICS I Limited': 'Yash.k@dnispl.com',
+  'NETWORK BULLSTUDY Private Limited': 'Yash.k@dnispl.com',
+  'NAVIGA GLOBAL': 'Yash.k@dnispl.com',
+  'SYAC INNOVATIONS PRIVATE Limited': 'Yash.k@dnispl.com',
+  'IDP EDUCATION INDIA Private Limited': 'Yash.k@dnispl.com',
+  'ISON XPERIENCES INDIA PRIVATE Limited': 'Yash.k@dnispl.com',
+  'MACE PROJECT & COST MANAGEMENT Private Limited': 'Yash.k@dnispl.com',
+  'TRAVEL CORPORATION OF INDIA': 'Yash.k@dnispl.com',
+  'ALP AEROFLEX INDIA Private Limited': 'Yash.k@dnispl.com',
+  'ROADSTAR TRUCKING': 'Yash.k@dnispl.com',
+  'UCHIYAMA INDIA PRIVATE Limited': 'Yash.k@dnispl.com',
+  'ASTI INDIA PRIVATE Limited': 'Yash.k@dnispl.com',
+  'CRS GLOBAL SERVICES PRIVATE Limited': 'Yash.k@dnispl.com',
+  'VYGON INDIA PRIVATE Limited': 'Yash.k@dnispl.com',
+  'SSDN TECHNOLOGIES Private Limited': 'Yash.k@dnispl.com',
+  'SUEZ ENVIRONMENT INDIA Limited': 'Yash.k@dnispl.com',
+  'SCA TECHNOLOGIES INDIA PRIVATE Limited': 'Yash.k@dnispl.com',
+  'LEX IP CARE LLP': 'Yash.k@dnispl.com',
+  'MASTERS UNION SCHOOL OF BUSINESS': 'Yash.k@dnispl.com',
+  'OLUMPUS CORPORATION': 'Yash.k@dnispl.com',
+  'HBA CPAS AND CONSULTANTS': 'Yash.k@dnispl.com',
+  "MRS BECTOR'S FOOD SPECIALTIES Limited": 'Yash.k@dnispl.com',
+  'SISTEMA SHYAM TELESERVICES Limited': 'Yash.k@dnispl.com',
+  'ILOG SOLUTIONS INDIA PRIVATE Limited': 'Yash.k@dnispl.com',
+  'MINISTRY OF MINES': 'Yash.k@dnispl.com',
+  'CLARION INDIA PRIVATE Limited': 'Yash.k@dnispl.com',
+  'BENGAL AEROTROPOLIS PRIVATE Limited': 'Yash.k@dnispl.com',
+  'SML LABEL': 'Yash.k@dnispl.com',
+  'PINKERTON INDIA': 'Yash.k@dnispl.com',
+  'BALBIX INDIA Private Limited': 'Yash.k@dnispl.com',
+  'SEAMLESS INFOTECH PRIVATE Limited': 'Yash.k@dnispl.com',
+  'SAFFRON NETWORKS Private Limited': 'Yash.k@dnispl.com',
+  'SANKYU INDIA LOGISTICS & ENGINEERING PRIVATE Limited': 'Yash.k@dnispl.com',
+  'SAGACIOUS RESEARCH Private Limited': 'Yash.k@dnispl.com',
+  'ZABIN INDIA PRIVATE Limited': 'Yash.k@dnispl.com',
+  'PACE STOCK BROKING SERVICES Private Limited': 'Yash.k@dnispl.com',
+  'SAVANNAHSEEDSPrivate Limited': 'Yash.k@dnispl.com',
+  'CAPARO MARUTI Limited': 'Yash.k@dnispl.com',
+  'AUSTRALIA INDIA INSTITUTE PRIVATE Limited': 'Yash.k@dnispl.com',
+  'DYNATA': 'Yash.k@dnispl.com',
+  'INDIAN NATIONAL ACADEMY OF ENGINEERING': 'Yash.k@dnispl.com',
+  // ── aakriti V accounts ──
+  'Medanta The Medicity': 'aakriti.v@dnispl.com',
+  'CENTRIENT PHARMACEUTICALS INDIA PRIVATE LIMITED': 'aakriti.v@dnispl.com',
+  'Infogain India Private Limited': 'aakriti.v@dnispl.com',
+  'SMARTWORLD DEVELOPERS PRIVATE LIMITED': 'aakriti.v@dnispl.com',
+  'OAKNORTH GLOBAL PRIVATE LIMITED': 'aakriti.v@dnispl.com',
+  'G4S SECURITY SYSTEMS (INDIA) PRIVATE LIMITED': 'aakriti.v@dnispl.com',
+  'XEBIA IT ARCHITECTS INDIA PRIVATE LIMITED': 'aakriti.v@dnispl.com',
+  'SKH Metals': 'aakriti.v@dnispl.com',
+  'YATRA ONLINE LIMITED': 'aakriti.v@dnispl.com',
+  'SANDHAR TECHNOLOGIES LIMITED': 'aakriti.v@dnispl.com',
+  'Jaquar group': 'aakriti.v@dnispl.com',
+  'BLUE TOKAI(Muhavra Enterprises Pvt Ltd)': 'aakriti.v@dnispl.com',
+  'VLCC': 'aakriti.v@dnispl.com',
+  'UNICHARM INDIA PVT LTD': 'aakriti.v@dnispl.com',
+  'Innovative Facility/AIHP': 'aakriti.v@dnispl.com',
+  'Smart Works': 'aakriti.v@dnispl.com',
+  'EasyRewardz Software Services Pvt Ltd': 'aakriti.v@dnispl.com',
+  'ANADRONE SYSTEMS PRIVATE LIMITED': 'aakriti.v@dnispl.com',
+  'Bharat Seats Ltd': 'aakriti.v@dnispl.com',
+  'Krishna Maruti': 'aakriti.v@dnispl.com',
+  'AYE FINANCE PRIVATE LIMITED': 'yash.k@dnispl.com',
+  'JUNIPER GREEN ENERGY PRIVATE LIMITED': 'aakriti.v@dnispl.com',
+  'AdGlobal360 India Pvt Ltd': 'aakriti.v@dnispl.com',
+  'Green panel Industries Ltd': 'aakriti.v@dnispl.com',
+  'BLUPINE ENERGY PRIVATE LIMITED': 'aakriti.v@dnispl.com',
+  'Xceedance': 'aakriti.v@dnispl.com',
+  'CE SERVICED INDIA PVT LTD': 'aakriti.v@dnispl.com',
+  'INTECH ORGANICS LTD': 'aakriti.v@dnispl.com',
+  'TRIDENT HILL PVT LTD': 'aakriti.v@dnispl.com',
+  'MAHARASHTRA SEAMLESS LTD': 'aakriti.v@dnispl.com',
+  'KRISUMI CORPORATION PRIVATE LTD': 'aakriti.v@dnispl.com',
+  'CTAP SYSTEMS': 'aakriti.v@dnispl.com',
+  'ROOP AUTOMOTIVES LTD': 'aakriti.v@dnispl.com',
+  'ANAQUA INDIA LLP': 'aakriti.v@dnispl.com',
+  'JAE INDIA PRIVATE LTD': 'aakriti.v@dnispl.com',
+  'SONI AUTO & ALLIED INDUSTRIES Limited': 'aakriti.v@dnispl.com',
+  'IDP EDUCATION INDIA PRIVATE LTD': 'aakriti.v@dnispl.com',
+  'FLUID3 INFOTECH PRIVATE LTD': 'aakriti.v@dnispl.com',
+  'ELECTRO RENT INDIA PRIVATE LTD': 'aakriti.v@dnispl.com',
+  'SANKYU INDIA LOGISTICS &ENGINEERING': 'aakriti.v@dnispl.com',
+  'UNIQUS CONSULTECH INC': 'aakriti.v@dnispl.com',
+  'PRECISION PYRAMID PRIVATE LTD': 'aakriti.v@dnispl.com',
+  'SHIMODA TRADING INDIA PRIVATE LTD': 'aakriti.v@dnispl.com',
+  'XP INDIA': 'aakriti.v@dnispl.com',
+  'NISSHINBO COMPREHENSIVE PRECISION MACHINING GURGAON PRIVATE LTD': 'aakriti.v@dnispl.com',
+  'NEXXBASE MARKETING Private Limited': 'aakriti.v@dnispl.com',
+  'ORBIS FINANCIAL CORPORATION LTD': 'aakriti.v@dnispl.com',
+  'PENTAX MEDICAL INDIA Private Limited': 'aakriti.v@dnispl.com',
+  // ── Stephen H accounts ──
+  'Caparo Maruti': 'Stephen.h@dnispl.com',
+  'HELLMANN WORLDWIDE LOGISTIC INDIA PVT LTD': 'Stephen.h@dnispl.com',
+  'JUMP CLOUD Private Limited': 'Stephen.h@dnispl.com',
+  'JB JEWELS AND METALS LLP': 'Stephen.h@dnispl.com',
+  'VOICE COMMUNICATION DELHI': 'Stephen.h@dnispl.com',
+  'SEB ADMINISTRATIVE SERVICES INDIA PRIVATE Limited': 'Stephen.h@dnispl.com',
+  'MINISTRY OF STEEL': 'Stephen.h@dnispl.com',
+  'TELECRAFT E SOLUTIONS Private Limited': 'Stephen.h@dnispl.com',
+  'INTERNATIONAL MAIZE AND WHEAT IMPROVEMENT CENTER': 'Stephen.h@dnispl.com',
+  'ENERGIA SYSTEMS PRIVATE Limited': 'Stephen.h@dnispl.com',
+  'EGLO INDIA PRODUCTION Private Limited': 'Stephen.h@dnispl.com',
+  'ASTRANTIA REAL ESTATE PRIVATE Limited': 'Stephen.h@dnispl.com',
+  'ASIA PRAGATI CAPFIN PRIVATE Limited': 'Stephen.h@dnispl.com',
+  'DAMCOSOFT Private Limited': 'Stephen.h@dnispl.com',
+  'SMK PETROCHEMICALS INDIA Private Limited': 'Stephen.h@dnispl.com',
+  'SHRI GURU RAM DASS EDUCATIONAL SOCIETY': 'Stephen.h@dnispl.com',
+  'FIBS LOGISTICS INDIA PRIVATE Limited': 'Stephen.h@dnispl.com',
+  'KAILASH HEALTHCARE Limited': 'Stephen.h@dnispl.com',
+  'JUPITER ALUMINIUM INDUSTRIES Private Limited': 'Stephen.h@dnispl.com',
+  'VEOLIA WATER INDIA PRIVATE Limited': 'Stephen.h@dnispl.com',
+  'AAMOR INOX Limited': 'Stephen.h@dnispl.com',
+  'REMFRY AND SAGAR': 'Stephen.h@dnispl.com',
+  'ENVIROCARE INFRASOLUTIONS Private Limited': 'Stephen.h@dnispl.com',
+  'NUEROLYTICA CONSULTING PRIVATE Limited': 'Stephen.h@dnispl.com',
+  'BRYS HOTELS PRIVATE Limited': 'Stephen.h@dnispl.com',
+  'FEDERATION OF INDIAN CHAMBERS OF COMMERCE AN': 'Stephen.h@dnispl.com',
+  'HUGHES COMMUNICATIONS INDIA LIMITED': 'Stephen.h@dnispl.com',
+  'DEE DEVELOPMENT ENGINEERS PRIVATE LIMITED': 'Stephen.h@dnispl.com',
+  'YATRA ONLINE PRIVATE LIMITED': 'Stephen.h@dnispl.com',
+  'MINERALS AND METALS TRADING CORPORATION OF I': 'Stephen.h@dnispl.com',
+  'OLX INDIA PRIVATE  LIMITED': 'Stephen.h@dnispl.com',
+  'DHANUKA AGRITECH LIMITED': 'Stephen.h@dnispl.com',
+  'E4E/Savista Global': 'Stephen.h@dnispl.com',
+  'URBANCLAP': 'Stephen.h@dnispl.com',
+  'CP WHOLESALE INDIA PRIVATE LIMITED': 'Stephen.h@dnispl.com',
+  'AWFIS': 'Stephen.h@dnispl.com',
+  'BHARATPE RESILIENT INNOVATIONS Private Limited': 'Stephen.h@dnispl.com',
+  'VARUN GROUP': 'Stephen.h@dnispl.com',
+  'DELHI WASTE MANAGEMENT NAJAFGARH Private Limited': 'Stephen.h@dnispl.com',
+  'CASHIFY': 'Stephen.h@dnispl.com',
+  'SGT UNIVERSITY': 'Stephen.h@dnispl.com',
+  'LOUIS DREYFUS COMMODITIES INDIA Private Limited': 'Stephen.h@dnispl.com',
+  'QUALFON TECHNOLOGY SUPPORT SERVICES LLP': 'Stephen.h@dnispl.com',
+  'CAPARO GROUP INDIA LIMITED': 'Stephen.h@dnispl.com',
+  'ESTEE ADVISORS PRIVATE Limited': 'Stephen.h@dnispl.com',
+  'BROOKFIELD INDIA OFFICE PARKS PRIVATE LIMITE': 'Stephen.h@dnispl.com',
+  'FLENDER DRIVES PRIVATE Limited': 'Stephen.h@dnispl.com',
+  'RELAXO FOOTWEARS Limited': 'Stephen.h@dnispl.com',
+  'SATIN CREDITCARE NETWORK LIMIT': 'Stephen.h@dnispl.com',
+  // ── Om Prakash (9 Apr 2026) ──
+  'Sinch India': 'om.prakash@dnispl.com',
+  'Somany Ceramics': 'om.prakash@dnispl.com',
+  'Rx-Logix': 'om.prakash@dnispl.com',
+  'UNICLOUD LABS PRIVATE LIMITED': 'om.prakash@dnispl.com',
+  'GUJARAT FLUOROCHEMICALS LIMITED': 'om.prakash@dnispl.com',
+  'Jagran Prakashan Limited': 'om.prakash@dnispl.com',
+  'INNOVATIVE VIEW INDIA PVT LTD': 'om.prakash@dnispl.com',
+  'VECTUS INDUSTRIES LIMITED': 'om.prakash@dnispl.com',
+  'ONEXTEL TECHNOLOGIES / TELSPIEL COMMUNICATIONS': 'om.prakash@dnispl.com',
+  'SHARDA UNIVERSITY': 'om.prakash@dnispl.com',
+  'Addverbb': 'om.prakash@dnispl.com',
+  'YoekiSoft Pvt Ltd': 'om.prakash@dnispl.com',
+  'Magic Software Pvt Ltd(Magic Edtech)': 'om.prakash@dnispl.com',
+  'ESRI INDIA TECHNOLOGIES PRIVATE LIMITED': 'om.prakash@dnispl.com',
+  'INDIAN ENERGY EXCHANGE LIMITED': 'om.prakash@dnispl.com',
+  'R System': 'om.prakash@dnispl.com',
+  'QRG Enterprises': 'om.prakash@dnispl.com',
+  'Go2Cloud Solutions Pvt Ltd': 'om.prakash@dnispl.com',
+  // ── Uttkarsha J (9 Apr 2026) ──
+  // ── Ankit J accounts ──
+  'AEGON RELIGARE LIFE INSURANCE': 'ankit.j@dnispl.com',
+  'AUTOZONE INDIA SERVICES LLP': 'ankit.j@dnispl.com',
+  'BIRA CORPORATION LIMITED': 'ankit.j@dnispl.com',
+  'CARDEKHO GIRNARSOFT AUTOMOBILES PVT LTD': 'ankit.j@dnispl.com',
+  'DELHI PRESS LIMITED': 'ankit.j@dnispl.com',
+  'DHFL PHARMERICA': 'ankit.j@dnispl.com',
+  'DFL LIMITED': 'ankit.j@dnispl.com',
+  'GAWAR CONSTRUCTION LTD': 'ankit.j@dnispl.com',
+  'GIRNARSOFT PVT LTD': 'ankit.j@dnispl.com',
+  'MBD GROUP NEW DELHI': 'ankit.j@dnispl.com',
+  'NAGARRO SOFTWARE PRIVATE LIMITED': 'ankit.j@dnispl.com',
+  'NHPC LTD': 'ankit.j@dnispl.com',
+  'OYO ROOMS': 'ankit.j@dnispl.com',
+  'POLICY BAZAAR': 'ankit.j@dnispl.com',
+  'SAFEXPRESS PRIVATE LIMITED': 'ankit.j@dnispl.com',
+  'SHAHI EXPORTS PRIVATE LIMITED': 'ankit.j@dnispl.com',
+  'SHIPROCKET': 'ankit.j@dnispl.com',
+  'TRANSPORT CORPORATION OF INDIA': 'ankit.j@dnispl.com',
+  'UP COOPERATIVE BANK LIMITED': 'ankit.j@dnispl.com',
+  'Altius': 'ankit.j@dnispl.com',
+  'Anonet': 'ankit.j@dnispl.com',
+  'Crest': 'ankit.j@dnispl.com',
+  'Ctrl S': 'ankit.j@dnispl.com',
+  'Den': 'ankit.j@dnispl.com',
+  'Exitel': 'ankit.j@dnispl.com',
+  'Hathway': 'ankit.j@dnispl.com',
+  'Huges': 'ankit.j@dnispl.com',
+  'NTT': 'ankit.j@dnispl.com',
+  'Sify': 'ankit.j@dnispl.com',
+  'Tata': 'ankit.j@dnispl.com',
+  'Tikona': 'ankit.j@dnispl.com',
+  'Yotta': 'ankit.j@dnispl.com',
+  // ── Ayushi V ──
+  'Jamna Auto Industries Ltd': 'ayushi.v@dnispl.com',
+  'Vaaan Infra': 'ayushi.v@dnispl.com',
+  'INTERRA SYSTEMS INDIA PVT LTD': 'ayushi.v@dnispl.com',
+  'RAJA S P SINGH IT CENTER': 'ayushi.v@dnispl.com',
+  'MOOZ OFFICES GURGAON PRIVATE Limited': 'ayushi.v@dnispl.com',
+  'NETSPEND INDIA LLP': 'ayushi.v@dnispl.com',
+  'KAILASH HOSPITAL AND RESEARCH CENTRE LIMITED': 'ayushi.v@dnispl.com',
+  'THINKSYS SOFTWARE PRIVATE LTD': 'ayushi.v@dnispl.com',
+  'CUBE HIGHWAYS AND TRANSPORTATION ASSET ADVISORS PVTLTD': 'ayushi.v@dnispl.com',
+  'OCCL Limited': 'ayushi.v@dnispl.com',
+  'AYESA INDIA PVT LTD': 'ayushi.v@dnispl.com',
+  'FUJIFILM SONOSITE INDIA PVT LTD-GURGAON': 'ayushi.v@dnispl.com',
+  'INDIA STEEL SUMMIT PRIVATE Limited': 'ayushi.v@dnispl.com',
+  'ION TRADING INDIA Private Limited': 'ayushi.v@dnispl.com',
+  'CLOUDCONNECT COMMUNICATIONS PRIVATE Limited': 'ayushi.v@dnispl.com',
+  'APEEJAY SURRENDRA MANAGEMENT SERVICES PRIVATE Limited': 'ayushi.v@dnispl.com',
+  'CLEARVIEW HCP CONSULTANTS INDIA PRIVATE Limited': 'ayushi.v@dnispl.com',
+  'DKMS LIFE SCIENCE LAB INDIA PRIVATE LIMITED': 'ayushi.v@dnispl.com',
+  'TELIVUS SYSTEMS Private Limited': 'ayushi.v@dnispl.com',
+  'INFOVIRGIN TECHNOLOGY SOLUTIONS PRIVATE Limited': 'ayushi.v@dnispl.com',
+  'SUPER CASSETTES INDUSTRIES Limited': 'ayushi.v@dnispl.com',
+  'NEWS NATION NETWORK Private Limited': 'ayushi.v@dnispl.com',
+  'VELOCIS SYSTEMS Private Limited': 'ayushi.v@dnispl.com',
+  'SLEEPERSDELLE SOLUTIONS INDIA Private Limited': 'ayushi.v@dnispl.com',
+  'BILT GRAPHICS PAPER Limited': 'ayushi.v@dnispl.com',
+  'TURNBERRY SOLUTIONS': 'ayushi.v@dnispl.com',
+  'NEHRU WORLD SCHOOL': 'ayushi.v@dnispl.com',
+  'DORENT SERVICES INDIA Private Limited': 'ayushi.v@dnispl.com',
+  'LAVANYA INTERNATIONAL': 'ayushi.v@dnispl.com',
+  'MANAV RACHNA INTERNATIONAL UNIVERSITY': 'ayushi.v@dnispl.com',
+  'PHARMALEX INDIA PRIVATE Limited': 'ayushi.v@dnispl.com',
+  'THUNDERSTRIKE QUANT RESEARCH LLP': 'ayushi.v@dnispl.com',
+  'ESCALENT CONSULTING INDIA PRIVATE Limited': 'ayushi.v@dnispl.com',
+  'INDUSTRIAL IT SOLUTIONS Private Limited': 'ayushi.v@dnispl.com',
+  'ESRI INDIA TECHNOLOGIES Private Limited': 'ayushi.v@dnispl.com',
+  'PROTECON BTG Private Limited': 'ayushi.v@dnispl.com',
+  'DEAKIN INTERNATIONAL': 'ayushi.v@dnispl.com',
+  'NATIONAL ASSOCIATION OF SOFTWARE & SERVICES COMPANIES': 'ayushi.v@dnispl.com',
+  'IMT GHAZIABAD': 'ayushi.v@dnispl.com',
+  'ALLIED NIPPON Limited': 'ayushi.v@dnispl.com',
+  'USHA BRECO Limited': 'ayushi.v@dnispl.com',
+  'PREMIUM LABELS PRIVATE Limited': 'ayushi.v@dnispl.com',
+  'SHREVI INFORMATION TECHNOLOGY PRIVATE Limited': 'ayushi.v@dnispl.com',
+  'JAKSON ENGINEERS LIMITED': 'ayushi.v@dnispl.com',
+  'NUCLEUS SOFTWARE EXPORTS LIMITED': 'ayushi.v@dnispl.com',
+  'LENSKART': 'ayushi.v@dnispl.com',
+  'YOKOHAMA INDIA': 'ayushi.v@dnispl.com',
+  'RAKSHA TPA PRIVATE LIMITED': 'ayushi.v@dnispl.com',
+  // ── Mandeep Kaur ──
+  'MOTILAL NEHRU NATIONAL INSTITUTE OF TECHNOLO': 'mandeep.kaur@dnispl.com',
+  'RECL': 'mandeep.kaur@dnispl.com',
+  'MOBIKWIK': 'mandeep.kaur@dnispl.com',
+  'NAYATI HEALTHCARE AND RESEARCH Private Limited': 'mandeep.kaur@dnispl.com',
+  'HSIL': 'mandeep.kaur@dnispl.com',
+  'BIBA APPARELS': 'mandeep.kaur@dnispl.com',
+  'GKB RX LENS PRIVATE Limited': 'mandeep.kaur@dnispl.com',
+  'WINGIFY': 'mandeep.kaur@dnispl.com',
+  'CARS24': 'mandeep.kaur@dnispl.com',
+  'MOGLIX': 'mandeep.kaur@dnispl.com',
+  'INDIAMART': 'mandeep.kaur@dnispl.com',
+  'NAVAYUGA ENGINEERING COMPANY LIMITED/Vishwasamudra': 'mandeep.kaur@dnispl.com',
+  'INTERTEK TESTING SERVICES INDIA PRIVATE LIMI': 'mandeep.kaur@dnispl.com',
+  'DAINIK JAGRAN': 'mandeep.kaur@dnispl.com',
+  'MAT HOLDINGS INC': 'mandeep.kaur@dnispl.com',
+  'SHEELA GROUP': 'mandeep.kaur@dnispl.com',
+  'MOREPEN LABORATORIES Limited': 'mandeep.kaur@dnispl.com',
+  'SONA BLW PRECISION FORGING Limited': 'mandeep.kaur@dnispl.com',
+  'NEXUS BUILDCON SOLUTIONS': 'mandeep.kaur@dnispl.com',
+  'AMPLIFON INDIA Private Limited': 'mandeep.kaur@dnispl.com',
+  'DELTON CABLES Limited': 'mandeep.kaur@dnispl.com',
+  'DYSON TECHNOLOGY INDIA PRIVATE Limited': 'mandeep.kaur@dnispl.com',
+  'BABEL MEDIA': 'mandeep.kaur@dnispl.com',
+  'KONICA MINOLTA BUSINESS SOLUTION INDIA PRIVA': 'mandeep.kaur@dnispl.com',
+  'DORLING KINDERSLEYI PRIVATE LIMITED': 'mandeep.kaur@dnispl.com',
+  'AMERICAN E PAY/Prism HR': 'mandeep.kaur@dnispl.com',
+  'ASIAN INSTITUTE': 'mandeep.kaur@dnispl.com',
+  'CERA SANITARYWARE Limited': 'mandeep.kaur@dnispl.com',
+  'DNATA INTERNATIONAL': 'mandeep.kaur@dnispl.com',
+  'DYNAMATIC TECHNOLOGIES Limited': 'mandeep.kaur@dnispl.com',
+  'EIH Limited': 'mandeep.kaur@dnispl.com',
+  'ENERGIZER INDIA PRIVATE Limited': 'mandeep.kaur@dnispl.com',
+  'GLOBANT INDIA': 'mandeep.kaur@dnispl.com',
+  'LUMAX AUTO TECHNOLOGIES Limited': 'mandeep.kaur@dnispl.com',
+  'PYRAMID CONSULTING INC': 'mandeep.kaur@dnispl.com',
+  'R SYSTEMS': 'mandeep.kaur@dnispl.com',
+  'RAJIV GANDHI CANCER INSTITUTE': 'mandeep.kaur@dnispl.com',
+  'RICHA GLOBAL EXPORTS PRIVATE Limited': 'mandeep.kaur@dnispl.com',
+  'RMSI PRIVATE Limited': 'mandeep.kaur@dnispl.com',
+  'SATIA INDUSTRIES Limited': 'mandeep.kaur@dnispl.com',
+  'US TECH SOLUTIONS PRIVATE Limited': 'mandeep.kaur@dnispl.com',
+  'WALSON SERVICE PRIVATE Limited': 'mandeep.kaur@dnispl.com',
+};
+
+function getWinProbSafe(opp) {
+ try {
+  return calculateWinProb(opp);
+ } catch (e) {
+  console.error('calculateWinProb failed:', e, opp);
+  return 25;
+ }
+}
+ const CRM_API_BASE = '';
+ 
+ // ═══════════════════════════════════════════════════════════════
+ 
+let currentUser = '';
+let isSupervisor = false;
+let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [], opportunities: [], activities: [], purchase_orders: [] } };
+let oppStageFilter = 'All'; // 'All' | 'Discovery' | 'Proposal' | 'Negotiation' | 'Closed Won' | 'Closed Lost'
+let activityFilter = { mode: 'today', from: '', to: '' };
+let managerFilter = '';
+let slaEngineRunning = false;
+let slaTimer = null;
+
+
+function applyLoggedInUi() {
+ document.getElementById('loginScreen').style.display = 'none';
+ document.getElementById('mainScreen').style.display = 'block';
+ document.getElementById('userEmail').textContent = currentUser;
+ const roleLabel = { supervisor: 'SUPERVISOR', sales: 'SALESPERSON', presales: 'PRESALES', purchase: 'PURCHASE', salesops: 'SALES OPS' };
+ document.getElementById('userRole').textContent = roleLabel[getUserRole()] || 'SALESPERSON';
+ document.getElementById('fabBtn').style.display = 'block';
+ const actions = document.getElementById('userActions');
+ if (actions && !document.getElementById('changePwdBtn')) {
+  const btn = document.createElement('button');
+  btn.id = 'changePwdBtn';
+  btn.className = 'btn';
+  btn.textContent = 'Change Password';
+  btn.onclick = openChangePassword;
+  actions.insertBefore(btn, actions.firstChild);
+ }
+ if (actions && !document.getElementById('connectMsBtn')) {
+  const msBtn = document.createElement('button');
+  msBtn.id = 'connectMsBtn';
+  msBtn.className = 'btn';
+  msBtn.textContent = 'Connect Microsoft 365';
+  msBtn.onclick = openMicrosoftConnect;
+  actions.insertBefore(msBtn, actions.firstChild);
+ }
+ refreshMicrosoftStatus();
+}
+
+function persistSession() {
+ localStorage.setItem('crmCurrentUser', currentUser || '');
+ localStorage.setItem('crmIsSupervisor', isSupervisor ? '1' : '0');
+}
+
+function clearSession() {
+ localStorage.removeItem('crmCurrentUser');
+ localStorage.removeItem('crmIsSupervisor');
+}
+
+async function restoreSessionIfAny() {
+ const savedUser = normalizeEmail(localStorage.getItem('crmCurrentUser') || '');
+ if (!savedUser) return false;
+ currentUser = savedUser;
+ isSupervisor = ['ashish.mehra@dnispl.com', 'a.gupta@dnispl.com', 'rakesh.uniyal@dnispl.com'].includes(savedUser);
+ managerFilter = '';
+ applyLoggedInUi();
+ const statusEl = document.getElementById('status');
+ if (statusEl) statusEl.textContent = 'Restoring session and loading data...';
+ try {
+  await loadData();
+ } catch (err) {
+  console.error('restoreSession loadData failed', err);
+ }
+ runSLAEngine();
+ if (slaTimer) clearInterval(slaTimer);
+ slaTimer = setInterval(runSLAEngine, 60000);
+ return true;
+}
+
+ function getUserRole() {
+ if (isSupervisor) return 'supervisor';
+ const email = (currentUser || '').toLowerCase();
+ const PRESALES_USERS = ['vinod.v@dnispl.com'];
+ const PURCHASE_USERS = ['soumya.m@dnispl.com'];
+ if (PRESALES_USERS.includes(email)) return 'presales';
+ if (PURCHASE_USERS.includes(email)) return 'purchase';
+ if (email.includes('presales') || email.includes('pre.sales') || email.includes('solutions')) return 'presales';
+ if (email.includes('purchase') || email.includes('procurement') || email.includes('sourcing')) return 'purchase';
+ return 'sales';
+}
+
+
+function getViewerRoleForApi() {
+ if (isSupervisor) return 'supervisor';
+ const role = getUserRole();
+ if (role === 'presales') return 'presales';
+ if (role === 'purchase') return 'purchase';
+ return 'account_manager';
+}
+
+function normalizeEmail(value) {
+ return String(value || '').trim().toLowerCase();
+}
+
+function getAccountManagerEmailByAccountId(accountId) {
+ const account = state.data.accounts.find(a => String(a.id) === String(accountId));
+ if (!account) return '';
+ return normalizeEmail(account.accountManager || account.account_manager || account.owner);
+}
+
+function getLeadManagerEmail(lead) {
+ return normalizeEmail(lead.owner || lead.accountManager || lead.account_manager);
+}
+
+function getAccountManagerEmail(account) {
+ return normalizeEmail(account.accountManager || account.account_manager || account.owner);
+}
+
+function getContactManagerEmail(contact) {
+ return getAccountManagerEmailByAccountId(contact.accountId) || normalizeEmail(contact.owner);
+}
+
+function getOpportunityManagerEmail(opp) {
+ return getAccountManagerEmailByAccountId(opp.accountId) || normalizeEmail(opp.salesOwner || opp.owner);
+}
+
+function getOpportunityManagerEmails(opp) {
+ const set = new Set();
+ const accountMgr = getAccountManagerEmailByAccountId(opp.accountId);
+ const salesMgr = normalizeEmail(opp.salesOwner || opp.owner);
+ const ownerMgr = normalizeEmail(opp.owner);
+ const salesOpsMgr = normalizeEmail(opp.assignedSalesOps);
+ if (accountMgr) set.add(accountMgr);
+ if (salesMgr) set.add(salesMgr);
+ if (ownerMgr) set.add(ownerMgr);
+ if (salesOpsMgr) set.add(salesOpsMgr);
+ return Array.from(set);
+}
+
+function getActivityManagerEmail(activity) {
+ return getAccountManagerEmailByAccountId(activity.accountId) || normalizeEmail(activity.owner);
+}
+
+function getManagerFilterOptions(filtered) {
+ const seen = new Set();
+ const values = [];
+ [
+  ...(filtered.accounts || []).map(getAccountManagerEmail),
+  ...(filtered.leads || []).map(getLeadManagerEmail),
+  ...(filtered.contacts || []).map(getContactManagerEmail),
+  ...((filtered.opportunities || []).reduce((acc, o) => acc.concat(getOpportunityManagerEmails(o)), [])),
+  ...(filtered.activities || []).map(getActivityManagerEmail)
+ ].forEach(email => {
+  if (!email || SALES_DROPDOWN_BLOCKLIST.has(normalizeEmail(email)) || seen.has(email)) return;
+  seen.add(email);
+  values.push(email);
+ });
+ return values.sort();
+}
+
+function formatManagerLabel(email) {
+ if (!email) return 'Unassigned';
+ if (normalizeEmail(email) === 'tba@local.crm') return 'TBA';
+ return email;
+}
+
+function formatUserLabel(email) {
+ return formatManagerLabel(email);
+}
+
+function getAccountSuspectScore(account) {
+ const explicit = Number(account?.suspectScore || account?.suspect_score);
+ if (!Number.isNaN(explicit) && explicit > 0) return explicit;
+ let score = 0;
+ for (let i = 1; i <= 10; i++) {
+  const value = String(account?.[`suspect_q${i}`] || '').trim();
+  if (value) score += 1;
+ }
+ return score;
+}
+
+function getAccountQuestionnaireCompletion(account) {
+ const score = getAccountSuspectScore(account);
+ return Math.round((score / 10) * 100);
+}
+
+function renderManagerFilterControls(filtered) {
+ const options = getManagerFilterOptions(filtered);
+ if (!isSupervisor) return '';
+ return `
+ <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px">
+ <label style="font-size:0.9em; font-weight:600">Account Manager</label>
+ <select class="input" style="width:auto; min-width:280px" onchange="setManagerFilter(this.value)">
+ <option value="">All Managers</option>
+ ${options.map(email => `<option value="${email}" ${managerFilter === email ? 'selected' : ''}>${formatManagerLabel(email)}</option>`).join('')}
+ </select>
+ ${managerFilter ? '<button class="btn" type="button" onclick="setManagerFilter(\'\')">Clear</button>' : ''}
+ </div>
+ `;
+}
+
+function setManagerFilter(value) {
+ managerFilter = normalizeEmail(value);
+ render();
+}
+
+function openTab(tab, opts = {}) {
+  if (tab !== 'opportunities') oppStageFilter = 'All';
+  state.activeTab = tab;
+  if (opts.activityMode) {
+    activityFilter.mode = opts.activityMode;
+  }
+  render();
+}
+
+function normalizeActivityFromApi(a) {
+ const created = a.created_at || a.createdDate || a.date || new Date().toISOString();
+ const modified = a.updated_at || a.modifiedDate || created;
+ return {
+ id: String(a.id || Date.now()),
+ type: a.type || 'Note',
+ subject: a.subject || '',
+ notes: a.notes || '',
+ date: a.date || created,
+ owner: a.owner || '',
+ accountId: a.account_id || a.accountId || '',
+ accountName: a.account_name || a.accountName || '',
+ createdDate: created,
+ modifiedDate: modified,
+ };
+}
+
+function normalizeAccountFromApi(a) {
+ const created = a.created_at || a.createdDate || new Date().toISOString();
+ const modified = a.updated_at || a.modifiedDate || created;
+ return {
+   id: String(a.id || Date.now()),
+   name: a.account_name || a.name || '',
+   industry: a.industry || '',
+   tier: a.tier || 'B',
+   location: a.location || '',
+   companySize: a.companySize || a.company_size || '',
+   annualSpend: a.annualSpend || a.annual_spend || '',
+   mode: a.mode || '',
+   suspectScore: Number(a.suspect_score || a.suspectScore || 0),
+   suspect_q1: a.suspect_q1 || '',
+   suspect_q2: a.suspect_q2 || '',
+   suspect_q3: a.suspect_q3 || '',
+   suspect_q4: a.suspect_q4 || '',
+   suspect_q5: a.suspect_q5 || '',
+   suspect_q6: a.suspect_q6 || '',
+   suspect_q7: a.suspect_q7 || '',
+   suspect_q8: a.suspect_q8 || '',
+   suspect_q9: a.suspect_q9 || '',
+   suspect_q10: a.suspect_q10 || '',
+   accountManager: a.account_manager_email || a.accountManager || '',
+   owner: a.account_manager_email || a.owner || '',
+   createdDate: created,
+   modifiedDate: modified
+ };
+}
+
+function normalizeLeadFromApi(l) {
+ const created = l.created_at || l.createdDate || new Date().toISOString();
+ const modified = l.updated_at || l.modifiedDate || created;
+ return {
+  id: String(l.id || Date.now()),
+  name: l.name || '',
+  company: l.company || '',
+  email: l.email || '',
+  phone: l.phone || '',
+  source: l.source || 'Referral',
+  status: l.status || 'New',
+  notes: l.notes || '',
+  owner: l.owner || '',
+  createdDate: created,
+  modifiedDate: modified,
+ };
+}
+
+function normalizeContactFromApi(c) {
+ const created = c.created_at || c.createdDate || new Date().toISOString();
+ const modified = c.updated_at || c.modifiedDate || created;
+ return {
+  id: String(c.id || Date.now()),
+  name: c.name || '',
+  title: c.title || '',
+  email: c.email || '',
+  phone: c.phone || '',
+  roleType: c.role_type || c.roleType || '',
+  influenceLevel: c.influence_level || c.influenceLevel || '',
+  emotion: c.emotion || '',
+  accountId: c.account_id || c.accountId || '',
+  owner: c.owner || '',
+  createdDate: created,
+  modifiedDate: modified,
+ };
+}
+
+function normalizeOpportunityFromApi(o) {
+ const created = o.created_at || o.createdDate || new Date().toISOString();
+ const modified = o.updated_at || o.modifiedDate || created;
+ return {
+  id: String(o.id || Date.now()),
+  name: o.name || '',
+  accountId: o.account_id || o.accountId || '',
+  value: Number(o.value || 0),
+  stage: o.stage || 'Discovery',
+  owner: o.owner || '',
+  salesOwner: o.sales_owner || o.salesOwner || o.owner || '',
+  workflowStage: o.workflow_stage || o.workflowStage || 'Sales Review',
+  assignedPresales: o.assigned_presales || o.assignedPresales || '',
+  assignedPurchase: o.assigned_purchase || o.assignedPurchase || '',
+  assignedSalesOps: o.assigned_salesops || o.assignedSalesOps || '',
+  salesComments: o.sales_comments || o.salesComments || '',
+  salesOpsComments: o.sales_ops_comments || o.salesOpsComments || '',
+  presalesComments: o.presales_comments || o.presalesComments || '',
+  closureDate: o.closure_date || o.closureDate || o.expected_closure_date || o.expectedClosureDate || '',
+  requirements: o.requirements || '',
+  presalesArchitecture: o.presales_architecture || o.presalesArchitecture || '',
+  presalesQuestions: o.presales_questions || o.presalesQuestions || '',
+  boq: o.boq || '',
+  purchaseCosting: o.purchase_costing || o.purchaseCosting || '',
+  costingTat: o.costing_tat || o.costingTat || '',
+  finalPricingProposal: o.final_pricing_proposal || o.finalPricingProposal || '',
+  presalesAssignedAt: o.presales_assigned_at || o.presalesAssignedAt || '',
+  presalesDueAt: o.presales_due_at || o.presalesDueAt || '',
+  salesOpsAssignedAt: o.salesops_assigned_at || o.salesOpsAssignedAt || '',
+  salesOpsDueAt: o.salesops_due_at || o.salesOpsDueAt || '',
+  purchaseAssignedAt: o.purchase_assigned_at || o.purchaseAssignedAt || '',
+  purchaseDueAt: o.purchase_due_at || o.purchaseDueAt || '',
+  costingReturnedAt: o.costing_returned_at || o.costingReturnedAt || '',
+  finalProposalAt: o.final_proposal_at || o.finalProposalAt || '',
+  assignmentDueAt: o.assignment_due_at || o.assignmentDueAt || '',
+  salesSubmittedAt: o.sales_submitted_at || o.salesSubmittedAt || '',
+  presalesEscalatedAt: o.presales_escalated_at || o.presalesEscalatedAt || '',
+  dealType: o.deal_type || o.dealType || '',
+  oemPricingRequired: String(o.oem_pricing_required || o.oemPricingRequired || '').toLowerCase() === 'true' || String(o.oem_pricing_required || o.oemPricingRequired || '') === '1',
+  intakeProblemStatement: o.intake_problem_statement || o.intakeProblemStatement || '',
+  intakeWhyNow: o.intake_why_now || o.intakeWhyNow || '',
+  intakeBusinessImpact: o.intake_business_impact || o.intakeBusinessImpact || '',
+  intakeCurrentState: o.intake_current_state || o.intakeCurrentState || '',
+  intakeBudgetRange: o.intake_budget_range || o.intakeBudgetRange || '',
+  intakeDecisionTimeline: o.intake_decision_timeline || o.intakeDecisionTimeline || '',
+  intakeRiskIfNotSolved: o.intake_risk_if_not_solved || o.intakeRiskIfNotSolved || '',
+  intakeKeyStakeholders: o.intake_key_stakeholders || o.intakeKeyStakeholders || '',
+  intakeInScope: o.intake_in_scope || o.intakeInScope || '',
+  intakeOutOfScope: o.intake_out_of_scope || o.intakeOutOfScope || '',
+  intakeCurrentEnvironment: o.intake_current_environment || o.intakeCurrentEnvironment || '',
+  intakePainPoints: o.intake_pain_points || o.intakePainPoints || '',
+  intakeComplianceRequirements: o.intake_compliance_requirements || o.intakeComplianceRequirements || '',
+  intakeIntegrationRequirements: o.intake_integration_requirements || o.intakeIntegrationRequirements || '',
+  intakeCompetitors: o.intake_competitors || o.intakeCompetitors || '',
+  intakeWinStrategy: o.intake_win_strategy || o.intakeWinStrategy || '',
+  createdDate: created,
+  modifiedDate: modified,
+ };
+}
+
+async function fetchAccountsFromApi() {
+ const url = `${CRM_API_BASE}/api/accounts?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url);
+ if (!resp.ok) throw new Error(`accounts fetch failed (${resp.status})`);
+ const data = await resp.json();
+ return Array.isArray(data) ? data.map(normalizeAccountFromApi) : [];
+}
+
+async function fetchLeadsFromApi() {
+ const url = `${CRM_API_BASE}/api/leads?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url);
+ if (!resp.ok) throw new Error(`leads fetch failed (${resp.status})`);
+ const data = await resp.json();
+ return Array.isArray(data) ? data.map(normalizeLeadFromApi) : [];
+}
+
+async function fetchContactsFromApi() {
+ const url = `${CRM_API_BASE}/api/contacts?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url);
+ if (!resp.ok) throw new Error(`contacts fetch failed (${resp.status})`);
+ const data = await resp.json();
+ return Array.isArray(data) ? data.map(normalizeContactFromApi) : [];
+}
+
+async function fetchOpportunitiesFromApi() {
+ const url = `${CRM_API_BASE}/api/opportunities?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url);
+ if (!resp.ok) throw new Error(`opportunities fetch failed (${resp.status})`);
+ const data = await resp.json();
+ return Array.isArray(data) ? data.map(normalizeOpportunityFromApi) : [];
+}
+
+async function fetchBootstrapFromApi() {
+ const url = `${CRM_API_BASE}/api/bootstrap?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url);
+ if (!resp.ok) throw new Error(`bootstrap fetch failed (${resp.status})`);
+ const data = await resp.json();
+ if (!data || typeof data !== 'object') throw new Error('invalid bootstrap response');
+ return {
+  accounts: Array.isArray(data.accounts) ? data.accounts.map(normalizeAccountFromApi) : [],
+  activities: Array.isArray(data.activities) ? data.activities.map(normalizeActivityFromApi) : [],
+  leads: Array.isArray(data.leads) ? data.leads.map(normalizeLeadFromApi) : [],
+  contacts: Array.isArray(data.contacts) ? data.contacts.map(normalizeContactFromApi) : [],
+  opportunities: Array.isArray(data.opportunities) ? data.opportunities.map(normalizeOpportunityFromApi) : []
+ };
+}
+
+async function upsertAccountToApi(accountPayload) {
+ const resp = await fetch(`${CRM_API_BASE}/api/accounts`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(accountPayload)
+ });
+ if (!resp.ok) {
+  const msg = await resp.text();
+  throw new Error(`account save failed (${resp.status}): ${msg}`);
+ }
+ return resp.json();
+}
+
+async function deleteAccountFromApi(id) {
+ const url = `${CRM_API_BASE}/api/accounts/${encodeURIComponent(id)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url, { method: 'DELETE' });
+ if (!resp.ok) throw new Error(await resp.text() || `account delete failed (${resp.status})`);
+ return resp.json();
+}
+
+async function upsertLeadToApi(payload) {
+ const resp = await fetch(`${CRM_API_BASE}/api/leads`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload)
+ });
+ if (!resp.ok) throw new Error(await resp.text() || `lead save failed (${resp.status})`);
+ return resp.json();
+}
+
+async function upsertContactToApi(payload) {
+ const resp = await fetch(`${CRM_API_BASE}/api/contacts`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload)
+ });
+ if (!resp.ok) throw new Error(await resp.text() || `contact save failed (${resp.status})`);
+ return resp.json();
+}
+
+async function upsertOpportunityToApi(payload) {
+ const resp = await fetch(`${CRM_API_BASE}/api/opportunities`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload)
+ });
+ if (!resp.ok) throw new Error(await resp.text() || `opportunity save failed (${resp.status})`);
+ return resp.json();
+}
+
+async function deleteLeadFromApi(id) {
+ const url = `${CRM_API_BASE}/api/leads/${encodeURIComponent(id)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url, { method: 'DELETE' });
+ if (!resp.ok) throw new Error(await resp.text() || `lead delete failed (${resp.status})`);
+ return resp.json();
+}
+
+async function deleteContactFromApi(id) {
+ const url = `${CRM_API_BASE}/api/contacts/${encodeURIComponent(id)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url, { method: 'DELETE' });
+ if (!resp.ok) throw new Error(await resp.text() || `contact delete failed (${resp.status})`);
+ return resp.json();
+}
+
+async function deleteOpportunityFromApi(id) {
+ const url = `${CRM_API_BASE}/api/opportunities/${encodeURIComponent(id)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url, { method: 'DELETE' });
+ if (!resp.ok) throw new Error(await resp.text() || `opportunity delete failed (${resp.status})`);
+ return resp.json();
+}
+
+async function fetchUserPassword(email) {
+ try {
+ const url = `${CRM_API_BASE}/api/passwords/${encodeURIComponent(email)}?viewer_email=${encodeURIComponent(email)}&viewer_role=account_manager`;
+ const resp = await fetch(url);
+ if (!resp.ok) return null;
+ const data = await resp.json();
+ return data.password || null;
+ } catch (e) {
+ return null;
+ }
+}
+
+async function setUserPassword(email, password) {
+ const payload = { email, password, viewer_role: 'account_manager', viewer_email: currentUser };
+ const resp = await fetch(`${CRM_API_BASE}/api/passwords`, {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify(payload)
+ });
+ if (!resp.ok) {
+ const msg = await resp.text();
+ throw new Error(msg || 'failed to set password');
+ }
+ return resp.json();
+}
+
+function openChangePassword() {
+ const email = currentUser;
+ if (!email) return;
+ const pwd = prompt('Enter your new password:');
+ if (!pwd) return;
+ setUserPassword(email, pwd)
+ .then(() => alert('Password updated'))
+ .catch(err => alert(`Failed: ${err.message}`));
+}
+
+async function refreshMicrosoftStatus() {
+ try {
+  if (!currentUser) return;
+  const r = await fetch(`${CRM_API_BASE}/api/oauth/microsoft/status?viewer_email=${encodeURIComponent(currentUser)}`);
+  if (!r.ok) return;
+  const data = await r.json();
+  const btn = document.getElementById('connectMsBtn');
+  if (btn) {
+   btn.textContent = data.connected ? 'Microsoft 365 Connected' : 'Connect Microsoft 365';
+   btn.style.opacity = data.connected ? '0.9' : '1';
+  }
+ } catch (e) {}
+}
+
+async function openMicrosoftConnect() {
+ try {
+  const r = await fetch(`${CRM_API_BASE}/api/oauth/microsoft/start?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`);
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || 'could not start Microsoft OAuth');
+  const w = window.open(data.url, 'ms_oauth', 'width=560,height=720');
+  if (!w) {
+   alert('Popup blocked. Please allow popups and try again.');
+  }
+ } catch (err) {
+  alert(`Microsoft connect failed: ${err.message}`);
+ }
+}
+
+window.addEventListener('message', (ev) => {
+ if (ev?.data?.type === 'ms_o365_connected') {
+  refreshMicrosoftStatus();
+  alert('Microsoft 365 connected successfully.');
+ }
+});
+
+function setSendMomFlag(shouldSend) {
+ const el = document.getElementById('sendMomFlag');
+ if (el) el.value = shouldSend ? '1' : '0';
+}
+
+function toggleMomSection(isOn) {
+ const sec = document.getElementById('momSection');
+ if (sec) sec.style.display = isOn ? 'block' : 'none';
+}
+
+function buildMomPayloadFromForm(formData, activityPayload) {
+ return {
+  activity_id: activityPayload.id,
+  viewer_email: currentUser,
+  viewer_role: getViewerRoleForApi(),
+  account_id: activityPayload.account_id || '',
+  account_name: activityPayload.account_name || '',
+  meeting_date: fmtDateTime(activityPayload.date || new Date().toISOString()),
+  client_name: formData.momClientName || 'Team',
+  to_emails: formData.momToEmails || '',
+  cc_emails: formData.momCcEmails || '',
+  subject: formData.momSubject || '',
+  mom_intro: formData.momIntro || '',
+  mom_discussion: formData.momDiscussion || '',
+  mom_actions: formData.momActions || '',
+  mom_next_steps: formData.momNextSteps || ''
+ };
+}
+
+async function sendMomEmailFromApi(payload) {
+ const r = await fetch(`${CRM_API_BASE}/api/mom/send`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload)
+ });
+ const data = await r.json().catch(() => ({}));
+ if (!r.ok) throw new Error(data.error || `MoM send failed (${r.status})`);
+ return data;
+}
+
+async function fetchActivitiesFromApi() {
+ const url = `${CRM_API_BASE}/api/activities?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url);
+ if (!resp.ok) throw new Error(`activities fetch failed (${resp.status})`);
+ const data = await resp.json();
+ return Array.isArray(data) ? data.map(normalizeActivityFromApi) : [];
+}
+
+async function upsertActivityToApi(activity) {
+ const resp = await fetch(`${CRM_API_BASE}/api/activities`, {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify(activity)
+ });
+ if (!resp.ok) {
+ const msg = await resp.text();
+ throw new Error(`activity save failed (${resp.status}): ${msg}`);
+ }
+ return resp.json();
+}
+
+async function deleteActivityFromApi(activityId) {
+ const url = `${CRM_API_BASE}/api/activities/${encodeURIComponent(activityId)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url, { method: 'DELETE' });
+ if (!resp.ok) {
+ const msg = await resp.text();
+ throw new Error(`activity delete failed (${resp.status}): ${msg}`);
+ }
+ return resp.json();
+}
+
+function fmtDate(v) {
+ if (!v) return 'NA';
+ const d = new Date(v);
+ return isNaN(d.getTime()) ? 'NA' : d.toLocaleDateString();
+}
+
+function fmtDateTime(v) {
+ if (!v) return 'NA';
+ const d = new Date(v);
+ return isNaN(d.getTime()) ? 'NA' : d.toLocaleString();
+}
+
+function toISOOrBlank(v) {
+ if (!v) return '';
+ const d = new Date(v);
+ return isNaN(d.getTime()) ? '' : d.toISOString();
+}
+
+function withTimeout(promise, ms, label = 'request') {
+ return Promise.race([
+  promise,
+  new Promise((_, reject) =>
+   setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms)
+  )
+ ]);
+}
+
+
+function parseCSV(csvText) {
+ const lines = csvText.split(/\\r?\\n/).filter(l => l.trim().length);
+ if (!lines.length) return [];
+ const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+ const rows = [];
+ for (let i = 1; i < lines.length; i++) {
+ const parts = lines[i].split(',');
+ const row = {};
+ headers.forEach((h, idx) => row[h] = (parts[idx] || '').trim());
+ rows.push(row);
+ }
+ return rows;
+}
+
+function downloadCSV(filename, rows) {
+ const csv = rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+ const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+ const url = URL.createObjectURL(blob);
+ const a = document.createElement('a');
+ a.href = url;
+ a.download = filename;
+ a.click();
+ URL.revokeObjectURL(url);
+}
+
+function hoursUntil(dueIso) {
+ if (!dueIso) return null;
+ const d = new Date(dueIso);
+ if (isNaN(d.getTime())) return null;
+ return Math.ceil((d.getTime() - Date.now()) / 3600000);
+}
+
+function dueSoon(dueIso, hours) {
+ const h = hoursUntil(dueIso);
+ return h !== null && h >= 0 && h <= hours;
+}
+
+function toDateSafe(v) {
+ if (!v) return null;
+ const d = new Date(v);
+ return Number.isNaN(d.getTime()) ? null : d;
+}
+
+
+function addHours(baseIso, hours) {
+ const d = baseIso ? new Date(baseIso) : new Date();
+ if (isNaN(d.getTime())) return '';
+ d.setHours(d.getHours() + hours);
+ return d.toISOString();
+}
+
+async function runSLAEngine() {
+ if (slaEngineRunning || !currentUser) return;
+ slaEngineRunning = true;
+ try {
+  const now = new Date();
+  let changed = false;
+  const opps = state.data.opportunities || [];
+
+  for (const opp of opps) {
+   const salesSubmitted = toDateSafe(opp.salesSubmittedAt || opp.createdDate) || now;
+   const assignmentDue = toDateSafe(opp.assignmentDueAt) || new Date(salesSubmitted.getTime() + 4 * 3600000);
+   const presalesDue = toDateSafe(opp.presalesDueAt) || new Date(salesSubmitted.getTime() + 72 * 3600000);
+
+   if (!opp.assignmentDueAt) opp.assignmentDueAt = assignmentDue.toISOString();
+   if (!opp.presalesDueAt) opp.presalesDueAt = presalesDue.toISOString();
+   if (!opp.salesSubmittedAt) opp.salesSubmittedAt = salesSubmitted.toISOString();
+
+   // Auto move Sales -> Presales after 4h
+   if ((opp.workflowStage || 'Sales Review') === 'Sales Review' && now >= assignmentDue) {
+    opp.workflowStage = 'Assigned to Presales';
+    opp.assignedPresales = opp.assignedPresales || PRESALES_OWNER;
+    opp.presalesAssignedAt = opp.presalesAssignedAt || assignmentDue.toISOString();
+    opp.presalesDueAt = presalesDue.toISOString();
+    opp.modifiedDate = now.toISOString();
+    changed = true;
+   }
+
+   // SLA enforcement: 72h window for presales response/proposal
+   const presalesActiveStages = ['Assigned to Presales', 'Awaiting Purchase Costing', 'Costing Returned to Presales'];
+   const hasProposal = !!(opp.finalPricingProposal || '').trim();
+   if (hasProposal && opp.workflowStage !== 'Final Proposal Shared') {
+    opp.workflowStage = 'Final Proposal Shared';
+    opp.finalProposalAt = opp.finalProposalAt || now.toISOString();
+    opp.modifiedDate = now.toISOString();
+    changed = true;
+   } else if (!hasProposal && presalesActiveStages.includes(opp.workflowStage || '') && now > presalesDue) {
+    if (!opp.presalesEscalatedAt) {
+     opp.presalesEscalatedAt = now.toISOString();
+     opp.workflowStage = 'Presales Overdue';
+     opp.modifiedDate = now.toISOString();
+     changed = true;
     }
-
-    return _http_json_request(
-        "https://graph.microsoft.com/v1.0/me/sendMail",
-        method="POST",
-        data=payload,
-        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-    )
-
-
-def _format_bullets(text: str):
-    lines = [ln.strip(" -	") for ln in str(text or "").splitlines() if ln.strip()]
-    if not lines:
-        return "<li>NA</li>"
-    return "".join([f"<li>{ln}</li>" for ln in lines])
-
-
-def _format_action_rows(text: str):
-    rows = []
-    for ln in str(text or "").splitlines():
-        raw = ln.strip()
-        if not raw:
-            continue
-        parts = [p.strip() for p in raw.split("|")]
-        while len(parts) < 4:
-            parts.append("")
-        rows.append(parts[:4])
-    if not rows:
-        rows = [["NA", "", "", "Open"]]
-    return "".join([f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td></tr>" for r in rows])
-
-
-def _build_mom_html(payload: dict):
-    account_name = payload.get("account_name") or "Account"
-    meeting_date = payload.get("meeting_date") or datetime.now().strftime("%d-%b-%Y")
-    client_name = payload.get("client_name") or "Team"
-    intro = payload.get("mom_intro") or ""
-    discussion = payload.get("mom_discussion") or ""
-    actions = payload.get("mom_actions") or ""
-    next_steps = payload.get("mom_next_steps") or ""
-    am_name = payload.get("account_manager_name") or "Account Manager"
-    am_email = payload.get("account_manager_email") or ""
-
-    return f"""
-    <p>Hi {client_name},</p>
-    <p>Thank you for your time today. Please find the minutes of meeting below.</p>
-    <p><b>Introduction:</b><br>{intro}</p>
-    <p><b>Discussion Points:</b></p>
-    <ul>{_format_bullets(discussion)}</ul>
-    <p><b>Action Points:</b></p>
-    <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse">
-      <tr><th>Action Item</th><th>Owner</th><th>Due Date</th><th>Status</th></tr>
-      {_format_action_rows(actions)}
-    </table>
-    <p><b>Next Steps:</b><br>{next_steps}</p>
-    <p>Please let us know if any point needs correction.</p>
-    <p>Regards,<br>{am_name}<br>{am_email}<br>DNISPL</p>
-    """
-
-
-def send_email_smtp(to_emails, subject: str, body: str, cc_emails=None) -> bool:
-    to_list = [e.strip().lower() for e in (to_emails or []) if (e or "").strip() and "@" in e]
-    cc_list = [e.strip().lower() for e in (cc_emails or []) if (e or "").strip() and "@" in e]
-    print(f"[CRM SMTP] Attempting send to={to_list} cc={cc_list} subject={subject}")
-    if not to_list and not cc_list:
-        print(f"[CRM SMTP] BLOCKED — no valid recipients")
-        return False
-    if not (SMTP_HOST and SMTP_USER and SMTP_PASSWORD):
-        print(f"[CRM SMTP] BLOCKED — SMTP not configured. HOST={SMTP_HOST} USER={SMTP_USER}")
-        return False
-    msg = EmailMessage()
-    msg["From"] = SMTP_FROM
-    if to_list:
-        msg["To"] = ", ".join(to_list)
-    if cc_list:
-        msg["Cc"] = ", ".join(cc_list)
-    msg["Subject"] = subject
-    msg.set_content(body)
-    try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.send_message(msg)
-        print(f"[CRM SMTP] Email sent successfully to={to_list} cc={cc_list}")
-        return True
-    except Exception as exc:
-        print(f"[CRM SMTP] Email send FAILED: {exc}")
-        return False
-
-def send_presales_escalation_email(row, presales_due_iso: str) -> None:
-    subject = f"[CRM Escalation] Presales SLA Breached: {row.get('name') or row.get('id')}"
-    body = (
-        f"Opportunity: {row.get('name') or ''}\n"
-        f"Opportunity ID: {row.get('id') or ''}\n"
-        f"Account ID: {row.get('account_id') or ''}\n"
-        f"Sales Owner: {row.get('sales_owner') or row.get('owner') or ''}\n"
-        f"Assigned Presales: {row.get('assigned_presales') or PRESALES_OWNER}\n"
-        f"Current Workflow Stage: {row.get('workflow_stage') or ''}\n"
-        f"Presales Due At (72h SLA): {presales_due_iso}\n\n"
-        "Action Needed: Please review and expedite proposal submission."
-    )
-    send_email_smtp(ESCALATION_EMAILS, subject, body)
-
-
-def send_presales_assignment_email(opportunity_name: str, opp_id: str, presales_email: str, presales_due_iso: str) -> None:
-    target = (presales_email or "").strip().lower()
-    if "@" not in target:
-        return
-    subject = f"[CRM] New Opportunity Assigned: {opportunity_name or opp_id}"
-    body = (
-        f"Opportunity: {opportunity_name or ''}\n"
-        f"Opportunity ID: {opp_id}\n"
-        f"Assigned To (Presales): {target}\n"
-        f"Presales Due At (72h SLA): {presales_due_iso}\n\n"
-        "Please review requirements and submit solution/proposal within SLA."
-    )
-    send_email_smtp([target], subject, body)
-
-
-def send_opportunity_assignment_email(opportunity_name: str, opp_id: str, presales_email: str, sales_email: str, presales_due_iso: str, account_manager_email: str = "") -> None:
-    presales_target = (presales_email or "").strip().lower()
-    print(f"[CRM EMAIL] send_opportunity_assignment_email called: to={presales_target} cc_candidates={[SUPERVISOR_EMAIL, sales_email, account_manager_email]}")
-    if "@" not in presales_target:
-        print(f"[CRM EMAIL] Aborted — no valid presales email")
-        return
-    cc_list = []
-    for e in [SUPERVISOR_EMAIL, sales_email, account_manager_email]:
-        e = (e or "").strip().lower()
-        if e and "@" in e and e != presales_target and e not in cc_list:
-            cc_list.append(e)
-    subject = f"[CRM] Opportunity Assigned to Presales: {opportunity_name or opp_id}"
-    body = (
-        f"Opportunity: {opportunity_name or ''}\n"
-        f"Opportunity ID: {opp_id}\n"
-        f"Sales Owner: {sales_email or 'NA'}\n"
-        f"Assigned Presales: {presales_target}\n"
-        f"Presales Due At (72h SLA): {presales_due_iso}\n\n"
-        "Please review requirements and submit solution/proposal within SLA."
-    )
-    send_email_smtp([presales_target], subject, body, cc_emails=cc_list)
-
-
-def send_salesops_assignment_email(
-    opportunity_name: str,
-    opp_id: str,
-    salesops_email: str,
-    sales_email: str = "",
-    presales_email: str = "",
-    deal_type: str = "",
-    due_iso: str = "",
-    account_manager_email: str = "",
-) -> None:
-    target = (salesops_email or "").strip().lower()
-    if "@" not in target:
-        return
-    cc_list = []
-    for e in [SUPERVISOR_EMAIL, sales_email, presales_email, account_manager_email]:
-        e = (e or "").strip().lower()
-        if e and "@" in e and e != target and e not in cc_list:
-            cc_list.append(e)
-    subject = f"[CRM] Sales Ops Pricing Request: {opportunity_name or opp_id}"
-    body = (
-        f"Opportunity: {opportunity_name or ''}\n"
-        f"Opportunity ID: {opp_id}\n"
-        f"Sales Owner: {sales_email or 'NA'}\n"
-        f"Assigned Sales Ops: {target}\n"
-        f"Assigned Presales: {presales_email or 'NA'}\n"
-        f"Deal Type: {deal_type or 'NA'}\n"
-        f"Pricing Due At: {due_iso or 'NA'}\n\n"
-        "Please coordinate with OEM / distributor and update pricing support in CRM."
-    )
-    send_email_smtp([target], subject, body, cc_emails=cc_list)
-def enforce_opportunity_sla(conn, rows):
-    now = datetime.now(timezone.utc)
-    changed = False
-    with conn.cursor() as cur:
-        for row in rows:
-            workflow_stage = (row.get("workflow_stage") or "Sales Review").strip()
-            sales_submitted = parse_iso_dt(row.get("sales_submitted_at")) or parse_iso_dt(str(row.get("created_at") or ""))
-            if not sales_submitted:
-                sales_submitted = now
-            assignment_due = parse_iso_dt(row.get("assignment_due_at")) or (sales_submitted + timedelta(hours=4))
-            presales_due = parse_iso_dt(row.get("presales_due_at")) or (sales_submitted + timedelta(hours=72))
-
-            updates = {}
-            if not (row.get("sales_submitted_at") or "").strip():
-                updates["sales_submitted_at"] = sales_submitted.isoformat().replace("+00:00", "Z")
-            if not (row.get("assignment_due_at") or "").strip():
-                updates["assignment_due_at"] = assignment_due.isoformat().replace("+00:00", "Z")
-            if not (row.get("presales_due_at") or "").strip():
-                updates["presales_due_at"] = presales_due.isoformat().replace("+00:00", "Z")
-
-            if workflow_stage == "Sales Review" and now >= assignment_due:
-                updates["workflow_stage"] = "Assigned to Presales"
-                updates["assigned_presales"] = (row.get("assigned_presales") or "").strip() or PRESALES_OWNER
-                updates["presales_assigned_at"] = (
-                    parse_iso_dt(row.get("presales_assigned_at")) or assignment_due
-                ).isoformat().replace("+00:00", "Z")
-                if not (row.get("presales_assigned_at") or "").strip():
-                    send_presales_assignment_email(
-                        row.get("name") or "",
-                        row.get("id") or "",
-                        updates["assigned_presales"],
-                        presales_due.isoformat().replace("+00:00", "Z"),
-                    )
-
-            has_proposal = bool((row.get("final_pricing_proposal") or "").strip())
-            if has_proposal and workflow_stage != "Final Proposal Shared":
-                updates["workflow_stage"] = "Final Proposal Shared"
-                updates["final_proposal_at"] = (
-                    parse_iso_dt(row.get("final_proposal_at")) or now
-                ).isoformat().replace("+00:00", "Z")
-            elif (
-                not has_proposal
-                and workflow_stage in ("Assigned to Presales", "Awaiting Purchase Costing", "Costing Returned")
-                and now > presales_due
-                and not (row.get("presales_escalated_at") or "").strip()
-            ):
-                updates["workflow_stage"] = "Presales Overdue"
-                updates["presales_escalated_at"] = now.isoformat().replace("+00:00", "Z")
-                send_presales_escalation_email(
-                    row, presales_due.isoformat().replace("+00:00", "Z")
-                )
-
-            if updates:
-                sets = ", ".join([f"{k}=%s" for k in updates.keys()] + ["updated_at=now()"])
-                params = list(updates.values()) + [row["id"]]
-                cur.execute(f"UPDATE opportunities SET {sets} WHERE id=%s", params)
-                changed = True
-
-    if changed:
-        conn.commit()
-    return changed
-
-
-def ensure_user(manager_value: str) -> int:
-    value = (manager_value or "").strip()
-    if not value:
-        raise ValueError("account_manager is required")
-
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if "@" in value:
-                cur.execute(
-                    "SELECT id FROM users WHERE lower(email)=lower(%s)",
-                    (value,),
-                )
-                row = cur.fetchone()
-                if row:
-                    return int(row["id"])
-                cur.execute(
-                    "INSERT INTO users (email, name, role, created_at) VALUES (%s, %s, 'account_manager', now()) RETURNING id",
-                    (value, value.split("@")[0]),
-                )
-                new_id = cur.fetchone()["id"]
-                conn.commit()
-                return int(new_id)
-
-            cur.execute(
-                "SELECT id FROM users WHERE lower(name)=lower(%s)",
-                (value,),
-            )
-            row = cur.fetchone()
-            if row:
-                return int(row["id"])
-
-            placeholder_email = f"{value.lower().replace(' ', '.')}@local.crm"
-            cur.execute(
-                "INSERT INTO users (email, name, role, created_at) VALUES (%s, %s, 'account_manager', now()) RETURNING id",
-                (placeholder_email, value),
-            )
-            new_id = cur.fetchone()["id"]
-            conn.commit()
-            return int(new_id)
-    finally:
-        conn.close()
-
-
-def upsert_account(data: dict, manager_id: int) -> str:
-    name = (data.get("account_name") or "").strip()
-    if not name:
-        raise ValueError("account_name is required")
-    account_id = str(data.get("id") or "").strip()
-
-    industry = (data.get("industry") or "").strip()
-    tier = (data.get("tier") or "").strip()
-    location = (data.get("location") or "").strip()
-    company_size = (data.get("company_size") or data.get("companySize") or "").strip()
-    annual_spend = (data.get("annual_spend") or data.get("annualSpend") or "").strip()
-    mode = (data.get("mode") or "").strip()
-    suspect_answers = {
-        f"suspect_q{i}": (data.get(f"suspect_q{i}") or "").strip()
-        for i in range(1, 11)
-    }
-    suspect_score = compute_suspect_score(suspect_answers)
-
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if account_id.isdigit():
-                cur.execute("SELECT id FROM accounts WHERE id=%s", (int(account_id),))
-            else:
-                cur.execute(
-                    "SELECT id FROM accounts WHERE lower(account_name)=lower(%s)",
-                    (name,),
-                )
-            row = cur.fetchone()
-            if row:
-                cur.execute(
-                    """
-                    UPDATE accounts
-                    SET account_manager_id=%s,
-                        industry=%s,
-                        tier=%s,
-                        location=%s,
-                        company_size=%s,
-                        annual_spend=%s,
-                        mode=%s,
-                        suspect_q1=%s,
-                        suspect_q2=%s,
-                        suspect_q3=%s,
-                        suspect_q4=%s,
-                        suspect_q5=%s,
-                        suspect_q6=%s,
-                        suspect_q7=%s,
-                        suspect_q8=%s,
-                        suspect_q9=%s,
-                        suspect_q10=%s,
-                        suspect_score=%s,
-                        updated_at=now()
-                    WHERE id=%s
-                    """,
-                    (
-                        manager_id,
-                        industry,
-                        tier,
-                        location,
-                        company_size,
-                        annual_spend,
-                        mode,
-                        suspect_answers["suspect_q1"],
-                        suspect_answers["suspect_q2"],
-                        suspect_answers["suspect_q3"],
-                        suspect_answers["suspect_q4"],
-                        suspect_answers["suspect_q5"],
-                        suspect_answers["suspect_q6"],
-                        suspect_answers["suspect_q7"],
-                        suspect_answers["suspect_q8"],
-                        suspect_answers["suspect_q9"],
-                        suspect_answers["suspect_q10"],
-                        suspect_score,
-                        int(row["id"]),
-                    ),
-                )
-                conn.commit()
-                return "updated"
-
-            cur.execute(
-                """
-                INSERT INTO accounts (
-                    account_name, account_manager_id, industry, tier, location, company_size, annual_spend, mode,
-                    suspect_q1, suspect_q2, suspect_q3, suspect_q4, suspect_q5,
-                    suspect_q6, suspect_q7, suspect_q8, suspect_q9, suspect_q10, suspect_score,
-                    created_at, updated_at
-                )
-                VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s,
-                    now(), now()
-                )
-                """,
-                (
-                    name,
-                    manager_id,
-                    industry,
-                    tier,
-                    location,
-                    company_size,
-                    annual_spend,
-                    mode,
-                    suspect_answers["suspect_q1"],
-                    suspect_answers["suspect_q2"],
-                    suspect_answers["suspect_q3"],
-                    suspect_answers["suspect_q4"],
-                    suspect_answers["suspect_q5"],
-                    suspect_answers["suspect_q6"],
-                    suspect_answers["suspect_q7"],
-                    suspect_answers["suspect_q8"],
-                    suspect_answers["suspect_q9"],
-                    suspect_answers["suspect_q10"],
-                    suspect_score,
-                ),
-            )
-            conn.commit()
-            return "created"
-    finally:
-        conn.close()
-
-
-@app.route("/api/health", methods=["GET"])
-def health():
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT COUNT(*) AS c FROM users")
-            users = cur.fetchone()["c"]
-            cur.execute("SELECT COUNT(*) AS c FROM accounts")
-            accounts = cur.fetchone()["c"]
-        return jsonify(
-            {
-                "status": "ok",
-                "db_host": urlparse(DATABASE_URL).hostname,
-                "users": users,
-                "accounts": accounts,
-            }
-        )
-    finally:
-        conn.close()
-
-
-@app.route("/api/users", methods=["GET"])
-def list_users():
-    conn = get_conn()
-    try:
-        role = (request.args.get("role") or "").strip().lower()
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if role:
-                cur.execute(
-                    "SELECT id, email, name, role FROM users WHERE lower(role)=lower(%s) ORDER BY name",
-                    (role,),
-                )
-            else:
-                cur.execute("SELECT id, email, name, role FROM users ORDER BY name")
-            rows = cur.fetchall()
-        return jsonify(rows)
-    finally:
-        conn.close()
-
-
-@app.route("/api/accounts", methods=["GET"])
-def list_accounts():
-    viewer_email = (request.args.get("viewer_email") or "").strip()
-    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
-
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if viewer_role in ("supervisor", "admin"):
-                cur.execute(
-                    """
-                    SELECT a.id, a.account_name, a.created_at, a.updated_at,
-                           a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode,
-                           a.suspect_q1, a.suspect_q2, a.suspect_q3, a.suspect_q4, a.suspect_q5,
-                           a.suspect_q6, a.suspect_q7, a.suspect_q8, a.suspect_q9, a.suspect_q10, a.suspect_score,
-                           u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
-                    FROM accounts a
-                    LEFT JOIN users u ON u.id = a.account_manager_id
-                    ORDER BY a.account_name
-                    """
-                )
-                return jsonify(cur.fetchall())
-
-            if not viewer_email:
-                return jsonify({"error": "viewer_email is required for non-supervisor access"}), 400
-
-            cur.execute(
-                "SELECT id FROM users WHERE lower(email)=lower(%s)",
-                (viewer_email,),
-            )
-            manager = cur.fetchone()
-            if not manager:
-                return jsonify([])
-
-            cur.execute(
-                """
-                SELECT a.id, a.account_name, a.created_at, a.updated_at,
-                       a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode,
-                       a.suspect_q1, a.suspect_q2, a.suspect_q3, a.suspect_q4, a.suspect_q5,
-                       a.suspect_q6, a.suspect_q7, a.suspect_q8, a.suspect_q9, a.suspect_q10, a.suspect_score,
-                       u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
-                FROM accounts a
-                LEFT JOIN users u ON u.id = a.account_manager_id
-                WHERE a.account_manager_id = %s
-                ORDER BY a.account_name
-                """,
-                (int(manager["id"]),),
-            )
-            return jsonify(cur.fetchall())
-    finally:
-        conn.close()
-
-
-@app.route("/api/bootstrap", methods=["GET"])
-def bootstrap_data():
-    viewer_email = (request.args.get("viewer_email") or "").strip()
-    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
-    payload = {
-        "accounts": [],
-        "activities": [],
-        "leads": [],
-        "contacts": [],
-        "opportunities": [],
-    }
-    _cache_key = f"bootstrap:{viewer_email}:{viewer_role}"
-    _now = time.time()
-    with _write_limits_lock:
-        _cached = _write_limits.get(_cache_key)
-        if _cached and _now - _cached[0] < 10:
-            return jsonify(_cached[1])
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if _is_supervisor(viewer_role):
-                cur.execute(
-                    """
-                    SELECT a.id, a.account_name, a.created_at, a.updated_at,
-                           a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode,
-                           a.suspect_q1, a.suspect_q2, a.suspect_q3, a.suspect_q4, a.suspect_q5,
-                           a.suspect_q6, a.suspect_q7, a.suspect_q8, a.suspect_q9, a.suspect_q10, a.suspect_score,
-                           u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
-                    FROM accounts a
-                    LEFT JOIN users u ON u.id = a.account_manager_id
-                    ORDER BY a.account_name
-                    """
-                )
-                payload["accounts"] = cur.fetchall()
-            elif viewer_email:
-                cur.execute("SELECT id FROM users WHERE lower(email)=lower(%s)", (viewer_email,))
-                manager = cur.fetchone()
-                if manager:
-                    cur.execute(
-                        """
-                        SELECT a.id, a.account_name, a.created_at, a.updated_at,
-                               a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode,
-                               a.suspect_q1, a.suspect_q2, a.suspect_q3, a.suspect_q4, a.suspect_q5,
-                               a.suspect_q6, a.suspect_q7, a.suspect_q8, a.suspect_q9, a.suspect_q10, a.suspect_score,
-                               u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
-                        FROM accounts a
-                        LEFT JOIN users u ON u.id = a.account_manager_id
-                        WHERE a.account_manager_id = %s
-                        ORDER BY a.account_name
-                        """,
-                        (int(manager["id"]),),
-                    )
-                    payload["accounts"] = cur.fetchall()
-
-            if _is_supervisor(viewer_role):
-                cur.execute(
-                    """
-                    SELECT id, type, subject, notes, date, owner, account_id, account_name, created_at, updated_at
-                    FROM activities
-                    ORDER BY date DESC, updated_at DESC
-                    """
-                )
-                payload["activities"] = cur.fetchall()
-            elif viewer_email:
-                cur.execute(
-                    """
-                    SELECT id, type, subject, notes, date, owner, account_id, account_name, created_at, updated_at
-                    FROM activities
-                    WHERE lower(owner)=lower(%s)
-                    ORDER BY date DESC, updated_at DESC
-                    """,
-                    (viewer_email,),
-                )
-                payload["activities"] = cur.fetchall()
-
-            if _is_supervisor(viewer_role) or viewer_role == "presales":
-                cur.execute(
-                    """
-                    SELECT id, name, company, email, phone, source, status, notes, owner, created_at, updated_at
-                    FROM leads
-                    ORDER BY updated_at DESC
-                    """
-                )
-                payload["leads"] = cur.fetchall()
-            elif viewer_email:
-                cur.execute(
-                    """
-                    SELECT id, name, company, email, phone, source, status, notes, owner, created_at, updated_at
-                    FROM leads
-                    WHERE lower(owner)=lower(%s)
-                    ORDER BY updated_at DESC
-                    """,
-                    (viewer_email,),
-                )
-                payload["leads"] = cur.fetchall()
-
-            if _is_supervisor(viewer_role):
-                cur.execute(
-                    """
-                    SELECT id, name, title, email, phone, role_type, influence_level, emotion, account_id, owner, created_at, updated_at
-                    FROM contacts
-                    ORDER BY updated_at DESC
-                    """
-                )
-                payload["contacts"] = cur.fetchall()
-            elif viewer_email:
-                cur.execute(
-                    """
-                    SELECT id, name, title, email, phone, role_type, influence_level, emotion, account_id, owner, created_at, updated_at
-                    FROM contacts
-                    WHERE lower(owner)=lower(%s)
-                    ORDER BY updated_at DESC
-                    """,
-                    (viewer_email,),
-                )
-                payload["contacts"] = cur.fetchall()
-
-            opp_all = """
-                SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
-                       assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
-                       presales_architecture, presales_questions, boq, purchase_costing,
-                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
-                       purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                       assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
-                       intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
-                       intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
-                       intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
-                       intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
-                       intake_competitors, intake_win_strategy, created_at, updated_at
-                FROM opportunities
-                ORDER BY updated_at DESC
-            """
-            opp_scoped = """
-                SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
-                       assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
-                       presales_architecture, presales_questions, boq, purchase_costing,
-                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
-                       purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                       assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
-                       intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
-                       intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
-                       intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
-                       intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
-                       intake_competitors, intake_win_strategy, created_at, updated_at
-                FROM opportunities
-                WHERE lower(owner)=lower(%s)
-                   OR lower(sales_owner)=lower(%s)
-                   OR lower(assigned_presales)=lower(%s)
-                   OR lower(assigned_salesops)=lower(%s)
-                   OR lower(assigned_purchase)=lower(%s)
-                ORDER BY updated_at DESC
-            """
-
-            if _is_supervisor(viewer_role):
-                cur.execute(opp_all)
-                rows = cur.fetchall()
-                if enforce_opportunity_sla(conn, rows):
-                    cur.execute(opp_all)
-                    rows = cur.fetchall()
-                payload["opportunities"] = rows
-            elif viewer_email:
-                cur.execute(opp_scoped, (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email))
-                rows = cur.fetchall()
-                if enforce_opportunity_sla(conn, rows):
-                    cur.execute(opp_scoped, (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email))
-                    rows = cur.fetchall()
-                payload["opportunities"] = rows
-        with _write_limits_lock:
-            _write_limits[f"bootstrap:{viewer_email}:{viewer_role}"] = (time.time(), payload)        
-        return jsonify(payload)
-        
-    except Exception as exc:
-        return jsonify({"error": f"bootstrap failed: {exc}", **payload}), 200
-    finally:
-        conn.close()
-
-
-@app.route("/api/accounts", methods=["POST"])
-def create_or_update_account():
-    allowed, ip = _rate_limit_write("accounts_post", per_60s=35)
-    if not allowed:
-        print(f"[RATE_LIMIT] route=/api/accounts ip={ip}")
-        return jsonify({"error": "too many requests"}), 429
-
-    data = request.get_json(silent=True) or {}
-    account_name = (data.get("account_name") or "").strip()
-    account_manager = (data.get("account_manager") or "").strip()
-    if not account_name or not account_manager:
-        return jsonify({"error": "account_name and account_manager are required"}), 400
-
-    try:
-        manager_id = ensure_user(account_manager)
-        result = upsert_account(data, manager_id)
-        return jsonify({"status": result, "account_name": account_name}), 200
-    except ValueError as exc:
-        print(f"[ACCOUNTS_POST_BAD_REQUEST] ip={ip} err={exc}")
-        return jsonify({"error": str(exc)}), 400
-    except Exception as exc:
-        print(f"[ACCOUNTS_POST_ERROR] ip={ip} err={exc}")
-        return jsonify({"error": f"account save failed: {exc}"}), 500
-
-
-@app.route("/api/accounts/<account_id>", methods=["DELETE"])
-def delete_account(account_id: str):
-    viewer_email = (request.args.get("viewer_email") or "").strip().lower()
-    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
-
-    if not str(account_id).isdigit():
-        return jsonify({"error": "invalid account id"}), 400
-
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, account_manager_id FROM accounts WHERE id=%s", (int(account_id),))
-            row = cur.fetchone()
-            if not row:
-                return jsonify({"error": "account not found"}), 404
-
-            if not _is_supervisor(viewer_role):
-                if not viewer_email:
-                    return jsonify({"error": "viewer_email is required"}), 400
-                cur.execute("SELECT id FROM users WHERE lower(email)=lower(%s)", (viewer_email,))
-                manager = cur.fetchone()
-                if not manager or int(manager["id"]) != int(row.get("account_manager_id") or -1):
-                    return jsonify({"error": "not allowed"}), 403
-
-            cur.execute("DELETE FROM accounts WHERE id=%s", (int(account_id),))
-        conn.commit()
-        return jsonify({"status": "deleted", "id": int(account_id)})
-    finally:
-        conn.close()
-
-
-@app.route("/api/accounts/import", methods=["POST"])
-def import_accounts():
-    if "file" not in request.files:
-        return jsonify({"error": "Missing file in form-data"}), 400
-
-    file_obj = request.files["file"]
-    if not file_obj or not file_obj.filename:
-        return jsonify({"error": "Invalid file"}), 400
-
-    try:
-        content = file_obj.read().decode("utf-8", errors="replace")
-        reader = csv.DictReader(StringIO(content))
-    except Exception as exc:
-        return jsonify({"error": f"Could not read CSV: {exc}"}), 400
-
-    created = 0
-    updated = 0
-    failed = []
-
-    for idx, row in enumerate(reader, start=2):
-        name = (row.get("account_name") or "").strip()
-        manager = (row.get("account_manager") or "").strip()
-        if not name or not manager:
-            failed.append({"row": idx, "error": "Missing account_name/account_manager"})
-            continue
-        try:
-            manager_id = ensure_user(manager)
-            result = upsert_account(
-                {
-                    "account_name": name,
-                    "account_manager": manager,
-                },
-                manager_id,
-            )
-            if result == "created":
-                created += 1
-            else:
-                updated += 1
-        except Exception as exc:
-            failed.append({"row": idx, "error": str(exc), "account_name": name})
-
-    return jsonify(
-        {
-            "created": created,
-            "updated": updated,
-            "failed_count": len(failed),
-            "failed_rows": failed[:50],
+   }
+  }
+
+  if (changed) {
+   for (const opp of opps) {
+    await upsertOpportunityToApi(opp);
+   }
+   state.data.opportunities = await fetchOpportunitiesFromApi();
+   saveData();
+   render();
+  }
+ } catch (err) {
+  console.warn('SLA engine warning:', err);
+ } finally {
+  slaEngineRunning = false;
+ }
+}
+
+
+function escalationMailto(opp, stage, dueIso) {
+ const to = ESCALATION_EMAILS.join(',');
+ const subject = encodeURIComponent(`[CRM Escalation] ${stage} overdue: ${opp.name}`);
+ const body = encodeURIComponent(
+ `Opportunity: ${opp.name}
+Stage: ${stage}
+Owner: ${stage === 'Presales' ? opp.assignedPresales : opp.assignedPurchase}
+Due: ${dueIso}
+Current Status: ${opp.workflowStage}
+`
+ );
+ return `mailto:${to}?subject=${subject}&body=${body}`;
+}
+
+function isOverdue(dueIso) {
+ if (!dueIso) return false;
+ const d = new Date(dueIso);
+ if (isNaN(d.getTime())) return false;
+ return d.getTime() < Date.now();
+}
+
+function slaBadge(label, dueIso) {
+ if (!dueIso) return '';
+ const due = new Date(dueIso);
+ if (isNaN(due.getTime())) return '';
+ const now = new Date();
+ const diffMs = due.getTime() - now.getTime();
+ const hrs = Math.ceil(Math.abs(diffMs) / 3600000);
+ const txt = diffMs < 0 ? `Overdue ${hrs}h` : `Due ${hrs}h`;
+ const color = diffMs < 0 ? '#ff6b6b' : 'rgba(255,255,255,0.25)';
+ return `<span class="tag" style="background:${color}">${label}: ${txt}</span>`;
+}
+
+function recordActivity(type, subject, notes = '', ownerOverride = null) {
+ const now = new Date().toISOString();
+ state.data.activities.push({
+ id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
+ type,
+ subject,
+ notes,
+ date: now,
+ createdDate: now,
+ modifiedDate: now,
+ owner: ownerOverride || currentUser
+ });
+}
+
+async function login() {
+ const email = document.getElementById('emailInput').value.trim().toLowerCase();
+ const password = document.getElementById('passwordInput').value;
+ const loginBtn = document.querySelector('#loginScreen .btn.btn-success');
+ 
+ if (!email) {
+ alert('Please enter your email');
+ return;
+ }
+
+ if (loginBtn) {
+  loginBtn.disabled = true;
+  loginBtn.textContent = 'Signing In...';
+ }
+ 
+ let expected = PASSWORD;
+ try {
+  const fetched = null;
+
+  if (fetched) expected = fetched;
+ } catch (_) {
+  // Keep default password fallback if password API is slow/unavailable.
+ }
+ if (password !== expected) {
+ if (loginBtn) {
+  loginBtn.disabled = false;
+  loginBtn.textContent = 'Sign In';
+ }
+ alert('Incorrect password');
+ return;
+ }
+ 
+ currentUser = email;
+ isSupervisor = ['ashish.mehra@dnispl.com', 'a.gupta@dnispl.com', 'rakesh.uniyal@dnispl.com'].includes(email.toLowerCase());
+ managerFilter = '';
+ 
+ applyLoggedInUi();
+ persistSession();
+
+ const statusEl = document.getElementById('status');
+ if (statusEl) statusEl.textContent = 'Loading accounts and activities...';
+
+ loadData().catch(err => {
+  console.error('loadData failed', err);
+ }).finally(() => {
+  runSLAEngine();
+  if (slaTimer) clearInterval(slaTimer);
+  slaTimer = setInterval(runSLAEngine, 60000);
+  if (loginBtn) {
+   loginBtn.disabled = false;
+   loginBtn.textContent = 'Sign In';
+  }
+ });
+ }
+
+ function logout() {
+ currentUser = '';
+ isSupervisor = false;
+ managerFilter = '';
+ clearSession();
+ if (slaTimer) {
+  clearInterval(slaTimer);
+  slaTimer = null;
+ }
+ document.getElementById('loginScreen').style.display = 'block';
+ document.getElementById('mainScreen').style.display = 'none';
+ document.getElementById('fabBtn').style.display = 'none';
+ }
+
+async function loadData() {
+    if (window._loadDataInFlight) return;
+    window._loadDataInFlight = true;
+    const savedData = localStorage.getItem('crmData');
+ if (savedData) {
+ state.data = JSON.parse(savedData);
+ } else {
+ state.data = { leads: [], accounts: [], contacts: [], opportunities: [], activities: [], purchase_orders: [] };
+ }
+ window.render?.(); // show local/cached data immediately
+
+ let bootstrapLoaded = false;
+ try {
+  const boot = await withTimeout(fetchBootstrapFromApi(), 45000, 'bootstrap');
+  state.data.accounts = boot.accounts;
+  state.data.activities = boot.activities;
+  state.data.leads = boot.leads;
+  state.data.contacts = boot.contacts;
+  state.data.opportunities = boot.opportunities;
+  bootstrapLoaded = true;
+ } catch (err) {
+  console.warn('Backend bootstrap unavailable, falling back to individual APIs', err);
+ }
+
+ if (!bootstrapLoaded) {
+  const dataPromise = Promise.allSettled([
+   withTimeout(fetchAccountsFromApi(), 30000, 'accounts'),
+   withTimeout(fetchActivitiesFromApi(), 30000, 'activities'),
+   withTimeout(fetchLeadsFromApi(), 30000, 'leads'),
+   withTimeout(fetchContactsFromApi(), 30000, 'contacts'),
+   withTimeout(fetchOpportunitiesFromApi(), 30000, 'opportunities')
+  ]);
+
+  const [accountsResult, activitiesResult, leadsResult, contactsResult, oppsResult] = await dataPromise;
+
+  if (accountsResult.status === 'fulfilled') {
+   const remoteAccounts = accountsResult.value;
+   if (Array.isArray(remoteAccounts) && remoteAccounts.length) {
+    state.data.accounts = remoteAccounts;
+   }
+  } else {
+   console.warn('Backend accounts unavailable, using local accounts only', accountsResult.reason);
+  }
+
+  if (activitiesResult.status === 'fulfilled') {
+   state.data.activities = activitiesResult.value;
+  } else {
+   console.info('Backend activities unavailable, using local activities only', activitiesResult.reason);
+  }
+
+  if (leadsResult.status === 'fulfilled') {
+   state.data.leads = leadsResult.value;
+  } else {
+   console.info('Backend leads unavailable, using local leads only', leadsResult.reason);
+  }
+
+  if (contactsResult.status === 'fulfilled') {
+   state.data.contacts = contactsResult.value;
+  } else {
+   console.info('Backend contacts unavailable, using local contacts only', contactsResult.reason);
+  }
+
+  if (oppsResult.status === 'fulfilled') {
+   state.data.opportunities = oppsResult.value;
+  } else {
+   console.info('Backend opportunities unavailable, using local opportunities only', oppsResult.reason);
+  }
+ }
+
+ // Normalize legacy records so dates always exist
+
+function seedAccountsFromMap() {
+  if (state.data.accounts.length) return;
+  const now = new Date().toISOString();
+  Object.keys(ACCOUNT_OWNER_MAP).forEach(name => {
+    const owner = ACCOUNT_OWNER_MAP[name];
+    state.data.accounts.push({
+      id: Date.now().toString() + Math.random().toString().slice(2),
+      name,
+      industry: '',
+      tier: 'B',
+      location: '',
+      companySize: '',
+      annualSpend: '',
+      accountManager: owner,
+      owner: owner,
+      createdDate: now,
+      modifiedDate: now
+    });
+    // Intentionally skip backend upsert here to avoid request storm/DB connection exhaustion.
+  });
+}
+
+ ['leads','accounts','contacts','opportunities','activities'].forEach(key => {
+ if (!Array.isArray(state.data[key])) state.data[key] = [];
+ state.data[key] = state.data[key].map(item => {
+ if (key === 'accounts') {
+   // normalize legacy field names
+   if (!item.name && item.account_name) item.name = item.account_name;
+   if (!item.owner && item.accountOwner) item.owner = item.accountOwner;
+   const mapKey = item.name || '';
+   const mapped = ACCOUNT_OWNER_MAP[mapKey] || ACCOUNT_OWNER_MAP[mapKey.toLowerCase()] || ACCOUNT_OWNER_MAP[mapKey.toUpperCase()];
+   if (mapped) {
+     item.accountManager = mapped;
+     item.owner = mapped;
+     item.account_manager = mapped;
+   } else {
+     const currentMgr = normalizeEmail(item.accountManager || item.account_manager || item.owner);
+     if (SALES_DROPDOWN_BLOCKLIST.has(currentMgr)) {
+       item.accountManager = '';
+       item.account_manager = '';
+       item.owner = '';
+     }
+   }
+ }
+ const ts = new Date().toISOString();
+ const created = item.createdDate || item.date || ts;
+ const modified = item.modifiedDate || created;
+ const normalized = { ...item, createdDate: created, modifiedDate: modified };
+ if (key === 'opportunities') {
+ normalized.workflowStage = normalized.workflowStage || 'Sales Review';
+ normalized.presalesComments = normalized.presalesComments || normalized.presales_comments || '';
+ normalized.salesOwner = normalized.salesOwner || normalized.owner || '';
+ normalized.assignedPresales = normalized.assignedPresales || '';
+ normalized.assignedPurchase = normalized.assignedPurchase || '';
+ normalized.salesComments = normalized.salesComments || '';
+ normalized.requirements = normalized.requirements || '';
+ normalized.presalesArchitecture = normalized.presalesArchitecture || '';
+ normalized.presalesQuestions = normalized.presalesQuestions || '';
+ normalized.boq = normalized.boq || '';
+ normalized.purchaseCosting = normalized.purchaseCosting || '';
+ normalized.costingTat = normalized.costingTat || '';
+ normalized.finalPricingProposal = normalized.finalPricingProposal || '';
+ normalized.presalesAssignedAt = normalized.presalesAssignedAt || '';
+ normalized.presalesDueAt = normalized.presalesDueAt || '';
+ normalized.purchaseAssignedAt = normalized.purchaseAssignedAt || '';
+ normalized.purchaseDueAt = normalized.purchaseDueAt || '';
+ normalized.costingReturnedAt = normalized.costingReturnedAt || '';
+ normalized.finalProposalAt = normalized.finalProposalAt || '';
+ normalized.assignmentDueAt = normalized.assignmentDueAt || '';
+ normalized.salesSubmittedAt = normalized.salesSubmittedAt || '';
+ normalized.closureDate = normalized.closureDate || normalized.closure_date || normalized.expectedClosureDate || normalized.expected_closure_date || '';
+ }
+ return normalized;
+ });
+ });
+
+ seedAccountsFromMap();
+ saveData();
+
+
+ document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
+ render();
+ window._loadDataInFlight = false;
+}
+function calculateWinProb(opp) {
+ if (opp.stage === 'Closed Won') return 100;
+ if (opp.stage === 'Closed Lost') return 0;
+ const stageProb = { 'Discovery': 25, 'Proposal': 60, 'Negotiation': 85 };
+ let base = stageProb[opp.stage] || 25;
+ const account = state.data.accounts.find(a => a.id === opp.accountId);
+ const contacts = state.data.contacts.filter(c => c.accountId === opp.accountId);
+ if (!account) return base;
+ let adjustments = 0;
+ const icpScore = calculateICPScore(account);
+ if (icpScore >= 45) adjustments += 15;
+ else if (icpScore >= 35) adjustments += 8;
+ else if (icpScore < 25) adjustments -= 10;
+ if (opp.competitionPosition === 'Strong') adjustments += 10;
+ else if (opp.competitionPosition === 'Favorable') adjustments += 5;
+ else if (opp.competitionPosition === 'Unfavorable') adjustments -= 8;
+ const hasMAS = contacts.some(c => c.roleType === 'MAS');
+ const hasCoach = contacts.some(c => c.roleType === 'Coach');
+ const hasHighInfluence = contacts.some(c => c.influenceLevel === 'High');
+ if (hasMAS && hasCoach && hasHighInfluence) adjustments += 10;
+ else if (hasMAS && hasHighInfluence) adjustments += 5;
+ else if (!hasMAS) adjustments -= 5;
+ const positiveEmotions = contacts.filter(c => c.emotion === 'Euphoria' || c.emotion === 'Great').length;
+ const negativeEmotions = contacts.filter(c => c.emotion === 'Worry').length;
+ if (positiveEmotions > negativeEmotions && positiveEmotions > 0) adjustments += 5;
+ else if (negativeEmotions > positiveEmotions && negativeEmotions > 0) adjustments -= 5;
+ if (account.mode === 'Business Expansion') adjustments += 5;
+ else if (account.mode === 'Overcome Bottleneck') adjustments += 3;
+ else if (account.mode === 'Status Quo') adjustments -= 5;
+ adjustments += getAccountSuspectScore(account);
+ return Math.min(100, Math.max(0, base + adjustments));
+}
+
+function calculateICPScore(account) {
+ let score = 0;
+ const sizeRanges = { '1000+': 15, '500-1000': 12, '100-500': 10, '50-100': 7, '10-50': 4, '1-10': 2 };
+ score += sizeRanges[account.companySize] || 0;
+ const targetIndustries = ['Technology', 'Finance', 'Healthcare', 'Manufacturing'];
+ if (targetIndustries.includes(account.industry)) score += 10;
+ else if (account.industry) score += 5;
+ if (account.annualSpend) {
+  const spendNum = parseFloat(String(account.annualSpend).replace(/[^\d.]/g, ''));
+  if (spendNum >= 50) score += 15;
+  else if (spendNum >= 20) score += 12;
+  else if (spendNum >= 10) score += 8;
+  else if (spendNum >= 5) score += 5;
+  else score += 2;
+ }
+ const tierOne = ['Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai', 'Pune'];
+ if (tierOne.some(city => (account.location || '').includes(city))) score += 5;
+ else if (account.location) score += 3;
+ const tierScores = { 'A': 10, 'B': 7, 'C': 4 };
+ score += tierScores[account.tier] || 0;
+ return Math.min(score, 60);
+}
+
+ function saveData() {
+ localStorage.setItem('crmData', JSON.stringify(state.data));
+ document.getElementById('status').textContent = '💾 Saved';
+ setTimeout(() => {
+ const role = getUserRole();
+ const label = role === 'supervisor' ? 'Supervisor View' : `${role.toUpperCase()} View`;
+ document.getElementById('status').textContent = `✅ ${label}`;
+ }, 1000);
+ }
+
+function getFilteredData() {
+ let baseData;
+ if (isSupervisor) {
+  baseData = state.data;
+ } else {
+  const role = getUserRole();
+  const myAccounts = state.data.accounts.filter(a => {
+   const mgr = normalizeEmail(a.accountManager || a.account_manager);
+   const owner = normalizeEmail(a.owner);
+   const me = normalizeEmail(currentUser);
+   return mgr === me || owner === me;
+  });
+  const myAccountIds = new Set(myAccounts.map(a => String(a.id)));
+
+  if (role === 'presales') {
+   const presalesOpps = state.data.opportunities.filter(o =>
+    normalizeEmail(o.assignedPresales) === normalizeEmail(currentUser)
+   );
+   baseData = {
+    leads: state.data.leads || [],
+    accounts: [],
+    contacts: [],
+    opportunities: presalesOpps,
+    activities: state.data.activities.filter(a => normalizeEmail(a.owner) === normalizeEmail(currentUser))
+   };
+  } else if (role === 'purchase') {
+   const purchaseOpps = state.data.opportunities.filter(o =>
+    normalizeEmail(o.assignedPurchase) === normalizeEmail(currentUser)
+   );
+   baseData = {
+    leads: [],
+    accounts: [],
+    contacts: [],
+    opportunities: purchaseOpps,
+    activities: state.data.activities.filter(a => normalizeEmail(a.owner) === normalizeEmail(currentUser))
+   };
+  } else {
+   const opportunities = state.data.opportunities.filter(o => {
+    if (normalizeEmail(o.owner) === normalizeEmail(currentUser)) return true;
+    if (normalizeEmail(o.assignedSalesOps) === normalizeEmail(currentUser)) return true;
+    if (myAccountIds.has(String(o.accountId))) return true;
+    return false;
+   });
+   const contacts = state.data.contacts.filter(c => normalizeEmail(c.owner) === normalizeEmail(currentUser) || myAccountIds.has(String(c.accountId)));
+   baseData = {
+    leads: state.data.leads.filter(l => normalizeEmail(l.owner) === normalizeEmail(currentUser)),
+    accounts: myAccounts,
+    contacts,
+    opportunities,
+    activities: state.data.activities.filter(a => normalizeEmail(a.owner) === normalizeEmail(currentUser))
+   };
+    
+   }
+ }
+ 
+ if (!managerFilter) return baseData;
+
+
+ return {
+  leads: (baseData.leads || []).filter(l => getLeadManagerEmail(l) === managerFilter),
+  accounts: (baseData.accounts || []).filter(a => getAccountManagerEmail(a) === managerFilter),
+  contacts: (baseData.contacts || []).filter(c => getContactManagerEmail(c) === managerFilter),
+  opportunities: (baseData.opportunities || []).filter(o => getOpportunityManagerEmails(o).includes(managerFilter)),
+  activities: (baseData.activities || []).filter(a => getActivityManagerEmail(a) === managerFilter)
+ };
+}
+ function render() {
+ const role = getUserRole();
+ const tabs = isSupervisor
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'purchase', 'aop', 'reports', 'dashboard']
+ : (role === 'sales'
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'purchase', 'aop', 'reports']
+ : role === 'presales'
+ ? ['leads', 'opportunities', 'workflow', 'activities', 'reports']
+ : ['opportunities', 'workflow', 'activities']);
+ if (!tabs.includes(state.activeTab)) state.activeTab = tabs[0];
+ document.getElementById('tabs').innerHTML = tabs.map(t => 
+ `<button class="tab ${state.activeTab === t ? 'active' : ''}" onclick="changeTab('${t}')">${t.toUpperCase()}</button>`
+ ).join('');
+ 
+ const filtered = getFilteredData();
+ let content = '';
+ 
+ if (state.activeTab === 'leads') content = renderLeads(filtered);
+ else if (state.activeTab === 'accounts') content = renderAccounts(filtered);
+ else if (state.activeTab === 'contacts') content = renderContacts(filtered);
+ else if (state.activeTab === 'opportunities') content = renderOpportunities(filtered);
+ 	else if (state.activeTab === 'activities') content = 		renderActivities(filtered);
+ else if (state.activeTab === 'workflow') content = renderWorkflow(filtered);
+ else if (state.activeTab === 'purchase') content = renderPurchaseOrders(filtered);
+ else if (state.activeTab === 'aop') { content = renderAop(filtered); }
+ else if (state.activeTab === 'dashboard') content = renderDashboard(filtered);
+ else if (state.activeTab === 'reports') { content = renderReports(); }
+ 
+ document.getElementById('content').innerHTML = content;
+ }
+
+function renderLeads(filtered) {
+ return `
+ <div class="card">
+ <h2>🎯 Leads (${filtered.leads.length})</h2>
+ ${renderManagerFilterControls(filtered)}
+ <button class="btn" type="button" onclick="document.getElementById('leadsCsvInput').click()">Import CSV</button>
+ <button class="btn" type="button" onclick="exportLeadsCsv()">⬇ Export CSV</button>
+ </div>
+ <div class="grid">
+ ${filtered.leads.map(l => `
+ <div class="item-card" onclick="editLead('${l.id}')">
+ <h3>${l.name}</h3>
+ <div>${l.company}</div>
+ <div style="margin-top:10px">
+ <span class="tag">${l.source}</span>
+ <span class="tag">${l.status}</span>
+ </div>
+ <div style="font-size:0.9em; opacity:0.8; margin-top:10px">
+ ${l.email} | ${l.phone}
+ </div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
+ 📅 Created: ${fmtDate(l.createdDate)}<br>🕒 Updated: ${fmtDate(l.modifiedDate)}
+ </div>
+ <div style="margin-top:10px">
+ <button type="button" class="btn" onclick="event.stopPropagation();editLead('${l.id}')">Edit</button>
+ </div>
+ </div>
+ `).join('')}
+ ${filtered.leads.length === 0 ? '<div class="card">No leads yet. Click + to add one!</div>' : ''}
+ </div>
+ `;
+}
+
+ 
+function handleLeadsCsv(e) {
+ const file = e.target.files[0];
+ if (!file) return;
+ const reader = new FileReader();
+ reader.onload = () => {
+ const rows = parseCSV(reader.result);
+ const now = new Date().toISOString();
+ rows.forEach(r => {
+ const lead = {
+ id: Date.now().toString() + Math.random().toString().slice(2),
+ name: r.name || r.lead || 'Unnamed Lead',
+ company: r.company || r.account || '',
+ email: r.email || '',
+ phone: r.phone || '',
+ source: r.source || 'CSV',
+ status: r.status || 'New',
+ notes: r.notes || '',
+ owner: r.owner || currentUser,
+ createdDate: now,
+ modifiedDate: now
+ };
+ state.data.leads.push(lead);
+ });
+ saveData();
+ render();
+ alert(`Imported ${rows.length} leads.`);
+ };
+ reader.readAsText(file);
+ e.target.value = '';
+}
+
+async function handleAccountsCsv(e) {
+ const file = e.target.files[0];
+ if (!file) return;
+ try {
+  const fd = new FormData();
+  fd.append('file', file);
+  const resp = await fetch(`${CRM_API_BASE}/api/accounts/import`, {
+   method: 'POST',
+   body: fd
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || `accounts import failed (${resp.status})`);
+  state.data.accounts = await fetchAccountsFromApi();
+  saveData();
+  render();
+  alert(`Accounts import done. Created: ${data.created || 0}, Updated: ${data.updated || 0}, Failed: ${data.failed_count || 0}`);
+ } catch (err) {
+  alert(`Could not import accounts CSV: ${err.message}`);
+ } finally {
+  e.target.value = '';
+ }
+}
+
+function handleOppsCsv(e) {
+ const file = e.target.files[0];
+ if (!file) return;
+ const reader = new FileReader();
+ reader.onload = () => {
+ const rows = parseCSV(reader.result);
+ const now = new Date().toISOString();
+ rows.forEach(r => {
+ let account = state.data.accounts.find(a => (a.name || '').toLowerCase() === (r.account || r.account_name || '').toLowerCase());
+ if (!account && (r.account || r.account_name)) {
+ account = { id: Date.now().toString() + Math.random().toString().slice(2), name: r.account || r.account_name, industry: r.industry || '', tier: r.tier || 'B', location: r.location || '', createdDate: now, modifiedDate: now };
+ state.data.accounts.push(account);
+ }
+ const opp = {
+ id: Date.now().toString() + Math.random().toString().slice(2),
+ name: r.name || r.opportunity || 'New Opportunity',
+ accountId: account ? account.id : '',
+ value: parseFloat(r.value || r.amount || '0') || 0,
+ stage: r.stage || 'Discovery',
+ owner: r.owner || currentUser,
+ createdDate: now,
+ modifiedDate: now,
+ workflowStage: 'Assigned to Presales',
+ assignedPresales: PRESALES_OWNER,
+ assignedPurchase: '',
+ presalesAssignedAt: now,
+ presalesDueAt: addHours(now, 72),
+ assignmentDueAt: addHours(now, 4),
+ salesSubmittedAt: now
+ };
+ state.data.opportunities.push(opp);
+ });
+ saveData();
+ render();
+ alert(`Imported ${rows.length} opportunities.`);
+ };
+ reader.readAsText(file);
+ e.target.value = '';
+}
+
+function renderAccounts(filtered) {
+
+ return `
+ <div class="card">
+ <h2>🏢 Accounts (${filtered.accounts.length})</h2>
+ ${renderManagerFilterControls(filtered)}
+ ${isSupervisor ? '<button class="btn" type="button" onclick="document.getElementById(\'accountsCsvInput\').click()">Import CSV</button>' : ''}
+ <button class="btn" type="button" onclick="exportAccountsCsv()">⬇ Export CSV</button>
+ </div>
+ <div class="grid">
+${filtered.accounts.map(a => `
+<div class="item-card" onclick="editAccount('${a.id}')">
+<h3>${a.name}</h3>
+<div>${a.industry}</div>
+ <div style="margin-top:10px">
+ <span class="tag">Tier ${a.tier}</span>
+ <span class="tag">${a.location}</span>
+ <span class="tag" style="background:${getAccountSuspectScore(a) >= 10 ? '#4ade80' : '#ef4444'}; color:white">Suspect Score: ${getAccountSuspectScore(a)}/10</span>
+ <span class="tag" style="background:${getAccountQuestionnaireCompletion(a) >= 100 ? '#22c55e' : '#ef4444'}; color:white">Questionnaire: ${getAccountQuestionnaireCompletion(a)}%</span>
+ </div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
+ 📅 Created: ${fmtDate(a.createdDate)}<br>🕒 Updated: ${fmtDate(a.modifiedDate)}
+ </div>
+ <div style="margin-top:10px">
+ <button type="button" class="btn" onclick="event.stopPropagation();editAccount('${a.id}')">Edit</button>
+ </div>
+ </div>
+ `).join('')}
+ ${filtered.accounts.length === 0 ? '<div class="card">No accounts yet. Click + to add one!</div>' : ''}
+ </div>
+ `;
+}
+ function renderContacts(filtered) {
+ return `
+ <div class="card">
+ <h2>👥 Contacts (${filtered.contacts.length})</h2>
+ ${renderManagerFilterControls(filtered)}
+ <button class="btn" type="button" onclick="exportContactsCsv()">⬇ Export CSV</button>
+ </div>
+ <div class="grid">
+ ${filtered.contacts.map(c => `
+ <div class="item-card" onclick="editContact('${c.id}')">
+ <h3>${c.name}</h3>
+ <div>${c.title}</div>
+ <div style="font-size:0.85em; opacity:0.75; margin-bottom:6px">
+ 🏢 ${state.data.accounts.find(a => String(a.id) === String(c.accountId))?.name || 'No Account'}
+ </div>
+
+ <div style="margin-top:10px">
+ <span class="tag">${c.roleType}</span>
+ <span class="tag">${c.emotion}</span>
+ </div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
+ 📅 Created: ${fmtDate(c.createdDate)}<br>🕒 Updated: ${fmtDate(c.modifiedDate)}
+ </div>
+ <div style="margin-top:10px">
+ <button type="button" class="btn" onclick="event.stopPropagation();editContact('${c.id}')">Edit</button>
+ </div>
+ </div>
+ `).join('')}
+ ${filtered.contacts.length === 0 ? '<div class="card">No contacts yet. Click + to add one!</div>' : ''}
+ </div>
+ `;
+}
+function setOppStageFilter(stage) {
+  oppStageFilter = stage;
+  render();
+}
+
+function renderOpportunities(filtered) {
+  const allOpps = filtered.opportunities;
+  const stages = ['All', 'Discovery', 'Proposal', 'Negotiation', 'Closed Won', 'Closed Lost'];
+  const stageColors = {
+    'All': '#667eea',
+    'Discovery': '#60a5fa',
+    'Proposal': '#f59e0b',
+    'Negotiation': '#a78bfa',
+    'Closed Won': '#22c55e',
+    'Closed Lost': '#f87171'
+  };
+  const stageIcons = {
+    'All': '📋', 'Discovery': '🔍', 'Proposal': '📝',
+    'Negotiation': '🤝', 'Closed Won': '🏆', 'Closed Lost': '❌'
+  };
+
+  // Summary counts (always from full list)
+  const wonOpps   = allOpps.filter(o => o.stage === 'Closed Won');
+  const lostOpps  = allOpps.filter(o => o.stage === 'Closed Lost');
+  const openOpps  = allOpps.filter(o => !['Closed Won','Closed Lost'].includes(o.stage));
+  const wonValue  = wonOpps.reduce((s,o) => s+(o.value||0), 0);
+  const pipeValue = openOpps.reduce((s,o) => s+(o.value||0), 0);
+
+  // Filtered list for current stage tab
+  const viewOpps = oppStageFilter === 'All' ? allOpps : allOpps.filter(o => o.stage === oppStageFilter);
+
+  // Stage pill buttons — clicking 'Closed Won' pill activates won view
+  const pillBar = `
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 4px">
+      ${stages.map(s => {
+        const count = s === 'All' ? allOpps.length : allOpps.filter(o => o.stage === s).length;
+        const active = oppStageFilter === s;
+        const color = stageColors[s];
+        return `<button type="button"
+          onclick="setOppStageFilter('${s}')"
+          style="padding:8px 16px;border-radius:20px;border:2px solid ${color};
+            background:${active ? color : 'white'};
+            color:${active ? 'white' : color};
+            font-weight:600;font-size:0.85em;cursor:pointer;transition:all 0.2s">
+          ${stageIcons[s]} ${s} <span style="opacity:0.85">(${count})</span>
+        </button>`;
+      }).join('')}
+    </div>`;
+
+  // Won opportunities — rich expanded cards
+  function renderWonCard(o) {
+    const acc = state.data.accounts.find(a => a.id === o.accountId);
+    const linkedPOs = (state.data.purchase_orders || []).filter(p => p.opportunityId === o.id);
+    return `
+    <div style="background:linear-gradient(135deg,rgba(34,197,94,0.15),rgba(34,197,94,0.05));
+      border:2px solid #22c55e;border-radius:14px;padding:20px;cursor:pointer;margin-bottom:4px"
+      onclick="editOpportunity('${o.id}')">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+        <div style="flex:1;min-width:200px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <span style="font-size:1.5em">🏆</span>
+            <h3 style="margin:0;font-size:1.1em">${o.name}</h3>
+          </div>
+          <div style="font-size:0.88em;opacity:0.8;margin-bottom:4px">🏢 ${acc?.name || o.accountId || 'No Account'}</div>
+          <div style="font-size:0.85em;opacity:0.75">📅 Won: ${fmtDate(o.closureDate || o.closure_date || o.expectedClosureDate || o.updatedDate) || 'N/A'}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:2em;font-weight:bold;color:#4ade80">₹${(o.value/100000).toFixed(1)}L</div>
+          <div style="font-size:0.8em;opacity:0.7">Deal Value</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:14px">
+        <div style="background:rgba(0,0,0,0.2);border-radius:8px;padding:10px">
+          <div style="font-size:0.75em;opacity:0.7;margin-bottom:4px">👤 Sales Owner</div>
+          <div style="font-size:0.9em;font-weight:600">${formatUserLabel(o.salesOwner || o.owner || 'NA')}</div>
+        </div>
+        <div style="background:rgba(0,0,0,0.2);border-radius:8px;padding:10px">
+          <div style="font-size:0.75em;opacity:0.7;margin-bottom:4px">🔧 Presales</div>
+          <div style="font-size:0.9em;font-weight:600">${formatUserLabel(o.assignedPresales || 'NA')}</div>
+        </div>
+        <div style="background:rgba(0,0,0,0.2);border-radius:8px;padding:10px">
+          <div style="font-size:0.75em;opacity:0.7;margin-bottom:4px">📦 Workflow Stage</div>
+          <div style="font-size:0.9em;font-weight:600">${o.workflowStage || 'Sales Review'}</div>
+        </div>
+        <div style="background:rgba(0,0,0,0.2);border-radius:8px;padding:10px">
+          <div style="font-size:0.75em;opacity:0.7;margin-bottom:4px">📋 Linked POs</div>
+          <div style="font-size:0.9em;font-weight:600">${linkedPOs.length > 0 ? linkedPOs.map(p => p.poNumber || 'Draft').join(', ') : 'None yet'}</div>
+        </div>
+      </div>
+
+      ${o.finalPricingProposal ? `
+      <div style="margin-top:12px;background:rgba(0,0,0,0.2);border-radius:8px;padding:10px">
+        <div style="font-size:0.75em;opacity:0.7;margin-bottom:4px">📄 Final Proposal</div>
+        <div style="font-size:0.85em">${o.finalPricingProposal.slice(0,200)}${o.finalPricingProposal.length>200?'…':''}</div>
+      </div>` : ''}
+
+      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" class="btn" onclick="event.stopPropagation();editOpportunity('${o.id}')">✏️ Edit</button>
+        <button type="button" class="btn btn-success" onclick="event.stopPropagation();document.getElementById('wonPoScanInput').click()">🏆 Scan Won PO</button>
+        <span style="background:#22c55e;color:white;padding:6px 14px;border-radius:6px;font-size:0.85em;font-weight:bold;align-self:center">✅ CLOSED WON</span>
+      </div>
+    </div>`;
+  }
+
+  // Standard card for non-Won stages
+  function renderStandardCard(o) {
+    const winProb = getWinProbSafe(o);
+    const stageColor = {'Discovery':'#60a5fa','Proposal':'#f59e0b','Negotiation':'#a78bfa','Closed Lost':'#f87171'}[o.stage] || '#ffffff44';
+    return `
+    <div class="item-card" onclick="editOpportunity('${o.id}')" style="border-left:4px solid ${stageColor}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <h3 style="margin:0;flex:1">${o.name}</h3>
+        <span style="font-size:1.1em;font-weight:bold;color:#4ade80;white-space:nowrap;margin-left:8px">₹${(o.value/100000).toFixed(1)}L</span>
+      </div>
+      <div style="font-size:0.85em;opacity:0.75;margin:6px 0">
+        🏢 ${state.data.accounts.find(a => a.id === o.accountId)?.name || 'No Account'}
+      </div>
+      <div style="margin:8px 0">
+        <span class="tag" style="background:${stageColor}">${o.stage}</span>
+        <span class="tag">${o.workflowStage || 'Sales Review'}</span>
+      </div>
+      <div style="margin:8px 0">
+        <div style="background:rgba(255,255,255,0.1);border-radius:4px;height:6px;overflow:hidden">
+          <div style="height:100%;width:${winProb}%;background:#4ade80;border-radius:4px"></div>
+        </div>
+        <div style="font-size:0.78em;opacity:0.7;margin-top:2px">Win Probability: ${winProb}%</div>
+      </div>
+      <div style="font-size:0.82em;opacity:0.8;margin-top:8px">
+        👤 ${formatUserLabel(o.salesOwner || o.owner || 'NA')}<br>
+        🔧 ${formatUserLabel(o.assignedPresales || 'Unassigned')}
+      </div>
+      <div style="font-size:0.78em;opacity:0.6;margin-top:8px">
+        🎯 Closure: ${fmtDate(o.closureDate || o.closure_date || o.expectedClosureDate || o.expected_closure_date) || 'Not set'}
+      </div>
+      <div style="margin-top:10px">
+        <button type="button" class="btn" onclick="event.stopPropagation();editOpportunity('${o.id}')">Edit</button>
+      </div>
+    </div>`;
+  }
+
+  // Stage-wise grouped view for 'All' tab
+  function renderGrouped() {
+    const groupStages = ['Discovery','Proposal','Negotiation','Closed Won','Closed Lost'];
+    return groupStages.map(stage => {
+      const grpOpps = allOpps.filter(o => o.stage === stage);
+      if (grpOpps.length === 0) return '';
+      const grpValue = grpOpps.reduce((s,o) => s+(o.value||0), 0);
+      const color = stageColors[stage];
+      return `
+      <div style="margin-bottom:24px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:10px 14px;
+          background:rgba(255,255,255,0.07);border-radius:10px;border-left:4px solid ${color}">
+          <span style="font-size:1.2em">${stageIcons[stage]}</span>
+          <span style="font-weight:700;font-size:1.05em">${stage}</span>
+          <span style="background:${color};color:white;padding:2px 10px;border-radius:12px;font-size:0.82em;font-weight:600">${grpOpps.length}</span>
+          <span style="margin-left:auto;font-weight:600;color:#4ade80">₹${(grpValue/100000).toFixed(1)}L</span>
+        </div>
+        ${stage === 'Closed Won'
+          ? `<div style="display:flex;flex-direction:column;gap:12px">${grpOpps.map(renderWonCard).join('')}</div>`
+          : `<div class="grid">${grpOpps.map(renderStandardCard).join('')}</div>`
         }
+      </div>`;
+    }).join('');
+  }
+
+  // Single-stage view
+  function renderSingleStage() {
+    if (oppStageFilter === 'Closed Won') {
+      if (viewOpps.length === 0) return `<div class="card" style="text-align:center;padding:40px">
+        <div style="font-size:3em">🏆</div>
+        <div style="font-size:1.1em;margin-top:10px;opacity:0.7">No Closed Won opportunities yet</div>
+      </div>`;
+      return `<div style="display:flex;flex-direction:column;gap:12px">${viewOpps.map(renderWonCard).join('')}</div>`;
+    }
+    if (viewOpps.length === 0) return `<div class="card">No opportunities in this stage.</div>`;
+    return `<div class="grid">${viewOpps.map(renderStandardCard).join('')}</div>`;
+  }
+
+  return `
+  <div class="card">
+    <h2>💰 Opportunities</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:14px">
+      <div class="metric" style="padding:12px;text-align:center;cursor:pointer" onclick="setOppStageFilter('All')">
+        <div style="font-size:0.78em;opacity:0.7">Total</div>
+        <div style="font-size:1.4em;font-weight:bold">${allOpps.length}</div>
+      </div>
+      <div class="metric" style="padding:12px;text-align:center;cursor:pointer" onclick="setOppStageFilter('All')">
+        <div style="font-size:0.78em;opacity:0.7">Pipeline Value</div>
+        <div style="font-size:1.4em;font-weight:bold;color:#4ade80">₹${(pipeValue/100000).toFixed(1)}L</div>
+      </div>
+      <div class="metric" style="padding:12px;text-align:center;cursor:pointer;border:${oppStageFilter==='Closed Won'?'2px solid #22c55e':''}" onclick="setOppStageFilter('Closed Won')">
+        <div style="font-size:0.78em;opacity:0.7">🏆 Won</div>
+        <div style="font-size:1.4em;font-weight:bold;color:#22c55e">${wonOpps.length}</div>
+        <div style="font-size:0.75em;color:#4ade80">₹${(wonValue/100000).toFixed(1)}L</div>
+      </div>
+      <div class="metric" style="padding:12px;text-align:center;cursor:pointer" onclick="setOppStageFilter('Closed Lost')">
+        <div style="font-size:0.78em;opacity:0.7">❌ Lost</div>
+        <div style="font-size:1.4em;font-weight:bold;color:#f87171">${lostOpps.length}</div>
+      </div>
+      <div class="metric" style="padding:12px;text-align:center">
+        <div style="font-size:0.78em;opacity:0.7">Open</div>
+        <div style="font-size:1.4em;font-weight:bold">${openOpps.length}</div>
+      </div>
+    </div>
+    ${pillBar}
+    ${renderManagerFilterControls(filtered)}
+    <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px">
+      <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
+      <button class="btn" type="button" onclick="exportOpportunitiesCsv()">⬇ Export CSV</button>
+      <button class="btn" type="button" onclick="document.getElementById('rfpScanInput').click()">📄 Scan RFP</button>
+      <button class="btn btn-success" type="button" onclick="document.getElementById('wonPoScanInput').click()">🏆 Scan Won PO</button>
+    </div>
+  </div>
+  ${oppStageFilter === 'All' ? renderGrouped() : renderSingleStage()}
+  `;
+}
+
+function renderWorkflow(filtered) {
+ const role = getUserRole();
+ const list = filtered.opportunities;
+ return `
+ <div class="card">
+ <h2>🔄 Workflow Board (${list.length})</h2>
+ ${renderManagerFilterControls(filtered)}
+ <div style="opacity:0.85; margin-top:8px">Flow: Sales → Presales → Purchase → Presales → Sales</div>
+ <button class="btn" type="button" onclick="exportWorkflowCsv()">⬇ Export CSV</button>
+ </div>
+ <div class="grid">
+ ${list.map(o => `
+ <div class="item-card">
+ <h3>${o.name}</h3>
+ <div style="margin:8px 0">
+ <span class="tag">${o.workflowStage || 'Sales Review'}</span>
+ <span class="tag">${o.stage || 'Discovery'}</span>
+ <span class="tag" style="background:#4ade80; color:white">${getWinProbSafe(o)}% Win</span>
+ </div>
+ <div style="font-size:0.85em; line-height:1.5; opacity:0.9">
+ <b>Sales:</b> ${formatUserLabel(o.salesOwner || o.owner || 'NA')}<br>
+ <b>Presales:</b> ${formatUserLabel(o.assignedPresales || 'Unassigned')}<br>
+ <b>Sales Ops:</b> ${formatUserLabel(o.assignedSalesOps || 'Unassigned')}<br>
+ <b>Purchase:</b> ${formatUserLabel(o.assignedPurchase || 'Unassigned')}<br>
+ <div style="margin-top:8px">${slaBadge('Presales', o.presalesDueAt)} ${slaBadge('Purchase', o.purchaseDueAt)}</div>
+ <div style="margin-top:8px">
+ ${isOverdue(o.presalesDueAt) ? `<a class=\"btn btn-danger\" style=\"text-decoration:none\" href=\"${escalationMailto(o, 'Presales', o.presalesDueAt)}\">Escalate Presales</a>` : ''}
+ ${isOverdue(o.purchaseDueAt) ? `<a class=\"btn btn-danger\" style=\"text-decoration:none\" href=\"${escalationMailto(o, 'Purchase', o.purchaseDueAt)}\">Escalate Purchase</a>` : ''}
+ </div>
+ <b>BOQ:</b> ${o.boq ? 'Yes' : 'No'} | <b>Costing:</b> ${o.purchaseCosting ? 'Yes' : 'No'}<br>
+ <b>TAT:</b> ${fmtDateTime(o.costingTat)}<br>
+ <b>Final Proposal:</b> ${o.finalPricingProposal ? 'Ready' : 'Pending'}
+ </div>
+ <div style="margin-top:10px">
+ ${renderWorkflowActions(o, role)}
+ <button type="button" class="btn" onclick="editOpportunity('${o.id}')">Open</button>
+ </div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:8px">
+ 📅 Created: ${fmtDate(o.createdDate)} | 🕒 Updated: ${fmtDate(o.modifiedDate)}
+ </div>
+ </div>
+ `).join('')}
+ ${list.length === 0 ? '<div class="card">No workflow items yet. Add opportunity first.</div>' : ''}
+ </div>
+ `;
+ }
+
+function renderWorkflowActions(o, role) {
+  if (role === 'sales' && (!o.salesOwner || o.salesOwner === currentUser) && ['Sales Review', 'Assigned Back to Sales'].includes(o.workflowStage || 'Sales Review')) {
+    const canDirectToPurchase = normalizeEmail(currentUser) === 'rakesh.uniyal@dnispl.com' || isSupervisor;
+    return `
+    <button type="button" class="btn btn-success" onclick="event.stopPropagation();assignToPresales('${o.id}')">Assign to Presales</button>
+    ${canDirectToPurchase ? `<button type="button" class="btn" onclick="event.stopPropagation();assignDirectToPurchase('${o.id}')">Assign Direct to Purchase</button>` : ''}
+    `;
+  }
+
+  if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Assigned to Presales') {
+    return `
+    <button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPresalesPack('${o.id}')">Send BOQ to Sales Ops for Pricing</button>
+    <button type="button" class="btn" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Solution/Proposal to Sales</button>
+    `;
+  }
+
+  if (normalizeEmail(currentUser) === normalizeEmail(SALES_OPS_OWNER) && o.assignedSalesOps === currentUser && o.workflowStage === 'Awaiting Sales Ops Pricing') {
+    return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPurchaseCosting('${o.id}')">Return Pricing to Presales</button>`;
+  }
+
+  if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Pricing Returned to Presales') {
+    return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Final Proposal</button>`;
+  }
+
+  if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Presales Overdue') {
+    return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Final Proposal (Overdue)</button>`;
+  }
+
+  return '';
+}
+function renderActivities(filtered) {
+ const activities = getVisibleActivities(filtered.activities || []);
+ 
+ return `
+ <div class="card">
+ <h2>📝 Activities (${activities.length})</h2>
+ ${renderManagerFilterControls(filtered)}
+ <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px">
+ <button class="btn" type="button" onclick="setActivityFilter('all')">All</button>
+ <button class="btn" type="button" onclick="setActivityFilter('today')">Today</button>
+ <label style="font-size:0.85em">From <input class="input" style="display:inline-block; width:auto" type="date" id="activityFromDate" value="${activityFilter.from || ''}"></label>
+ <label style="font-size:0.85em">To <input class="input" style="display:inline-block; width:auto" type="date" id="activityToDate" value="${activityFilter.to || ''}"></label>
+ <button class="btn btn-success" type="button" onclick="applyActivityDateRange()">Apply</button>
+ <button class="btn btn-danger" type="button" onclick="clearActivityDateRange()">Clear</button>
+ <button class="btn" type="button" onclick="exportActivitiesCsv()">⬇ Export CSV</button>
+ </div>
+ </div>
+ <div class="grid">
+ ${activities.map(a => `
+ <div class="item-card" onclick="editActivity('${a.id}')">
+ <div style="display:flex; justify-content:space-between">
+ <h3>${a.type}</h3>
+ <span class="tag">${fmtDateTime(a.date || a.modifiedDate || a.createdDate)}</span>
+ </div>
+ <div style="margin:10px 0; font-weight:bold">${a.subject}</div>
+ <div style="opacity:0.8">${a.notes || 'No notes'}</div>
+ <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
+ By: ${formatUserLabel(a.owner || 'NA')}<br>🕒 Updated: ${fmtDateTime(a.modifiedDate || a.date || a.createdDate)}
+ </div>
+ <div style="margin-top:10px">
+ <button type="button" class="btn" onclick="event.stopPropagation();editActivity('${a.id}')">Edit</button>
+ </div>
+ </div>
+ `).join('')}
+ ${activities.length === 0 ? '<div class="card">No activities logged yet. Click + to add!</div>' : ''}
+ </div>
+ `;
+}
+
+function setActivityFilter(mode) {
+ activityFilter.mode = mode;
+ render();
+}
+
+function applyActivityDateRange() {
+ const from = document.getElementById('activityFromDate')?.value || '';
+ const to = document.getElementById('activityToDate')?.value || '';
+ activityFilter = { mode: 'range', from, to };
+ render();
+}
+
+function clearActivityDateRange() {
+ activityFilter = { mode: 'all', from: '', to: '' };
+ render();
+}
+
+function getVisibleActivities(activitiesInput) {
+ const allActivities = [...(activitiesInput || [])].sort((a, b) =>
+  new Date(b.date || b.modifiedDate || b.createdDate) - new Date(a.date || a.modifiedDate || a.createdDate)
+ );
+ const today = new Date().toDateString();
+ return allActivities.filter(a => {
+  const stamp = a.date || a.modifiedDate || a.createdDate;
+  if (!stamp) return false;
+  const d = new Date(stamp);
+  if (isNaN(d.getTime())) return false;
+  if (activityFilter.mode === 'all') return true;
+  if (activityFilter.mode === 'today') return d.toDateString() === today;
+  if (activityFilter.mode === 'range') {
+   const fromOK = !activityFilter.from || d >= new Date(activityFilter.from + 'T00:00:00');
+   const toOK = !activityFilter.to || d <= new Date(activityFilter.to + 'T23:59:59');
+   return fromOK && toOK;
+  }
+  return true;
+ });
+}
+
+function renderDashboard(filtered) {
+ const role = getUserRole();
+ const totalPipeline = filtered.opportunities.reduce((sum, o) => sum + (o.value || 0), 0);
+ const avgWin = filtered.opportunities.length
+ ? Math.round(filtered.opportunities.reduce((sum, o) => sum + getWinProbSafe(o), 0) / filtered.opportunities.length)
+ : 0;
+ const lastUpdated = [
+ ...filtered.leads.map(x => x.modifiedDate || x.createdDate),
+ ...filtered.accounts.map(x => x.modifiedDate || x.createdDate),
+ ...filtered.contacts.map(x => x.modifiedDate || x.createdDate),
+ ...filtered.opportunities.map(x => x.modifiedDate || x.createdDate),
+ ...filtered.activities.map(x => x.modifiedDate || x.createdDate || x.date)
+ ].filter(Boolean).sort().reverse()[0];
+
+ const presalesQueue = filtered.opportunities.filter(o => o.workflowStage === 'Assigned to Presales');
+ const purchaseQueue = filtered.opportunities.filter(o => o.workflowStage === 'Awaiting Purchase Costing');
+ const overduePresales = filtered.opportunities.filter(o => isOverdue(o.presalesDueAt));
+ const overduePurchase = filtered.opportunities.filter(o => isOverdue(o.purchaseDueAt));
+ const duePresalesSoon = filtered.opportunities.filter(o => dueSoon(o.presalesDueAt, 12));
+ const duePurchaseSoon = filtered.opportunities.filter(o => dueSoon(o.purchaseDueAt, 6));
+
+ const month = new Date().toISOString().slice(0,7);
+ const touchedAccountIds = new Set(
+   (filtered.activities || [])
+     .filter(a => a.accountId)
+     .map(a => a.accountId)
+ );
+ const accountTouchList = filtered.accounts.map(a => ({
+   id: a.id,
+   name: a.name,
+   touched: touchedAccountIds.has(a.id),
+ }));
+
+ return `
+ <div class="card">
+ <h2>📊 Dashboard</h2>
+ ${renderManagerFilterControls(filtered)}
+ <div style="font-size:0.9em; opacity:0.8; margin-top:8px">Last Update: ${fmtDateTime(lastUpdated)}</div>
+ <div style="margin-top:10px"><button class="btn" onclick="exportMonthlyPipeline('${month}')">Export Monthly Pipeline</button></div>
+ </div>
+ <div class="grid">
+ <div class="metric" style="cursor:pointer" onclick="openTab('leads')"><div>Leads</div><div class="metric-value">${filtered.leads.length}</div></div>
+ <div class="metric" style="cursor:pointer" onclick="openTab('accounts')"><div>Accounts</div><div class="metric-value">${filtered.accounts.length}</div></div>
+ <div class="metric" style="cursor:pointer" onclick="openTab('contacts')"><div>Contacts</div><div class="metric-value">${filtered.contacts.length}</div></div>
+ <div class="metric" style="cursor:pointer" onclick="openTab('opportunities')"><div>Opportunities</div><div class="metric-value">${filtered.opportunities.length}</div></div>
+ <div class="metric" style="cursor:pointer" onclick="openTab('opportunities')"><div>Pipeline Value</div><div class="metric-value">₹${(totalPipeline / 10000000).toFixed(1)}Cr</div></div>
+ <div class="metric" style="cursor:pointer" onclick="openTab('opportunities')"><div>Avg Win Probability</div><div class="metric-value">${avgWin}%</div></div>
+ </div>
+
+ <div class="card">
+ <h3>Reminders</h3>
+ <div style="margin-top:8px">Presales due soon (<=12h): ${duePresalesSoon.length} | Purchase due soon (<=6h): ${duePurchaseSoon.length}</div>
+ <div style="margin-top:8px">Overdue Presales: ${overduePresales.length} | Overdue Purchase: ${overduePurchase.length}</div>
+ </div>
+
+ <div class="card">
+ <h3>Account Touch Status</h3>
+ <div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:8px">
+ ${accountTouchList.length ? accountTouchList.map(a => `
+  <span class="tag" style="background:${a.touched ? '#22c55e' : '#ef4444'}; color:white; cursor:pointer" onclick="editAccount('${a.id}')">${a.name}</span>
+ `).join('') : 'No accounts available.'}
+ </div>
+ </div>
+
+ ${role === 'presales' ? `
+ <div class="card"><h3>Presales Queue</h3>${presalesQueue.length ? presalesQueue.map(o => `<div class="opp-card" onclick="editOpportunity('${o.id}')">${o.name} — Due: ${fmtDateTime(o.presalesDueAt)}</div>`).join('') : 'No items.'}</div>
+ ` : ''}
+ ${role === 'purchase' ? `
+ <div class="card"><h3>Purchase Queue</h3>${purchaseQueue.length ? purchaseQueue.map(o => `<div class="opp-card" onclick="editOpportunity('${o.id}')">${o.name} — Due: ${fmtDateTime(o.purchaseDueAt)}</div>`).join('') : 'No items.'}</div>
+ ` : ''}
+ <div class="card">
+ <h3>Quick Open</h3>
+ <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap">
+ <button class="btn" type="button" onclick="openTab('accounts')">Accounts</button>
+ <button class="btn" type="button" onclick="openTab('contacts')">Contacts</button>
+ <button class="btn" type="button" onclick="openTab('opportunities')">Opportunities</button>
+ <button class="btn" type="button" onclick="openTab('activities', { activityMode: 'all' })">Activities</button>
+ </div>
+ </div>
+ ${renderAopDashboardWidget(filtered)}
+ `;
+ }
+
+function exportMonthlyPipeline(month) {
+ const m = month || prompt('Enter month (YYYY-MM):', new Date().toISOString().slice(0,7));
+ if (!m) return;
+ const rows = state.data.opportunities
+ .filter(o => (o.createdDate || '').startsWith(m))
+ .map(o => {
+ const account = state.data.accounts.find(a => a.id === o.accountId);
+ const win = getWinProbSafe(o);
+ const weighted = (o.value || 0) * win / 100;
+ return [o.name, account?.name || '', o.owner || '', o.stage || '', o.workflowStage || '', o.value || 0, win, weighted, o.createdDate || ''];
+ });
+ rows.unshift(['Opportunity','Account','Owner','Stage','Workflow Stage','Value','Win %','Weighted Value','Created']);
+ downloadCSV(`pipeline_${m}.csv`, rows);
+}
+
+function exportLeadsCsv() {
+ const filtered = getFilteredData();
+ const leads = filtered.leads || [];
+ if (!leads.length) { alert('No leads to export.'); return; }
+ const rows = leads.map(l => ([
+  l.id || '',
+  l.name || '',
+  l.company || '',
+  l.email || '',
+  l.phone || '',
+  l.source || '',
+  l.status || '',
+  getLeadManagerEmail(l) || '',
+  l.owner || '',
+  l.notes || '',
+  fmtDate(l.createdDate),
+  fmtDate(l.modifiedDate)
+ ]));
+ rows.unshift(['ID','Lead Name','Company','Email','Phone','Source','Status','Account Manager','Record Owner','Notes','Created','Updated']);
+ downloadCSV(`leads_${new Date().toISOString().slice(0,10)}.csv`, rows);
+}
+
+function exportAccountsCsv() {
+ const filtered = getFilteredData();
+ const accounts = filtered.accounts || [];
+ if (!accounts.length) { alert('No accounts to export.'); return; }
+ const rows = accounts.map(a => ([
+  a.id || '',
+  a.name || '',
+  getAccountManagerEmail(a) || '',
+  a.industry || '',
+  a.tier || '',
+  a.location || '',
+  a.companySize || '',
+  a.annualSpend || '',
+  a.mode || '',
+  getAccountSuspectScore(a),
+  getAccountQuestionnaireCompletion(a) + '%',
+  fmtDate(a.createdDate),
+  fmtDate(a.modifiedDate)
+ ]));
+ rows.unshift(['ID','Account Name','Account Manager','Industry','Tier','Location','Company Size','Annual Spend','Mode','Suspect Score','Questionnaire %','Created','Updated']);
+ downloadCSV(`accounts_${new Date().toISOString().slice(0,10)}.csv`, rows);
+}
+
+function exportContactsCsv() {
+ const filtered = getFilteredData();
+ const contacts = filtered.contacts || [];
+ if (!contacts.length) { alert('No contacts to export.'); return; }
+ const rows = contacts.map(c => {
+  const account = state.data.accounts.find(a => String(a.id) === String(c.accountId));
+  return [
+   c.id || '',
+   c.name || '',
+   c.title || '',
+   c.email || '',
+   c.phone || '',
+   c.roleType || '',
+   c.influenceLevel || '',
+   c.emotion || '',
+   account?.name || '',
+   getContactManagerEmail(c) || '',
+   c.owner || '',
+   fmtDate(c.createdDate),
+   fmtDate(c.modifiedDate)
+  ];
+ });
+ rows.unshift(['ID','Contact Name','Title','Email','Phone','Role Type','Influence Level','Emotion','Account','Account Manager','Record Owner','Created','Updated']);
+ downloadCSV(`contacts_${new Date().toISOString().slice(0,10)}.csv`, rows);
+}
+
+function exportActivitiesCsv() {
+ const filtered = getFilteredData();
+ const activities = getVisibleActivities(filtered.activities || []);
+ if (!activities.length) { alert('No activities to export.'); return; }
+ const rows = activities.map(a => ([
+  a.id || '',
+  a.type || '',
+  a.subject || '',
+  a.notes || '',
+  a.accountName || '',
+  getActivityManagerEmail(a) || '',
+  a.owner || '',
+  fmtDateTime(a.date || a.modifiedDate || a.createdDate),
+  fmtDateTime(a.modifiedDate || a.date || a.createdDate),
+  fmtDate(a.createdDate)
+ ]));
+ rows.unshift(['ID','Type','Subject','Notes','Account','Account Manager','Record Owner','Activity Date/Time','Updated','Created']);
+ downloadCSV(`activities_${new Date().toISOString().slice(0,10)}.csv`, rows);
+}
+
+function exportWorkflowCsv() {
+ const filtered = getFilteredData();
+ const list = filtered.opportunities || [];
+ if (!list.length) { alert('No workflow rows to export.'); return; }
+ const rows = list.map(o => ([
+  o.id || '',
+  o.name || '',
+  state.data.accounts.find(a => a.id === o.accountId)?.name || '',
+  o.stage || '',
+  o.workflowStage || 'Sales Review',
+  getWinProbSafe(o) + '%',
+  o.salesOwner || o.owner || '',
+  o.assignedPresales || '',
+  o.assignedPurchase || '',
+  fmtDateTime(o.presalesDueAt),
+  fmtDateTime(o.purchaseDueAt),
+  fmtDate(o.createdDate),
+  fmtDate(o.modifiedDate)
+ ]));
+ rows.unshift(['ID','Opportunity','Account','Stage','Workflow Stage','Win %','Sales','Presales','Purchase','Presales Due','Purchase Due','Created','Updated']);
+ downloadCSV(`workflow_${new Date().toISOString().slice(0,10)}.csv`, rows);
+}
+
+function exportPurchaseCsv() {
+ loadPurchaseOrders();
+ const pos = state.data.purchase_orders || [];
+ if (!pos.length) { alert('No purchase orders to export.'); return; }
+ const rows = pos.map(p => ([
+  p.id || '',
+  p.poNumber || '',
+  p.accountName || '',
+  p.poType || '',
+  p.stage || '',
+  p.vendorName || '',
+  p.oem || '',
+  p.value || 0,
+  p.vendorValue || 0,
+  (p.value || 0) - (p.vendorValue || 0),
+  p.createdBy || '',
+  p.expectedDelivery || '',
+  fmtDate(p.createdDate),
+  fmtDate(p.modifiedDate)
+ ]));
+ rows.unshift(['ID','PO Number','Account','Type','Stage','Vendor','OEM','Customer PO Value (₹)','Vendor Cost (₹)','Gross Margin (₹)','Created By','Expected Delivery','Created','Updated']);
+ downloadCSV(`purchase_orders_${new Date().toISOString().slice(0,10)}.csv`, rows);
+}
+
+function changeTab(tab) {
+  if (tab !== 'opportunities') oppStageFilter = 'All';
+  state.activeTab = tab;
+  if (tab === 'aop') {
+    loadAopData().then(render);
+  } else if (tab === 'reports') {
+    loadReportsData().then(render);
+  } else {
+    render();
+  }
+}
+
+
+function openAddModal() {
+ switch (state.activeTab) {
+ case 'leads':
+ openLeadModal();
+ break;
+ case 'accounts':
+ openAccountModal();
+ break;
+ case 'contacts':
+ openContactModal();
+ break;
+ case 'opportunities':
+ openOpportunityModal();
+ break;
+ case 'workflow':
+ openOpportunityModal();
+ break;
+ case 'activities':
+ openActivityModal();
+ break;
+ case 'purchase':
+ openPurchaseOrderModal();
+ break;
+ default:
+ openLeadModal();
+ }
+}
+
+ function openOpportunityModal(opp = null) {
+ const filtered = getFilteredData();
+ const editorRole = getUserRole();
+ const isPresalesEditor = editorRole === 'presales';
+ const isSalesOpsEditor = editorRole === 'salesops';
+ const accountRequiredAttr = (isPresalesEditor || isSalesOpsEditor) ? '' : 'required';
+ const accountLabel = (isPresalesEditor || isSalesOpsEditor) ? 'Select Account (optional)' : 'Select Account *';
+ document.getElementById('modal').innerHTML = `
+ <div class="modal-content">
+ <h2>${opp ? 'Edit' : 'Add'} Opportunity</h2>
+ <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(opp?.createdDate || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(opp?.modifiedDate || new Date().toISOString())}</div>
+ <form onsubmit="saveOpportunity(event, ${opp ? `'${opp.id}'` : 'null'})">
+ <input class="input" required name="name" placeholder="Opportunity Name *" value="${opp?.name || ''}">
+ 
+ <select class="input" ${accountRequiredAttr} name="accountId">
+ <option value="">${accountLabel}</option>
+ ${state.data.accounts.map(a => `<option value="${a.id}" ${String(opp?.accountId) === String(a.id) ? 'selected' : ''}>${a.name}</option>`).join('')}
+
+ </select>
+ 
+ <input class="input" required type="number" name="value" placeholder="Value (₹) *" value="${opp?.value || ''}">
+ 
+ <select class="input" required name="stage">
+ <option value="">Select Stage *</option>
+ <option value="Discovery" ${opp?.stage === 'Discovery' ? 'selected' : ''}>Discovery</option>
+ <option value="Proposal" ${opp?.stage === 'Proposal' ? 'selected' : ''}>Proposal</option>
+ <option value="Negotiation" ${opp?.stage === 'Negotiation' ? 'selected' : ''}>Negotiation</option>
+ <option value="Closed Won" ${opp?.stage === 'Closed Won' ? 'selected' : ''}>Closed Won</option>
+ <option value="Closed Lost" ${opp?.stage === 'Closed Lost' ? 'selected' : ''}>Closed Lost</option>
+ </select>
+
+ <select class="input" name="dealType">
+ <option value="">Select Deal Type</option>
+ <option value="Hardware" ${opp?.dealType === 'Hardware' ? 'selected' : ''}>Hardware</option>
+ <option value="Software" ${opp?.dealType === 'Software' ? 'selected' : ''}>Software</option>
+ <option value="Managed Services" ${opp?.dealType === 'Managed Services' ? 'selected' : ''}>Managed Services</option>
+ <option value="Mixed" ${opp?.dealType === 'Mixed' ? 'selected' : ''}>Mixed</option>
+ </select>
+ 
+ <select class="input" name="competitionPosition">
+ <option value="">Competition Position</option>
+ <option value="Strong" ${opp?.competitionPosition === 'Strong' ? 'selected' : ''}>Strong</option>
+ <option value="Favorable" ${opp?.competitionPosition === 'Favorable' ? 'selected' : ''}>Favorable</option>
+ <option value="Neutral" ${opp?.competitionPosition === 'Neutral' ? 'selected' : ''}>Neutral</option>
+ <option value="Unfavorable" ${opp?.competitionPosition === 'Unfavorable' ? 'selected' : ''}>Unfavorable</option>
+ </select>
+
+ <select class="input" name="assignedPresales">
+ <option value="">Assign Presales</option>
+ ${getTeamUsers('presales').map(u => `<option value="${u}" ${opp?.assignedPresales === u ? 'selected' : ''}>${u}</option>`).join('')}
+ </select>
+ <select class="input" name="assignedSalesOps">
+ <option value="">Assign Sales Ops / Pricing</option>
+ ${getTeamUsers('salesops').map(u => `<option value="${u}" ${opp?.assignedSalesOps === u ? 'selected' : ''}>${u}</option>`).join('')}
+ </select>
+ <select class="input" name="assignedPurchase">
+ <option value="">Assign Purchase</option>
+ ${getTeamUsers('purchase').map(u => `<option value="${u}" ${opp?.assignedPurchase === u ? 'selected' : ''}>${u}</option>`).join('')}
+ </select>
+ <textarea name="salesComments" placeholder="Sales Comments">${opp?.salesComments || ''}</textarea>
+ <textarea name="salesOpsComments" placeholder="Sales Ops / OEM Pricing Notes">${opp?.salesOpsComments || ''}</textarea>
+ <textarea name="requirements" placeholder="Customer Requirements">${opp?.requirements || ''}</textarea>
+ <div style="margin:12px 0 6px; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.14); font-size:0.9em;">
+ 🧩 <strong>Presales Intake (Filled by Sales)</strong><br>
+ <span style="opacity:0.9">Mandatory before save: Problem Statement, Why Now, Business Impact, Current State, Budget Range, Decision Timeline.</span>
+ </div>
+ <textarea required name="intakeProblemStatement" placeholder="Problem Statement *">${opp?.intakeProblemStatement || ''}</textarea>
+ <textarea required name="intakeWhyNow" placeholder="Why Now (Trigger Event) *">${opp?.intakeWhyNow || ''}</textarea>
+ <textarea required name="intakeBusinessImpact" placeholder="Business Impact *">${opp?.intakeBusinessImpact || ''}</textarea>
+ <textarea required name="intakeCurrentState" placeholder="Current State Summary *">${opp?.intakeCurrentState || ''}</textarea>
+ <textarea required name="intakeBudgetRange" placeholder="Budget Range *">${opp?.intakeBudgetRange || ''}</textarea>
+ <textarea required name="intakeDecisionTimeline" placeholder="Decision Timeline *">${opp?.intakeDecisionTimeline || ''}</textarea>
+ <textarea name="intakeRiskIfNotSolved" placeholder="Risk if Not Solved">${opp?.intakeRiskIfNotSolved || ''}</textarea>
+ <textarea name="intakeKeyStakeholders" placeholder="Key Stakeholders">${opp?.intakeKeyStakeholders || ''}</textarea>
+ <textarea name="intakeInScope" placeholder="In Scope *">${opp?.intakeInScope || ''}</textarea>
+ <textarea name="intakeOutOfScope" placeholder="Out of Scope *">${opp?.intakeOutOfScope || ''}</textarea>
+ <textarea name="intakeCurrentEnvironment" placeholder="Current Environment (OEM/Cloud/Security) *">${opp?.intakeCurrentEnvironment || ''}</textarea>
+ <textarea name="intakePainPoints" placeholder="Pain Points">${opp?.intakePainPoints || ''}</textarea>
+ <textarea name="intakeComplianceRequirements" placeholder="Compliance Requirements *">${opp?.intakeComplianceRequirements || ''}</textarea>
+ <textarea name="intakeIntegrationRequirements" placeholder="Integration Requirements *">${opp?.intakeIntegrationRequirements || ''}</textarea>
+ <textarea name="intakeCompetitors" placeholder="Competitors / Incumbent">${opp?.intakeCompetitors || ''}</textarea>
+ <textarea name="intakeWinStrategy" placeholder="Why Should We Win">${opp?.intakeWinStrategy || ''}</textarea>
+ <textarea name="presalesArchitecture" placeholder="Presales Architecture Notes">${opp?.presalesArchitecture || ''}</textarea>
+ <textarea name="presalesQuestions" placeholder="Presales Questions">${opp?.presalesQuestions || ''}</textarea>
+ <textarea name="presalesComments" placeholder="Presales Notes for Sales (client meeting prep)">${opp?.presalesComments || ''}</textarea>
+ <textarea name="boq" placeholder="BOQ">${opp?.boq || ''}</textarea>
+ <textarea name="purchaseCosting" placeholder="Purchase Costing">${opp?.purchaseCosting || ''}</textarea>
+ <input class="input" type="datetime-local" name="costingTat" value="${opp?.costingTat ? opp.costingTat.slice(0,16) : ''}">
+ <textarea name="finalPricingProposal" placeholder="Final Pricing Proposal">${opp?.finalPricingProposal || ''}</textarea>
+ <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Expected Closure Date</label>
+ <input class="input" type="date" name="closureDate" value="${opp?.closureDate ? opp.closureDate.slice(0,10) : ''}">
+ <select class="input" name="workflowStage">
+ <option value="Sales Review" ${opp?.workflowStage === 'Sales Review' ? 'selected' : ''}>Sales Review</option>
+ <option value="Assigned to Presales" ${opp?.workflowStage === 'Assigned to Presales' ? 'selected' : ''}>Assigned to Presales</option>
+ <option value="Awaiting Purchase Costing" ${opp?.workflowStage === 'Awaiting Purchase Costing' ? 'selected' : ''}>Awaiting Purchase Costing</option>
+ <option value="Costing Returned to Presales" ${opp?.workflowStage === 'Costing Returned to Presales' ? 'selected' : ''}>Costing Returned to Presales</option>
+ <option value="Presales Overdue" ${opp?.workflowStage === 'Presales Overdue' ? 'selected' : ''}>Presales Overdue</option>
+ <option value="Assigned Back to Sales" ${opp?.workflowStage === 'Assigned Back to Sales' ? 'selected' : ''}>Assigned Back to Sales</option>
+ <option value="Sales Review (Client Meeting)" ${opp?.workflowStage === 'Sales Review (Client Meeting)' ? 'selected' : ''}>Sales Review (Client Meeting)</option>
+ <option value="Final Proposal Shared" ${opp?.workflowStage === 'Final Proposal Shared' ? 'selected' : ''}>Final Proposal Shared</option>
+ </select>
+ 
+ <div style="margin-top:20px">
+ <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+ <button type="submit" class="btn btn-success">Save</button>
+ ${opp ? `<button type="button" class="btn btn-danger" onclick="deleteOpportunity('${opp.id}')">Delete</button>` : ''}
+ </div>
+ </form>
+ </div>
+ `;
+ document.getElementById('modal').classList.add('show');
+}
+
+ function openLeadModal(lead = null) {
+ document.getElementById('modal').innerHTML = `
+ <div class="modal-content">
+ <h2>${lead ? 'Edit' : 'Add'} Lead</h2>
+ <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(lead?.createdDate || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(lead?.modifiedDate || new Date().toISOString())}</div>
+ <form onsubmit="saveLead(event, ${lead ? `'${lead.id}'` : 'null'})">
+ <input class="input" required name="name" placeholder="Name *" value="${lead?.name || ''}">
+ <input class="input" required name="company" placeholder="Company *" value="${lead?.company || ''}">
+ <input class="input" required type="email" name="email" placeholder="Email *" value="${lead?.email || ''}">
+ <input class="input" required name="phone" placeholder="Phone *" value="${lead?.phone || ''}">
+ <label style="display:block; margin:8px 0 6px 2px; font-size:0.9em; opacity:0.9;">Assign To *</label>
+ <select class="input" required name="owner">
+ <option value="" ${lead?.owner ? '' : 'selected'} disabled>Select Assignee *</option>
+ ${getTeamUsers('sales').map(u => `<option value="${u}" ${(lead?.owner || '') === u ? 'selected' : ''}>${u}</option>`).join('')}
+ </select>
+ <select class="input" required name="source">
+ <option value="">Select Source *</option>
+ <option value="Referral" ${lead?.source === 'Referral' ? 'selected' : ''}>Referral</option>
+ <option value="Website" ${lead?.source === 'Website' ? 'selected' : ''}>Website</option>
+ <option value="LinkedIn" ${lead?.source === 'LinkedIn' ? 'selected' : ''}>LinkedIn</option>
+ <option value="Cold Call" ${lead?.source === 'Cold Call' ? 'selected' : ''}>Cold Call</option>
+ </select>
+ <select class="input" required name="status">
+ <option value="">Select Status *</option>
+ <option value="New" ${lead?.status === 'New' ? 'selected' : ''}>New</option>
+ <option value="Contacted" ${lead?.status === 'Contacted' ? 'selected' : ''}>Contacted</option>
+ <option value="Qualified" ${lead?.status === 'Qualified' ? 'selected' : ''}>Qualified</option>
+ </select>
+ <textarea name="notes" placeholder="Notes">${lead?.notes || ''}</textarea>
+ <div style="margin-top:20px">
+ <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+ <button type="submit" class="btn btn-success">Save</button>
+ ${lead ? `<button type="button" class="btn btn-danger" onclick="deleteLead('${lead.id}')">Delete</button>` : ''}
+ </div>
+ </form>
+ </div>
+ `;
+ document.getElementById('modal').classList.add('show');
+ }
+
+ function openAccountModal(account = null) {
+ document.getElementById('modal').innerHTML = `
+ <div class="modal-content">
+ <h2>${account ? 'Edit' : 'Add'} Account</h2>
+ <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(account?.createdDate || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(account?.modifiedDate || new Date().toISOString())}</div>
+ <form onsubmit="saveAccount(event, ${account ? `'${account.id}'` : 'null'})">
+ <input class="input" required name="name" placeholder="Account Name *" value="${account?.name || ''}">
+ <input class="input" required name="industry" placeholder="Industry *" value="${account?.industry || ''}">
+ 
+ <select class="input" required name="tier">
+ <option value="">Select Tier *</option>
+ <option value="A" ${account?.tier === 'A' ? 'selected' : ''}>A - Strategic</option>
+ <option value="B" ${account?.tier === 'B' ? 'selected' : ''}>B - Growth</option>
+ <option value="C" ${account?.tier === 'C' ? 'selected' : ''}>C - Maintenance</option>
+ </select>
+ 
+ <input class="input" required name="location" placeholder="Location *" value="${account?.location || ''}">
+ 
+ <select class="input" name="companySize">
+ <option value="">Company Size</option>
+ <option value="1000+" ${account?.companySize === '1000+' ? 'selected' : ''}>1000+</option>
+ <option value="500-1000" ${account?.companySize === '500-1000' ? 'selected' : ''}>500-1000</option>
+ <option value="100-500" ${account?.companySize === '100-500' ? 'selected' : ''}>100-500</option>
+ <option value="50-100" ${account?.companySize === '50-100' ? 'selected' : ''}>50-100</option>
+ <option value="10-50" ${account?.companySize === '10-50' ? 'selected' : ''}>10-50</option>
+ <option value="1-10" ${account?.companySize === '1-10' ? 'selected' : ''}>1-10</option>
+ </select>
+ 
+ <input class="input" name="annualSpend" placeholder="Annual Spend (e.g., ₹50L)" value="${account?.annualSpend || ''}">
+ 
+ <select class="input" name="mode">
+ <option value="">Account Mode</option>
+ <option value="Business Expansion" ${account?.mode === 'Business Expansion' ? 'selected' : ''}>Business Expansion</option>
+ <option value="Overcome Bottleneck" ${account?.mode === 'Overcome Bottleneck' ? 'selected' : ''}>Overcome Bottleneck</option>
+ <option value="Status Quo" ${account?.mode === 'Status Quo' ? 'selected' : ''}>Status Quo</option>
+ </select>
+
+ <div class="card" style="margin-top:12px">
+ <h3 style="margin-bottom:8px">Suspect Discovery Form (Mandatory)</h3>
+ <div style="font-size:0.9em; opacity:0.9; margin-bottom:8px">Fill all 10 responses. Each answered question adds 1 point to win probability.</div>
+ ${SUSPECT_QUESTIONS.map((q, idx) => `
+  <label style="display:block; margin-top:10px; margin-bottom:4px; font-size:0.92em;">Q${idx + 1}. ${q}</label>
+  <textarea class="input" required name="suspect_q${idx + 1}" placeholder="Enter response for Q${idx + 1}">${account?.[`suspect_q${idx + 1}`] || ''}</textarea>
+ `).join('')}
+ </div>
+ 
+ <div style="margin-top:20px">
+ <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+ <button type="submit" class="btn btn-success">Save</button>
+ ${account ? `<button type="button" class="btn btn-danger" onclick="deleteAccount('${account.id}')">Delete</button>` : ''}
+ </div>
+ </form>
+ </div>
+ `;
+ document.getElementById('modal').classList.add('show');
+}
+
+ function openContactModal(contact = null) {
+ document.getElementById('modal').innerHTML = `
+ <div class="modal-content">
+ <h2>${contact ? 'Edit' : 'Add'} Contact</h2>
+ <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(contact?.createdDate || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(contact?.modifiedDate || new Date().toISOString())}</div>
+ <form onsubmit="saveContact(event, ${contact ? `'${contact.id}'` : 'null'})">
+ <input class="input" required name="name" placeholder="Name *" value="${contact?.name || ''}">
+ <input class="input" name="title" placeholder="Title" value="${contact?.title || ''}">
+ <input class="input" type="email" name="email" placeholder="Email" value="${contact?.email || ''}">
+ <input class="input" name="phone" placeholder="Phone" value="${contact?.phone || ''}">
+ 
+ <select class="input" required name="roleType">
+ <option value="">Select Role *</option>
+ <option value="MAS" ${contact?.roleType === 'MAS' ? 'selected' : ''}>MAS</option>
+ <option value="TE" ${contact?.roleType === 'TE' ? 'selected' : ''}>TE</option>
+ <option value="EU" ${contact?.roleType === 'EU' ? 'selected' : ''}>EU</option>
+ <option value="Coach" ${contact?.roleType === 'Coach' ? 'selected' : ''}>Coach</option>
+ </select>
+ 
+ <select class="input" required name="influenceLevel">
+ <option value="">Influence Level *</option>
+ <option value="High" ${contact?.influenceLevel === 'High' ? 'selected' : ''}>High</option>
+ <option value="Medium" ${contact?.influenceLevel === 'Medium' ? 'selected' : ''}>Medium</option>
+ <option value="Low" ${contact?.influenceLevel === 'Low' ? 'selected' : ''}>Low</option>
+ </select>
+ 
+ <select class="input" required name="emotion">
+ <option value="">Select Emotion *</option>
+ <option value="Euphoria" ${contact?.emotion === 'Euphoria' ? 'selected' : ''}>Euphoria</option>
+ <option value="Great" ${contact?.emotion === 'Great' ? 'selected' : ''}>Great</option>
+ <option value="OK" ${contact?.emotion === 'OK' ? 'selected' : ''}>OK</option>
+ <option value="Worry" ${contact?.emotion === 'Worry' ? 'selected' : ''}>Worry</option>
+ </select>
+ 
+ <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Account *</label>
+<select class="input" required name="accountId">
+  <option value="" disabled ${!contact?.accountId ? 'selected' : ''}>Select Account *</option>
+  ${state.data.accounts.map(a => `<option value="${a.id}" ${contact?.accountId === a.id ? 'selected' : ''}>${a.name}</option>`).join('')}
+</select>
+ 
+ <div style="margin-top:20px">
+ <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+ <button type="submit" class="btn btn-success">Save</button>
+ ${contact ? `<button type="button" class="btn btn-danger" onclick="deleteContact('${contact.id}')">Delete</button>` : ''}
+ </div>
+ </form>
+ </div>
+ `;
+ document.getElementById('modal').classList.add('show');
+}
+ 
+function openActivityModal(activity = null) {
+ document.getElementById('modal').innerHTML = `
+ <div class="modal-content">
+ <h2>${activity ? 'Edit' : 'Log'} Activity</h2>
+ <div style="margin:8px 0 16px 0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,0.18); font-size:0.9em;">📅 Created: ${fmtDateTime(activity?.createdDate || activity?.date || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(activity?.modifiedDate || activity?.date || new Date().toISOString())}</div>
+ <form onsubmit="saveActivity(event, ${activity ? `'${activity.id}'` : 'null'})">
+ <input type="hidden" id="sendMomFlag" name="sendMom" value="0">
+ <select class="input" required name="type">
+ <option value="">Select Type *</option>
+ <option value="Call" ${activity?.type === 'Call' ? 'selected' : ''}>📞 Call</option>
+ <option value="Email" ${activity?.type === 'Email' ? 'selected' : ''}>📧 Email</option>
+ <option value="Meeting" ${activity?.type === 'Meeting' ? 'selected' : ''}>🤝 Meeting</option>
+ <option value="Demo" ${activity?.type === 'Demo' ? 'selected' : ''}>💻 Demo</option>
+ <option value="Proposal" ${activity?.type === 'Proposal' ? 'selected' : ''}>📄 Proposal</option>
+ <option value="Follow-up" ${activity?.type === 'Follow-up' ? 'selected' : ''}>🔄 Follow-up</option>
+ <option value="Note" ${activity?.type === 'Note' ? 'selected' : ''}>📝 Note</option>
+ </select>
+ <input class="input" required name="subject" placeholder="Subject *" value="${activity?.subject || ''}">
+ <select class="input" name="accountId">
+ <option value="">Link Account (optional)</option>
+ ${state.data.accounts.map(a => `<option value="${a.id}" ${activity?.accountId === a.id ? 'selected' : ''}>${a.name}</option>`).join('')}
+ </select>
+ <textarea name="notes" placeholder="What did you do? What was discussed?">${activity?.notes || ''}</textarea>
+ <input class="input" required type="datetime-local" name="date" value="${activity?.date ? activity.date.slice(0,16) : new Date().toISOString().slice(0,16)}">
+
+ <label style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+  <input type="checkbox" name="momEnabled" value="1" onchange="toggleMomSection(this.checked)"> Send MoM Email to Client
+ </label>
+
+ <div id="momSection" style="display:none; margin-top:12px; padding:12px; border-radius:10px; background:rgba(255,255,255,0.12)">
+  <input class="input" name="momToEmails" placeholder="To Emails* (comma separated)">
+  <input class="input" name="momCcEmails" placeholder="CC Emails (optional)">
+  <input class="input" name="momClientName" placeholder="Client Name" value="Team">
+  <input class="input" name="momSubject" placeholder="Mail Subject" value="Minutes of Meeting | ${(activity?.accountName || 'Account')} | ${fmtDate(new Date().toISOString())}">
+  <textarea name="momIntro" placeholder="Introduction*"></textarea>
+  <textarea name="momDiscussion" placeholder="Discussion Points* (one per line)"></textarea>
+  <textarea name="momActions" placeholder="Action Points* (one per line: Action | Owner | Due Date | Status)"></textarea>
+  <textarea name="momNextSteps" placeholder="Next Steps*"></textarea>
+ </div>
+
+ <div style="margin-top:20px">
+ <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+ <button type="submit" class="btn btn-success" onclick="setSendMomFlag(false)">Save Activity</button>
+ <button type="submit" class="btn" onclick="setSendMomFlag(true)">Save + Send MoM</button>
+ ${activity ? `<button type="button" class="btn btn-danger" onclick="deleteActivity('${activity.id}')">Delete</button>` : ''}
+ </div>
+ </form>
+ </div>
+ `;
+ document.getElementById('modal').classList.add('show');
+}
+
+async function saveActivity(e, id) {
+ e.preventDefault();
+ if (window.__activitySaveInFlight) return;
+ window.__activitySaveInFlight = true;
+ const submitBtn = e.target?.querySelector('button[type="submit"]');
+ if (submitBtn) {
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Saving...';
+ }
+ const formData = Object.fromEntries(new FormData(e.target));
+ const existing = id ? state.data.activities.find(a => a.id === id) : null;
+ const payload = {
+ id: id || undefined,
+ type: formData.type,
+ subject: formData.subject,
+ notes: formData.notes || '',
+ date: toISOOrBlank(formData.date) || new Date().toISOString(),
+ owner: currentUser,
+ account_id: formData.accountId || '',
+ account_name: (state.data.accounts.find(a => a.id === formData.accountId)?.name) || '',
+ createdDate: existing?.createdDate || new Date().toISOString(),
+ modifiedDate: new Date().toISOString(),
+ };
+
+ try {
+ const saveRes = await upsertActivityToApi(payload);
+ payload.id = saveRes?.id || payload.id;
+
+ const shouldSendMom = formData.sendMom === '1' || formData.momEnabled === '1';
+ if (shouldSendMom && payload.type === 'Meeting') {
+  if (!formData.momToEmails) {
+   throw new Error('Please provide To Emails before sending MoM');
+  }
+  await sendMomEmailFromApi(buildMomPayloadFromForm(formData, payload));
+ }
+
+ state.data.activities = await fetchActivitiesFromApi();
+ saveData();
+ closeModal();
+ render();
+ } catch (err) {
+ alert(`Could not save activity to shared backend: ${err.message}`);
+ } finally {
+  window.__activitySaveInFlight = false;
+  if (submitBtn) {
+   submitBtn.disabled = false;
+   submitBtn.textContent = 'Save Activity';
+  }
+ }
+}
+
+async function deleteActivity(id) {
+ if (!confirm('Delete this activity?')) return;
+ try {
+ await deleteActivityFromApi(id);
+ state.data.activities = await fetchActivitiesFromApi();
+ saveData();
+ closeModal();
+ render();
+ } catch (err) {
+ alert(`Could not delete activity from shared backend: ${err.message}`);
+ }
+}
+
+function getTeamUsers(role) {
+    const users = new Set();
+    const LEAD_ASSIGN_PRIVILEGED_USERS = [
+        'vinod.v@dnispl.com',
+        'a.gupta@dnispl.com',
+        'ashish.mehra@dnispl.com'
+    ];
+    if (role === 'sales') {
+        SALES_TEAM_USERS.forEach(u => {
+            if (u && !SALES_DROPDOWN_BLOCKLIST.has(normalizeEmail(u))) users.add(u);
+        });
+        const isPrivileged = isSupervisor || LEAD_ASSIGN_PRIVILEGED_USERS.includes(normalizeEmail(currentUser));
+        if (isPrivileged) {
+            state.data.leads.forEach(l => {
+                const email = normalizeEmail(l.owner);
+                if (email && !SALES_DROPDOWN_BLOCKLIST.has(email)) users.add(l.owner);
+            });
+            state.data.accounts.forEach(a => {
+                const raw = a.owner || a.accountManager;
+                const email = normalizeEmail(raw);
+                if (email && !SALES_DROPDOWN_BLOCKLIST.has(email)) users.add(raw);
+            });
+            state.data.contacts.forEach(c => {
+                const email = normalizeEmail(c.owner);
+                if (email && !SALES_DROPDOWN_BLOCKLIST.has(email)) users.add(c.owner);
+            });
+            state.data.opportunities.forEach(o => {
+                const email = normalizeEmail(o.owner);
+                if (email && !SALES_DROPDOWN_BLOCKLIST.has(email)) users.add(o.owner);
+            });
+            Object.values(ACCOUNT_OWNER_MAP).forEach(email => {
+                const normalized = normalizeEmail(email);
+                if (normalized && normalized !== 'tba@local.crm' && !SALES_DROPDOWN_BLOCKLIST.has(normalized)) users.add(email);
+            });
+        }
+        const normalizedCurrentUser = normalizeEmail(currentUser || 'sales@company.com');
+        if (normalizedCurrentUser && !SALES_DROPDOWN_BLOCKLIST.has(normalizedCurrentUser)) {
+            users.add(currentUser || 'sales@company.com');
+        }
+        return Array.from(users).filter(u => {
+            const email = normalizeEmail(u);
+            return email && email !== 'tba@local.crm' && !SALES_DROPDOWN_BLOCKLIST.has(email);
+        }).sort();
+    }
+    const opportunities = state.data.opportunities || [];
+    opportunities.forEach(o => {
+    if (role === 'presales' && o.assignedPresales) users.add(o.assignedPresales);
+    if (role === 'purchase' && o.assignedPurchase) users.add(o.assignedPurchase);
+    if (role === 'salesops' && o.assignedSalesOps) users.add(o.assignedSalesOps);
+    });
+    if (role === 'presales') users.add(PRESALES_OWNER);
+    if (role === 'purchase') {
+        users.add('purchase@company.com');
+        users.add(PURCHASE_OWNER);
+    }
+    if (role === 'salesops') users.add(SALES_OPS_OWNER);
+    return Array.from(users);
+}
+
+async function updateOpportunityWorkflow(id, updates) {
+ const idx = state.data.opportunities.findIndex(o => o.id === id);
+ if (idx === -1) return;
+ const prev = state.data.opportunities[idx].workflowStage || 'Sales Review';
+ state.data.opportunities[idx] = {
+ ...state.data.opportunities[idx],
+ ...updates,
+ modifiedDate: new Date().toISOString()
+ };
+ const next = state.data.opportunities[idx].workflowStage || prev;
+ recordActivity('Workflow', `Opportunity moved: ${state.data.opportunities[idx].name}`, `${prev} → ${next}`);
+ try {
+  await upsertOpportunityToApi(state.data.opportunities[idx]);
+  state.data.opportunities = await fetchOpportunitiesFromApi();
+ } catch (err) {
+  alert(`Could not update workflow in shared backend: ${err.message}`);
+ }
+ saveData();
+ render();
+}
+
+async function assignToPresales(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ const now = new Date().toISOString();
+ const comments = prompt('Sales comments for presales:', opp.salesComments || '');
+ const requirements = prompt('Customer requirements:', opp.requirements || '');
+ const normalizedDealType = String(opp.dealType || '').trim().toLowerCase();
+ const needsSalesOps = ['hardware', 'mixed'].includes(normalizedDealType) || true;
+ await updateOpportunityWorkflow(id, {
+ assignedPresales: PRESALES_OWNER,
+ assignedSalesOps: needsSalesOps ? SALES_OPS_OWNER : (opp.assignedSalesOps || ''),
+ salesComments: comments || '',
+ requirements: requirements || '',
+ presalesAssignedAt: now,
+ presalesDueAt: addHours(now, 72),
+ salesOpsAssignedAt: now,
+ salesOpsDueAt: addHours(now, 24),
+ assignmentDueAt: addHours(now, 4),
+ salesSubmittedAt: now,
+ oemPricingRequired: needsSalesOps,
+ workflowStage: 'Assigned to Presales'
+ });
+}
+
+async function assignDirectToPurchase(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ if (normalizeEmail(currentUser) !== 'rakesh.uniyal@dnispl.com' && !isSupervisor) {
+  alert('Only rakesh.uniyal@dnispl.com can use direct purchase assignment.');
+  return;
+ }
+ const now = new Date().toISOString();
+ const comments = prompt('Sales comments for purchase:', opp.salesComments || '');
+ const requirements = prompt('Customer requirements for purchase:', opp.requirements || '');
+ await updateOpportunityWorkflow(id, {
+  assignedPurchase: PURCHASE_OWNER,
+  assignedPresales: '',
+  salesComments: comments || '',
+  requirements: requirements || '',
+  purchaseAssignedAt: now,
+  purchaseDueAt: addHours(now, 24),
+  salesSubmittedAt: now,
+  assignmentDueAt: addHours(now, 4),
+  workflowStage: 'Awaiting Purchase Costing'
+ });
+}
+
+async function submitPresalesPack(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ const architecture = prompt('Presales architecture notes:', opp.presalesArchitecture || '');
+ const questions = prompt('Presales questions:', opp.presalesQuestions || '');
+ const boq = prompt('Enter BOQ details:', opp.boq || '');
+ const now = new Date().toISOString();
+ if (!boq) {
+ alert('BOQ is required.');
+ return;
+ }
+ await updateOpportunityWorkflow(id, {
+ presalesArchitecture: architecture || '',
+ presalesQuestions: questions || '',
+ boq,
+ assignedPurchase: PURCHASE_OWNER,
+ purchaseAssignedAt: now,
+ purchaseDueAt: addHours(now, 24),
+ workflowStage: 'Awaiting Purchase Costing'
+ });
+}
+
+async function submitPurchaseCosting(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ const costing = prompt('Purchase costing details:', opp.purchaseCosting || '');
+ const tat = prompt('Costing TAT (YYYY-MM-DD HH:MM):', opp.costingTat || '');
+ if (!costing) {
+ alert('Costing is required.');
+ return;
+ }
+ const tatISO = toISOOrBlank(tat);
+ const now = new Date().toISOString();
+ await updateOpportunityWorkflow(id, {
+ purchaseCosting: costing,
+ costingTat: tatISO || opp.costingTat || '',
+ costingReturnedAt: now,
+ workflowStage: 'Costing Returned to Presales'
+ });
+}
+
+async function submitFinalPricing(id) {
+  const opp = state.data.opportunities.find(o => o.id === id);
+  if (!opp) return;
+  const notes = prompt('Presales notes for sales/client meeting:', opp.presalesComments || '');
+  const proposal = prompt('Final pricing proposal for sales (leave blank if sending comments only):', opp.finalPricingProposal || '');
+  if (!(proposal || '').trim() && !(notes || '').trim()) {
+    alert('Please enter either final proposal details or presales comments for sales.');
+    return;
+  }
+  const now = new Date().toISOString();
+
+  await updateOpportunityWorkflow(id, {
+    finalPricingProposal: proposal || opp.finalPricingProposal || '',
+    presalesComments: notes || '',
+    finalProposalAt: now,
+    workflowStage: 'Assigned Back to Sales'
+  });
+}
+
+
+async function saveLead(e, id) {
+ e.preventDefault();
+ const submitBtn = e.target?.querySelector('button[type="submit"]');
+ if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving…'; }
+ const data = Object.fromEntries(new FormData(e.target));
+ const existing = id ? state.data.leads.find(l => l.id === id) : null;
+ const payload = {
+  id: id || undefined,
+  name: data.name || '',
+  company: data.company || '',
+  email: data.email || '',
+  phone: data.phone || '',
+  source: data.source || '',
+  status: data.status || '',
+  notes: data.notes || '',
+  owner: data.owner || currentUser,
+  createdDate: existing?.createdDate || new Date().toISOString(),
+  modifiedDate: new Date().toISOString(),
+ };
+ try {
+  await upsertLeadToApi(payload);
+  state.data.leads = await fetchLeadsFromApi();
+  recordActivity('Lead', `Lead ${id ? 'updated' : 'created'}: ${payload.name}`, `Assigned to ${payload.owner}`, payload.owner);
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Save'; }
+  alert(`Could not save lead to shared backend: ${err.message}`);
+ }
+}
+
+async function saveAccount(e, id) {
+ e.preventDefault();
+ const submitBtn = e.target?.querySelector('button[type="submit"]');
+ if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving…'; }
+ const data = Object.fromEntries(new FormData(e.target));
+
+ const suspectAnswers = {};
+ for (let i = 1; i <= 10; i++) {
+  suspectAnswers[`suspect_q${i}`] = String(data[`suspect_q${i}`] || '').trim();
+ }
+ const suspectScore = Object.values(suspectAnswers).filter(Boolean).length;
+
+ if (suspectScore < 10) {
+  alert('Please fill all 10 suspect discovery responses.');
+  return;
+ }
+
+ const payload = {
+  id: id || undefined,
+  account_name: data.name,
+  account_manager: currentUser,
+  industry: data.industry || '',
+  tier: data.tier || '',
+  location: data.location || '',
+  company_size: data.companySize || '',
+  annual_spend: data.annualSpend || '',
+  mode: data.mode || '',
+  suspect_score: suspectScore,
+  ...suspectAnswers,
+ };
+
+ try {
+  await upsertAccountToApi(payload);
+  state.data.accounts = await fetchAccountsFromApi();
+  recordActivity('Account', `Account ${id ? 'updated' : 'created'}: ${data.name}`);
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Save'; }
+  alert(`Could not save account to shared backend: ${err.message}`);
+ }
+}
+
+async function saveContact(e, id) {
+ e.preventDefault();
+ const submitBtn = e.target?.querySelector('button[type="submit"]');
+ if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving…'; }
+ const data = Object.fromEntries(new FormData(e.target));
+ const existing = id ? state.data.contacts.find(c => c.id === id) : null;
+ const payload = {
+  id: id || undefined,
+  name: data.name || '',
+  title: data.title || '',
+  email: data.email || '',
+  phone: data.phone || '',
+  roleType: data.roleType || '',
+  influenceLevel: data.influenceLevel || '',
+  emotion: data.emotion || '',
+  accountId: data.accountId || '',
+  owner: existing?.owner || currentUser,
+  createdDate: existing?.createdDate || new Date().toISOString(),
+  modifiedDate: new Date().toISOString(),
+ };
+ try {
+  await upsertContactToApi(payload);
+  state.data.contacts = await fetchContactsFromApi();
+  recordActivity('Contact', `Contact ${id ? 'updated' : 'created'}: ${payload.name}`);
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Save'; }
+  alert(`Could not save contact to shared backend: ${err.message}`);
+ }
+}
+
+async function saveOpportunity(e, id) {
+ e.preventDefault();
+ const submitBtn = e.target?.querySelector('button[type="submit"]');
+ if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving…'; }
+ const existing = id ? state.data.opportunities.find(o => o.id === id) : null;
+ const nowIso = new Date().toISOString();
+ const editorRole = getUserRole();
+ const isPresalesEditor = editorRole === 'presales';
+ const isSalesOpsEditor = editorRole === 'salesops';
+ const data = Object.fromEntries(new FormData(e.target));
+ data.value = parseFloat(data.value || 0);
+ data.owner = existing?.owner || currentUser;
+ data.salesOwner = existing?.salesOwner || currentUser;
+ data.createdDate = existing?.createdDate || nowIso;
+ data.modifiedDate = nowIso;
+ data.workflowStage = data.workflowStage || existing?.workflowStage || 'Sales Review';
+ data.assignedPresales = data.assignedPresales || existing?.assignedPresales || '';
+ data.assignedSalesOps = data.assignedSalesOps || existing?.assignedSalesOps || '';
+  data.presalesComments = data.presalesComments || existing?.presalesComments || '';
+  data.assignedPurchase = data.assignedPurchase || existing?.assignedPurchase || '';
+  data.salesComments = data.salesComments || existing?.salesComments || '';
+ data.salesOpsComments = data.salesOpsComments || existing?.salesOpsComments || '';
+ data.requirements = data.requirements || existing?.requirements || '';
+ data.presalesArchitecture = data.presalesArchitecture || existing?.presalesArchitecture || '';
+ data.presalesQuestions = data.presalesQuestions || existing?.presalesQuestions || '';
+ data.boq = data.boq || existing?.boq || '';
+ data.purchaseCosting = data.purchaseCosting || existing?.purchaseCosting || '';
+ data.costingTat = toISOOrBlank(data.costingTat) || existing?.costingTat || '';
+ data.finalPricingProposal = data.finalPricingProposal || existing?.finalPricingProposal || '';
+ data.intakeProblemStatement = data.intakeProblemStatement || existing?.intakeProblemStatement || '';
+ data.intakeWhyNow = data.intakeWhyNow || existing?.intakeWhyNow || '';
+ data.intakeBusinessImpact = data.intakeBusinessImpact || existing?.intakeBusinessImpact || '';
+ data.intakeCurrentState = data.intakeCurrentState || existing?.intakeCurrentState || '';
+ data.intakeBudgetRange = data.intakeBudgetRange || existing?.intakeBudgetRange || '';
+ data.intakeDecisionTimeline = data.intakeDecisionTimeline || existing?.intakeDecisionTimeline || '';
+ data.intakeRiskIfNotSolved = data.intakeRiskIfNotSolved || existing?.intakeRiskIfNotSolved || '';
+ data.intakeKeyStakeholders = data.intakeKeyStakeholders || existing?.intakeKeyStakeholders || '';
+ data.intakeInScope = data.intakeInScope || existing?.intakeInScope || '';
+ data.intakeOutOfScope = data.intakeOutOfScope || existing?.intakeOutOfScope || '';
+ data.intakeCurrentEnvironment = data.intakeCurrentEnvironment || existing?.intakeCurrentEnvironment || '';
+ data.intakePainPoints = data.intakePainPoints || existing?.intakePainPoints || '';
+ data.intakeComplianceRequirements = data.intakeComplianceRequirements || existing?.intakeComplianceRequirements || '';
+ data.intakeIntegrationRequirements = data.intakeIntegrationRequirements || existing?.intakeIntegrationRequirements || '';
+ data.intakeCompetitors = data.intakeCompetitors || existing?.intakeCompetitors || '';
+ data.intakeWinStrategy = data.intakeWinStrategy || existing?.intakeWinStrategy || '';
+ data.salesSubmittedAt = existing?.salesSubmittedAt || nowIso;
+ data.assignmentDueAt = existing?.assignmentDueAt || addHours(data.salesSubmittedAt, 4);
+ data.presalesDueAt = existing?.presalesDueAt || addHours(data.salesSubmittedAt, 72);
+ data.salesOpsAssignedAt = existing?.salesOpsAssignedAt || '';
+ data.salesOpsDueAt = existing?.salesOpsDueAt || '';
+ data.presalesEscalatedAt = existing?.presalesEscalatedAt || '';
+ data.dealType = data.dealType || existing?.dealType || '';
+ data.oemPricingRequired = existing?.oemPricingRequired ? '1' : '';
+  data.closureDate = data.closureDate || existing?.closureDate || '';
+ const normalizedDealType = String(data.dealType || '').trim().toLowerCase();
+ const routedToPresales = String(data.workflowStage || '').trim() === 'Assigned to Presales' || !!String(data.assignedPresales || '').trim();
+ const requiresSalesOps = ['hardware', 'mixed'].includes(normalizedDealType) || routedToPresales || !!String(data.assignedSalesOps || '').trim();
+ if (requiresSalesOps) {
+  data.assignedSalesOps = SALES_OPS_OWNER;
+  data.oemPricingRequired = '1';
+  data.salesOpsAssignedAt = data.salesOpsAssignedAt || nowIso;
+  data.salesOpsDueAt = data.salesOpsDueAt || addHours(nowIso, 24);
+ }
+ if (!isPresalesEditor && !isSalesOpsEditor) {
+  const missingIntake = OPPORTUNITY_INTAKE_REQUIRED_FIELDS
+   .filter(f => !(data[f.key] || '').trim())
+   .map(f => f.label);
+  if (missingIntake.length) {
+   alert('Please fill mandatory Presales Intake fields:\n- ' + missingIntake.join('\n- '));
+   return;
+  }
+ }
+ const cd = (data.closureDate || '').trim();
+ const payload = { ...data, id: id || undefined, closureDate: cd, closure_date: cd, expectedClosureDate: cd, expected_closure_date: cd };
+
+ try {
+  await upsertOpportunityToApi(payload);
+  state.data.opportunities = await fetchOpportunitiesFromApi();
+  recordActivity('Opportunity', `Opportunity ${id ? 'updated' : 'created'}: ${data.name}`);
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Save'; }
+  alert(`Could not save opportunity to shared backend: ${err.message}`);
+ }
+}
+ function editLead(id) { openLeadModal(state.data.leads.find(l => l.id === id)); }
+ function editAccount(id) { openAccountModal(state.data.accounts.find(a => a.id === id)); }
+ function editContact(id) { openContactModal(state.data.contacts.find(c => c.id === id)); }
+ function editOpportunity(id) { openOpportunityModal(state.data.opportunities.find(o => o.id === id)); }
+ function editActivity(id) { openActivityModal(state.data.activities.find(a => a.id === id)); }
+
+ async function deleteLead(id) {
+ if (!confirm('Delete this lead?')) return;
+ try {
+  await deleteLeadFromApi(id);
+  state.data.leads = await fetchLeadsFromApi();
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  alert(`Could not delete lead from shared backend: ${err.message}`);
+ }
+ }
+
+ async function deleteAccount(id) {
+ if (!confirm('Delete this account?')) return;
+ try {
+  await deleteAccountFromApi(id);
+  state.data.accounts = await fetchAccountsFromApi();
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  alert(`Could not delete account from shared backend: ${err.message}`);
+ }
+ }
+
+ async function deleteContact(id) {
+ if (!confirm('Delete this contact?')) return;
+ try {
+  await deleteContactFromApi(id);
+  state.data.contacts = await fetchContactsFromApi();
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  alert(`Could not delete contact from shared backend: ${err.message}`);
+ }
+ }
+
+ async function deleteOpportunity(id) {
+ if (!confirm('Delete this opportunity?')) return;
+ try {
+  await deleteOpportunityFromApi(id);
+  state.data.opportunities = await fetchOpportunitiesFromApi();
+  saveData();
+  closeModal();
+  render();
+ } catch (err) {
+  alert(`Could not delete opportunity from shared backend: ${err.message}`);
+ }
+ }
+
+ function closeModal() {
+ document.getElementById('modal').classList.remove('show');
+ }
+
+const AOP_MONTHS   = ['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar'];
+const AOP_CATS     = ['Hardware','Software','Managed_Services'];
+const AOP_CATS_LBL = ['Hardware','Software','Managed Svcs'];
+const AOP_FY       = '2025-26';
+ 
+function aopCurrentMonth() {
+  // FY starts Apr. Map JS month (0=Jan) → FY index
+  const fyIdx = (new Date().getMonth() - 3 + 12) % 12;
+  return AOP_MONTHS[fyIdx];
+}
+ 
+// ── CACHE ────────────────────────────────────────────────────────
+window._aopPlans   = {};  // account_id → plan row
+window._aopActuals = {};  // account_id → { month → {hardware, software, managed_services} }
+ 
+async function loadAopData() {
+  if (!currentUser) return;
+  try {
+    const qs = `viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}&fy_year=${AOP_FY}`;
+    const [pr, ar] = await withTimeout(Promise.all([
+      fetch(`${CRM_API_BASE}/api/aop?${qs}`),
+      fetch(`${CRM_API_BASE}/api/aop/actuals?${qs}`)
+    ]), 25000, 'aop');
+    if (pr.ok) {
+      const plans = await pr.json();
+      window._aopPlans = {};
+      const monthMap = {april:'Apr',may:'May',june:'Jun',july:'Jul',august:'Aug',
+        september:'Sep',october:'Oct',november:'Nov',december:'Dec',
+        january:'Jan',february:'Feb',march:'Mar'};
+      (Array.isArray(plans) ? plans : []).forEach(p => {
+        // Key by account_id from aop_plans table
+        window._aopPlans[p.account_id] = p;
+        // ALSO key by matching accounts.id via account_name
+        const matchedAccount = state.data.accounts.find(a => 
+          (a.name || '').toLowerCase() === (p.account_name || '').toLowerCase()
+        );
+        if (matchedAccount) {
+          window._aopPlans[matchedAccount.id] = p;
+        }
+        if (p.months) {
+          Object.entries(p.months).forEach(([mname, val]) => {
+            const prefix = monthMap[mname];
+            if (prefix) {
+              window._aopPlans[p.account_id][`${prefix}_Hardware`] = val;
+              window._aopPlans[p.account_id][`${prefix}_Software`] = 0;
+              window._aopPlans[p.account_id][`${prefix}_Managed_Services`] = 0;
+            }
+          });
+        }
+      });
+    } else {
+      console.warn('AOP plans API failed', pr.status);
+    }
+    if (ar.ok) {
+      const actuals = await ar.json();
+      window._aopActuals = {};
+      (Array.isArray(actuals) ? actuals : []).forEach(a => {
+        if (!window._aopActuals[a.account_id]) window._aopActuals[a.account_id] = {};
+        window._aopActuals[a.account_id][a.month] = {
+          hardware:         parseFloat(a.hardware         || 0),
+          software:         parseFloat(a.software         || 0),
+          managed_services: parseFloat(a.managed_services || 0),
+        };
+      });
+    } else {
+      console.warn('AOP actuals API failed', ar.status);
+    }
+  } catch(e) { console.warn('AOP load failed', e); }
+}
+ 
+// ── API ──────────────────────────────────────────────────────────
+async function saveAopPlan(payload) {
+  const r = await fetch(`${CRM_API_BASE}/api/aop`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  if (!r.ok) throw new Error(await r.text() || `AOP save failed (${r.status})`);
+  return r.json();
+}
+ 
+async function saveAopActual(payload) {
+  const r = await fetch(`${CRM_API_BASE}/api/aop/actuals`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  if (!r.ok) throw new Error(await r.text() || `Actual save failed (${r.status})`);
+  return r.json();
+}
+ 
+// ── VALUE HELPERS ────────────────────────────────────────────────
+function aopPlanVal(accountId, month, cat) {
+  return parseFloat((window._aopPlans[accountId] || {})[`${month}_${cat}`] || 0);
+}
+function aopActualVal(accountId, month, cat) {
+  return parseFloat(((window._aopActuals[accountId] || {})[month] || {})[cat.toLowerCase()] || 0);
+}
+function aopMonthTarget(accountId, month) {
+  return AOP_CATS.reduce((s,c) => s + aopPlanVal(accountId, month, c), 0);
+}
+function aopMonthActual(accountId, month) {
+  return AOP_CATS.reduce((s,c) => s + aopActualVal(accountId, month, c), 0);
+}
+function aopHasPlan(accountId) {
+  const p = window._aopPlans[accountId];
+  if (!p) return false;
+  return AOP_MONTHS.some(m => AOP_CATS.some(c => parseFloat(p[`${m}_${c}`]||0) > 0));
+}
+function aopBarColor(pct) {
+  return (pct||0)>=100 ? '#4ade80' : (pct||0)>=75 ? '#fbbf24' : '#f87171';
+}
+ 
+// ── RENDER AOP TAB ───────────────────────────────────────────────
+function renderAop(filtered) {
+  const accounts = filtered.accounts;
+  if (!accounts.length) return `
+    <div class="card">
+      <h2>📅 AOP Planning — FY ${AOP_FY}</h2>
+      <p style="margin-top:12px;opacity:0.8">No accounts assigned. Add accounts first.</p>
+    </div>`;
+ 
+  const filled      = accounts.filter(a => aopHasPlan(a.id)).length;
+  const annTarget   = accounts.reduce((s,a) => s + AOP_MONTHS.reduce((s2,m)=>s2+aopMonthTarget(a.id,m),0), 0);
+  const annActual   = accounts.reduce((s,a) => s + AOP_MONTHS.reduce((s2,m)=>s2+aopMonthActual(a.id,m),0), 0);
+  const curMonth    = aopCurrentMonth();
+  const curTarget   = accounts.reduce((s,a) => s + aopMonthTarget(a.id, curMonth), 0);
+  const curActual   = accounts.reduce((s,a) => s + aopMonthActual(a.id, curMonth), 0);
+  const curPct      = curTarget > 0 ? Math.round(curActual/curTarget*100) : null;
+  const ytdPct      = annTarget > 0 ? Math.round(annActual/annTarget*100) : null;
+ 
+  return `
+    <div class="card">
+      <h2>📅 AOP Planning — FY ${AOP_FY}</h2>
+      ${renderManagerFilterControls(filtered)}
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn" onclick="openAopSummaryModal()">📊 Team Summary</button>
+        ${isSupervisor ? `<button class="btn" onclick="exportAopCsv()">⬇ Export CSV</button>` : ''}
+        <button class="btn" onclick="loadAopData().then(render)">↻ Refresh</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:14px">
+        <div class="metric" style="padding:12px">
+          <div style="font-size:0.78em;opacity:0.7">AOP Filled</div>
+          <div style="font-size:1.4em;font-weight:bold;color:#4ade80">${filled}/${accounts.length}</div>
+        </div>
+        <div class="metric" style="padding:12px">
+          <div style="font-size:0.78em;opacity:0.7">Annual Target</div>
+          <div style="font-size:1.4em;font-weight:bold">₹${annTarget.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:12px">
+          <div style="font-size:0.78em;opacity:0.7">${curMonth} Target</div>
+          <div style="font-size:1.4em;font-weight:bold">₹${curTarget.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:12px">
+          <div style="font-size:0.78em;opacity:0.7">${curMonth} Achievement</div>
+          <div style="font-size:1.4em;font-weight:bold;color:${aopBarColor(curPct)}">
+            ${curPct !== null ? curPct+'%' : '—'}
+          </div>
+        </div>
+        <div class="metric" style="padding:12px">
+          <div style="font-size:0.78em;opacity:0.7">YTD Achievement</div>
+          <div style="font-size:1.4em;font-weight:bold;color:${aopBarColor(ytdPct)}">
+            ${ytdPct !== null ? ytdPct+'%' : '—'}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:8px">
+      ${accounts.map(a => renderAopAccountCard(a, curMonth)).join('')}
+    </div>`;
+}
+ 
+function renderAopAccountCard(account, curMonth) {
+  const hasPlan   = aopHasPlan(account.id);
+  const plan      = window._aopPlans[account.id] || {};
+  const curT      = aopMonthTarget(account.id, curMonth);
+  const curA      = aopMonthActual(account.id, curMonth);
+  const curPct    = curT > 0 ? Math.round(curA/curT*100) : null;
+  const annT      = AOP_MONTHS.reduce((s,m)=>s+aopMonthTarget(account.id,m),0);
+  const annA      = AOP_MONTHS.reduce((s,m)=>s+aopMonthActual(account.id,m),0);
+  const annPct    = annT > 0 ? Math.round(annA/annT*100) : null;
+  const maxT      = Math.max(...AOP_MONTHS.map(m=>aopMonthTarget(account.id,m)), 1);
+ 
+  const sparkline = hasPlan ? AOP_MONTHS.map(m => {
+    const t = aopMonthTarget(account.id,m);
+    const a = aopMonthActual(account.id,m);
+    const isCur = m === curMonth;
+    const th = Math.max(Math.round(t/maxT*32), t>0?2:0);
+    const ah = Math.max(Math.round(a/maxT*32), a>0?2:0);
+    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px">
+      <div style="width:100%;display:flex;align-items:flex-end;justify-content:center;gap:1px;height:32px">
+        <div style="flex:1;height:${th}px;background:rgba(255,255,255,${isCur?'0.45':'0.2'});border-radius:2px 2px 0 0"></div>
+        <div style="flex:1;height:${ah}px;background:${ah>0?(a>=t?'#4ade80':'#fbbf24'):'transparent'};border-radius:2px 2px 0 0"></div>
+      </div>
+      <div style="font-size:8px;opacity:${isCur?'1':'0.45'};font-weight:${isCur?'700':'400'}">${m}</div>
+    </div>`;
+  }).join('') : '';
+ 
+  return `
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+        <div>
+          <div style="font-weight:700;font-size:1.05em">${account.name}</div>
+          <div style="font-size:0.8em;opacity:0.65;margin-top:3px">
+            ${formatUserLabel(account.accountManager||account.owner)} &nbsp;·&nbsp; Tier ${account.tier||'B'}
+            ${plan.key_solutions ? `&nbsp;·&nbsp; ${plan.key_solutions}` : ''}
+            ${plan.oem           ? `&nbsp;·&nbsp; ${plan.oem}` : ''}
+          </div>
+        </div>
+        ${hasPlan ? `
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <div style="text-align:center;background:rgba(255,255,255,0.1);border-radius:10px;padding:8px 12px;min-width:80px">
+            <div style="font-size:0.7em;opacity:0.7">${curMonth} Target</div>
+            <div style="font-weight:700">₹${curT.toFixed(1)}L</div>
+          </div>
+          <div style="text-align:center;background:rgba(255,255,255,0.1);border-radius:10px;padding:8px 12px;min-width:80px">
+            <div style="font-size:0.7em;opacity:0.7">${curMonth} Actual</div>
+            <div style="font-weight:700;color:${curA>=curT&&curT>0?'#4ade80':'#fbbf24'}">₹${curA.toFixed(1)}L</div>
+          </div>
+          ${curPct!==null ? `
+          <div style="text-align:center;background:${aopBarColor(curPct)+'33'};border-radius:10px;padding:8px 12px;min-width:70px">
+            <div style="font-size:0.7em;opacity:0.7">Achievement</div>
+            <div style="font-weight:700;color:${aopBarColor(curPct)}">${curPct}%</div>
+          </div>` : ''}
+        </div>` : `<span class="tag" style="background:#ef4444;color:white;align-self:center">AOP Pending</span>`}
+      </div>
+ 
+      ${hasPlan ? `
+      <div style="margin-top:12px">
+        <div style="display:flex;gap:2px;height:44px">${sparkline}</div>
+        <div style="display:flex;justify-content:space-between;font-size:0.75em;opacity:0.6;margin-top:4px">
+          <span>░ Target &nbsp; <span style="color:#4ade80">▓</span> Actual</span>
+          <span>Annual: ₹${annT.toFixed(1)}L target &nbsp;·&nbsp; ₹${annA.toFixed(1)}L actual
+            ${annPct!==null?`&nbsp;·&nbsp; <strong style="color:${aopBarColor(annPct)}">${annPct}%</strong>`:''}
+          </span>
+        </div>
+      </div>` : ''}
+ 
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-success" onclick="openAopPlanForm('${account.id}')">
+          ${hasPlan ? '✏ Edit AOP Plan' : '+ Fill AOP Plan'}
+        </button>
+        ${hasPlan ? `<button class="btn" onclick="openAopActualForm('${account.id}','${curMonth}')">📥 Enter ${curMonth} Actuals</button>` : ''}
+        ${hasPlan ? `<button class="btn" onclick="openAopDetailModal('${account.id}')">📋 Full Year View</button>` : ''}
+      </div>
+    </div>`;
+}
+ 
+// ── AOP PLAN FORM ────────────────────────────────────────────────
+function openAopPlanForm(accountId) {
+  const account = state.data.accounts.find(a => a.id === accountId);
+  if (!account) return;
+  const plan = window._aopPlans[accountId] || {};
+ 
+  const header = `
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:16px">
+      <div>
+        <label style="font-size:0.82em;opacity:0.75;display:block;margin-bottom:4px">Current Revenue (₹L)</label>
+        <input class="input" type="number" min="0" step="0.1" name="current_revenue" value="${plan.current_revenue||''}" placeholder="e.g. 50">
+      </div>
+      <div>
+        <label style="font-size:0.82em;opacity:0.75;display:block;margin-bottom:4px">Target Growth %</label>
+        <input class="input" type="number" step="0.1" name="target_growth" value="${plan.target_growth||''}" placeholder="e.g. 20">
+      </div>
+      <div>
+        <label style="font-size:0.82em;opacity:0.75;display:block;margin-bottom:4px">Key Solutions</label>
+        <input class="input" type="text" name="key_solutions" value="${plan.key_solutions||''}" placeholder="Cloud, Security…">
+      </div>
+      <div>
+        <label style="font-size:0.82em;opacity:0.75;display:block;margin-bottom:4px">OEM / Partner</label>
+        <input class="input" type="text" name="oem" value="${plan.oem||''}" placeholder="Cisco, Microsoft…">
+      </div>
+    </div>`;
+ 
+  const monthGrids = AOP_MONTHS.map(month => {
+    const catInputs = AOP_CATS.map((cat, ci) => {
+      const val = parseFloat(plan[`${month}_${cat}`]||0)||'';
+      return `<div>
+        <div style="font-size:9px;opacity:0.6;text-align:center;margin-bottom:3px">${AOP_CATS_LBL[ci]}</div>
+        <input class="input" type="number" min="0" step="0.01"
+          name="${month}_${cat}" value="${val}" placeholder="0"
+          style="padding:5px 4px;font-size:0.82em;text-align:right"
+          oninput="aopLiveUpdate()">
+      </div>`;
+    }).join('');
+    const mTotal = AOP_CATS.reduce((s,c)=>s+parseFloat(plan[`${month}_${c}`]||0),0);
+    return `
+      <div style="background:rgba(255,255,255,0.07);border-radius:10px;padding:10px">
+        <div style="font-weight:600;font-size:0.88em;text-align:center;margin-bottom:8px">${month}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px">${catInputs}</div>
+        <div style="text-align:right;font-size:0.78em;opacity:0.65;margin-top:6px">
+          ₹<span class="aop-mtotal" data-month="${month}">${mTotal.toFixed(1)}</span>L
+        </div>
+      </div>`;
+  }).join('');
+ 
+  const grand = AOP_MONTHS.reduce((s,m)=>s+AOP_CATS.reduce((s2,c)=>s2+parseFloat(plan[`${m}_${c}`]||0),0),0);
+ 
+  document.getElementById('modal').innerHTML = `
+    <div class="modal-content" style="max-width:960px">
+      <h2>📅 AOP Plan — ${account.name}</h2>
+      <div style="font-size:0.82em;opacity:0.65;margin-bottom:14px">FY ${AOP_FY} &nbsp;·&nbsp; All values in ₹ Lakhs</div>
+      <form onsubmit="submitAopPlan(event,'${accountId}')">
+        ${header}
+        <div style="background:rgba(255,255,255,0.1);border-radius:10px;padding:12px 16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center">
+          <span style="font-weight:600">Annual Planned Total</span>
+          <span id="aop-grand-total" style="font-size:1.4em;font-weight:bold;color:#4ade80">₹${grand.toFixed(1)}L</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px">
+          ${monthGrids}
+        </div>
+        <div style="display:flex;gap:10px">
+          <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-success">💾 Save AOP Plan</button>
+        </div>
+      </form>
+    </div>`;
+  document.getElementById('modal').classList.add('show');
+}
+ 
+function aopLiveUpdate() {
+  let grand = 0;
+  AOP_MONTHS.forEach(month => {
+    const mTotal = AOP_CATS.reduce((s,c) => {
+      const el = document.querySelector(`[name="${month}_${c}"]`);
+      return s + parseFloat(el ? el.value : 0);
+    }, 0);
+    const el = document.querySelector(`.aop-mtotal[data-month="${month}"]`);
+    if (el) el.textContent = mTotal.toFixed(1);
+    grand += mTotal;
+  });
+  const gtEl = document.getElementById('aop-grand-total');
+  if (gtEl) gtEl.textContent = `₹${grand.toFixed(1)}L`;
+}
+ 
+async function submitAopPlan(e, accountId) {
+  e.preventDefault();
+  const account = state.data.accounts.find(a => a.id === accountId);
+  const fd = Object.fromEntries(new FormData(e.target));
+  const payload = {
+    account_id:      accountId,
+    account_name:    account?.name || '',
+    account_manager: account?.accountManager || account?.owner || currentUser,
+    fy_year:         AOP_FY,
+    current_revenue: parseFloat(fd.current_revenue || 0),
+    target_growth:   parseFloat(fd.target_growth   || 0),
+    key_solutions:   fd.key_solutions || '',
+    oem:             fd.oem           || '',
+    updated_by:      currentUser,
+  };
+  AOP_MONTHS.forEach(m => AOP_CATS.forEach(c => {
+    payload[`${m}_${c}`] = parseFloat(fd[`${m}_${c}`] || 0);
+  }));
+  try {
+    await saveAopPlan(payload);
+    window._aopPlans[accountId] = payload;
+    closeModal();
+    render();
+  } catch(err) { alert(`Could not save AOP plan: ${err.message}`); }
+}
+ 
+// ── ACTUALS FORM ─────────────────────────────────────────────────
+function openAopActualForm(accountId, selectedMonth) {
+  const account = state.data.accounts.find(a => a.id === accountId);
+  if (!account) return;
+  const month  = selectedMonth || aopCurrentMonth();
+  const plan   = window._aopPlans[accountId]   || {};
+  const actual = (window._aopActuals[accountId]||{})[month] || {};
+ 
+  const rows = [
+    ['Hardware',         'hardware',         `${month}_Hardware`],
+    ['Software',         'software',         `${month}_Software`],
+    ['Managed Services', 'managed_services', `${month}_Managed_Services`],
+  ].map(([label, key, planKey]) => {
+    const target    = parseFloat(plan[planKey]||0);
+    const actualVal = parseFloat(actual[key]||0);
+    const pct       = target > 0 ? Math.round(actualVal/target*100) : null;
+    return `
+      <div style="display:grid;grid-template-columns:140px 1fr 110px 55px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.08)">
+        <div style="font-weight:600;font-size:0.9em">${label}</div>
+        <input class="input" type="number" min="0" step="0.01" name="${key}"
+          value="${actualVal||''}" placeholder="0"
+          style="padding:7px;text-align:right" oninput="aopActualLiveUpdate()">
+        <div style="font-size:0.82em;opacity:0.7;text-align:right">Target: ₹${target.toFixed(1)}L</div>
+        <div class="aop-act-pct" data-key="${key}" data-target="${target}"
+          style="font-size:0.85em;font-weight:700;text-align:right;color:${pct===null?'inherit':aopBarColor(pct)}">
+          ${pct!==null?pct+'%':'—'}
+        </div>
+      </div>`;
+  }).join('');
+ 
+  const monthOpts = AOP_MONTHS.map(m =>
+    `<option value="${m}" ${m===month?'selected':''}>${m}</option>`
+  ).join('');
+ 
+  const actTotal = ['hardware','software','managed_services'].reduce((s,k)=>s+parseFloat(actual[k]||0),0);
+  const tgtTotal = AOP_CATS.reduce((s,c)=>s+parseFloat(plan[`${month}_${c}`]||0),0);
+ 
+  document.getElementById('modal').innerHTML = `
+    <div class="modal-content" style="max-width:580px">
+      <h2>📥 Enter Actuals — ${account.name}</h2>
+      <div style="font-size:0.82em;opacity:0.65;margin-bottom:14px">FY ${AOP_FY} &nbsp;·&nbsp; ₹ Lakhs</div>
+      <form onsubmit="submitAopActual(event,'${accountId}')">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+          <label style="font-size:0.88em;opacity:0.8;white-space:nowrap">Select Month</label>
+          <select class="input" name="month" style="width:auto"
+            onchange="closeModal();openAopActualForm('${accountId}',this.value)">
+            ${monthOpts}
+          </select>
+        </div>
+        ${rows}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px">
+          <div class="metric" style="padding:10px">
+            <div style="font-size:0.75em;opacity:0.7">Total Actual</div>
+            <div id="aop-act-total" style="font-size:1.3em;font-weight:bold;color:#fbbf24">₹${actTotal.toFixed(1)}L</div>
+          </div>
+          <div class="metric" style="padding:10px">
+            <div style="font-size:0.75em;opacity:0.7">Total Target</div>
+            <div style="font-size:1.3em;font-weight:bold">₹${tgtTotal.toFixed(1)}L</div>
+          </div>
+        </div>
+        <textarea name="notes" placeholder="Notes (optional)" style="margin-top:12px">${actual.notes||''}</textarea>
+        <div style="display:flex;gap:10px;margin-top:12px">
+          <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-success">💾 Save Actuals</button>
+        </div>
+      </form>
+    </div>`;
+  document.getElementById('modal').classList.add('show');
+}
+ 
+function aopActualLiveUpdate() {
+  const keys = ['hardware','software','managed_services'];
+  let total = 0;
+  keys.forEach(k => {
+    const el  = document.querySelector(`[name="${k}"]`);
+    const val = parseFloat(el ? el.value : 0);
+    total += val;
+    const pctEl = document.querySelector(`.aop-act-pct[data-key="${k}"]`);
+    if (!pctEl) return;
+    const target = parseFloat(pctEl.dataset.target || 0);
+    const pct    = target > 0 ? Math.round(val/target*100) : null;
+    pctEl.textContent  = pct !== null ? pct+'%' : '—';
+    pctEl.style.color  = pct !== null ? aopBarColor(pct) : 'inherit';
+  });
+  const el = document.getElementById('aop-act-total');
+  if (el) el.textContent = `₹${total.toFixed(1)}L`;
+}
+ 
+async function submitAopActual(e, accountId) {
+  e.preventDefault();
+  const account = state.data.accounts.find(a => a.id === accountId);
+  const fd = Object.fromEntries(new FormData(e.target));
+  const payload = {
+    account_id:      accountId,
+    account_name:    account?.name || '',
+    account_manager: account?.accountManager || account?.owner || currentUser,
+    fy_year:         AOP_FY,
+    month:           fd.month || aopCurrentMonth(),
+    hardware:        parseFloat(fd.hardware         || 0),
+    software:        parseFloat(fd.software         || 0),
+    managed_services:parseFloat(fd.managed_services || 0),
+    notes:           fd.notes || '',
+    updated_by:      currentUser,
+  };
+  try {
+    await saveAopActual(payload);
+    if (!window._aopActuals[accountId]) window._aopActuals[accountId] = {};
+    window._aopActuals[accountId][payload.month] = {
+      hardware:         payload.hardware,
+      software:         payload.software,
+      managed_services: payload.managed_services,
+    };
+    closeModal();
+    render();
+  } catch(err) { alert(`Could not save actuals: ${err.message}`); }
+}
+ 
+// ── FULL YEAR DETAIL MODAL ───────────────────────────────────────
+function openAopDetailModal(accountId) {
+  const account  = state.data.accounts.find(a => a.id === accountId);
+  if (!account) return;
+  const plan     = window._aopPlans[accountId] || {};
+  const curMonth = aopCurrentMonth();
+  const annT     = AOP_MONTHS.reduce((s,m)=>s+aopMonthTarget(accountId,m),0);
+  const annA     = AOP_MONTHS.reduce((s,m)=>s+aopMonthActual(accountId,m),0);
+  const annPct   = annT > 0 ? Math.round(annA/annT*100) : null;
+  const targetRev= parseFloat(plan.current_revenue||0) * (1 + parseFloat(plan.target_growth||0)/100);
+ 
+  const tableRows = AOP_MONTHS.map(month => {
+    const t = aopMonthTarget(accountId, month);
+    const a = aopMonthActual(accountId, month);
+    const p = t > 0 ? Math.round(a/t*100) : null;
+    const isCur = month === curMonth;
+    const bar = t > 0 && p !== null
+      ? `<div style="display:inline-flex;align-items:center;gap:6px;vertical-align:middle">
+           <span style="font-weight:700;color:${aopBarColor(p)}">${p}%</span>
+           <div style="background:rgba(255,255,255,0.1);border-radius:3px;height:6px;width:60px;display:inline-block">
+             <div style="height:6px;border-radius:3px;width:${Math.min(p,100)}%;background:${aopBarColor(p)}"></div>
+           </div>
+         </div>`
+      : '—';
+    return `<tr style="${isCur?'background:rgba(255,255,255,0.09)':''};border-bottom:1px solid rgba(255,255,255,0.06)">
+      <td style="padding:8px;font-weight:${isCur?'700':'400'}">${month}${isCur?' ◀':''}</td>
+      <td style="padding:8px;text-align:right;font-size:0.82em;opacity:0.7;line-height:1.5">
+        HW: ${parseFloat(plan[`${month}_Hardware`]||0).toFixed(1)}<br>
+        SW: ${parseFloat(plan[`${month}_Software`]||0).toFixed(1)}<br>
+        MS: ${parseFloat(plan[`${month}_Managed_Services`]||0).toFixed(1)}
+      </td>
+      <td style="padding:8px;text-align:right;font-weight:600">${t>0?'₹'+t.toFixed(1)+'L':'—'}</td>
+      <td style="padding:8px;text-align:right;color:${a>0?(a>=t?'#4ade80':'#fbbf24'):'inherit'}">${a>0?'₹'+a.toFixed(1)+'L':'—'}</td>
+      <td style="padding:8px">${bar}</td>
+      <td style="padding:8px;text-align:center">
+        ${t>0?`<button class="btn" style="padding:4px 8px;font-size:0.78em"
+          onclick="closeModal();openAopActualForm('${accountId}','${month}')">Enter</button>`:''}
+      </td>
+    </tr>`;
+  }).join('');
+ 
+  document.getElementById('modal').innerHTML = `
+    <div class="modal-content" style="max-width:820px">
+      <h2>📋 ${account.name} — FY ${AOP_FY}</h2>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0 16px">
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.75em;opacity:0.7">Current Revenue</div>
+          <div style="font-size:1.15em;font-weight:bold">₹${parseFloat(plan.current_revenue||0).toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.75em;opacity:0.7">Target (${plan.target_growth||0}% growth)</div>
+          <div style="font-size:1.15em;font-weight:bold;color:#4ade80">₹${targetRev.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.75em;opacity:0.7">Annual Planned</div>
+          <div style="font-size:1.15em;font-weight:bold;color:#fbbf24">₹${annT.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.75em;opacity:0.7">YTD Achievement</div>
+          <div style="font-size:1.15em;font-weight:bold;color:${aopBarColor(annPct)}">
+            ₹${annA.toFixed(1)}L ${annPct!==null?`(${annPct}%)`:''}
+          </div>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:0.88em">
+          <thead>
+            <tr style="background:rgba(255,255,255,0.12)">
+              <th style="padding:8px;text-align:left">Month</th>
+              <th style="padding:8px;text-align:right">Breakdown (₹L)</th>
+              <th style="padding:8px;text-align:right">Target</th>
+              <th style="padding:8px;text-align:right">Actual</th>
+              <th style="padding:8px">Achievement</th>
+              <th style="padding:8px;text-align:center">Action</th>
+            </tr>
+          </thead>
+          <tbody>${tableRows}</tbody>
+          <tfoot>
+            <tr style="background:rgba(255,255,255,0.15);font-weight:700">
+              <td colspan="2" style="padding:8px">Annual Total</td>
+              <td style="padding:8px;text-align:right">₹${annT.toFixed(1)}L</td>
+              <td style="padding:8px;text-align:right;color:${annA>=annT&&annT>0?'#4ade80':'#fbbf24'}">₹${annA.toFixed(1)}L</td>
+              <td style="padding:8px;color:${aopBarColor(annPct)}">${annPct!==null?annPct+'%':'—'}</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div style="margin-top:16px;display:flex;gap:10px">
+        <button class="btn" onclick="closeModal()">Close</button>
+        <button class="btn btn-success" onclick="closeModal();openAopPlanForm('${accountId}')">✏ Edit Plan</button>
+      </div>
+    </div>`;
+  document.getElementById('modal').classList.add('show');
+}
+ 
+// ── TEAM SUMMARY MODAL ───────────────────────────────────────────
+function openAopSummaryModal() {
+  const filtered = getFilteredData();
+  const curMonth = aopCurrentMonth();
+ 
+  const byMgr = {};
+  filtered.accounts.forEach(acc => {
+    const mgr = acc.accountManager || acc.owner || 'Unassigned';
+    if (!byMgr[mgr]) byMgr[mgr] = [];
+    byMgr[mgr].push(acc);
+  });
+ 
+  const rows = Object.entries(byMgr).map(([mgr, accs]) => {
+    const annT  = accs.reduce((s,a)=>s+AOP_MONTHS.reduce((s2,m)=>s2+aopMonthTarget(a.id,m),0),0);
+    const annA  = accs.reduce((s,a)=>s+AOP_MONTHS.reduce((s2,m)=>s2+aopMonthActual(a.id,m),0),0);
+    const curT  = accs.reduce((s,a)=>s+aopMonthTarget(a.id,curMonth),0);
+    const curA  = accs.reduce((s,a)=>s+aopMonthActual(a.id,curMonth),0);
+    const filled= accs.filter(a=>aopHasPlan(a.id)).length;
+    const annP  = annT>0?Math.round(annA/annT*100):null;
+    const curP  = curT>0?Math.round(curA/curT*100):null;
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,0.08)">
+      <td style="padding:10px;font-weight:600">${formatUserLabel(mgr)}</td>
+      <td style="padding:10px;text-align:center">
+        <span style="color:${filled===accs.length?'#4ade80':'#fbbf24'}">${filled}</span>/${accs.length}
+      </td>
+      <td style="padding:10px;text-align:right">₹${annT.toFixed(1)}L</td>
+      <td style="padding:10px;text-align:right">
+        <span style="color:${aopBarColor(curP)}">₹${curA.toFixed(1)}L</span>
+        <span style="opacity:0.6"> / ₹${curT.toFixed(1)}L</span>
+        ${curP!==null?`<strong style="color:${aopBarColor(curP)}"> ${curP}%</strong>`:''}
+      </td>
+      <td style="padding:10px;text-align:right">₹${annA.toFixed(1)}L</td>
+      <td style="padding:10px;text-align:right;font-weight:700;color:${aopBarColor(annP)}">
+        ${annP!==null?annP+'%':'—'}
+      </td>
+    </tr>`;
+  }).join('');
+ 
+  const totAnnT = filtered.accounts.reduce((s,a)=>s+AOP_MONTHS.reduce((s2,m)=>s2+aopMonthTarget(a.id,m),0),0);
+  const totAnnA = filtered.accounts.reduce((s,a)=>s+AOP_MONTHS.reduce((s2,m)=>s2+aopMonthActual(a.id,m),0),0);
+  const totCurT = filtered.accounts.reduce((s,a)=>s+aopMonthTarget(a.id,curMonth),0);
+  const totCurA = filtered.accounts.reduce((s,a)=>s+aopMonthActual(a.id,curMonth),0);
+  const totAnnP = totAnnT>0?Math.round(totAnnA/totAnnT*100):null;
+  const totCurP = totCurT>0?Math.round(totCurA/totCurT*100):null;
+  const totFill = filtered.accounts.filter(a=>aopHasPlan(a.id)).length;
+ 
+  document.getElementById('modal').innerHTML = `
+    <div class="modal-content" style="max-width:820px">
+      <h2>📊 AOP Team Summary — FY ${AOP_FY}</h2>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:12px 0 16px">
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">AOP Filled</div>
+          <div style="font-size:1.2em;font-weight:bold;color:#4ade80">${totFill}/${filtered.accounts.length}</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">Annual Target</div>
+          <div style="font-size:1.2em;font-weight:bold">₹${totAnnT.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">${curMonth} Target</div>
+          <div style="font-size:1.2em;font-weight:bold">₹${totCurT.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">${curMonth} Achievement</div>
+          <div style="font-size:1.2em;font-weight:bold;color:${aopBarColor(totCurP)}">
+            ₹${totCurA.toFixed(1)}L ${totCurP!==null?`(${totCurP}%)`:''}
+          </div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">YTD Achievement</div>
+          <div style="font-size:1.2em;font-weight:bold;color:${aopBarColor(totAnnP)}">
+            ${totAnnP!==null?totAnnP+'%':'—'}
+          </div>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:0.88em">
+          <thead>
+            <tr style="background:rgba(255,255,255,0.12)">
+              <th style="padding:10px;text-align:left">Manager</th>
+              <th style="padding:10px;text-align:center">AOP Status</th>
+              <th style="padding:10px;text-align:right">Annual Target</th>
+              <th style="padding:10px;text-align:right">${curMonth} Actual / Target</th>
+              <th style="padding:10px;text-align:right">YTD Actual</th>
+              <th style="padding:10px;text-align:right">YTD %</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      ${isSupervisor?`<div style="margin-top:14px"><button class="btn" onclick="exportAopCsv()">⬇ Export CSV</button></div>`:''}
+      <div style="margin-top:12px"><button class="btn" onclick="closeModal()">Close</button></div>
+    </div>`;
+  document.getElementById('modal').classList.add('show');
+}
+ 
+// ── CSV EXPORT ───────────────────────────────────────────────────
+function exportAopCsv() {
+  const filtered = getFilteredData();
+  const h1 = ['Account Name','Account Manager','Industry','Current Revenue (₹L)',
+               'Target Growth %','Target Revenue (₹L)','Key Solutions','OEM'];
+  const h2 = ['','','','','','','',''];
+  AOP_MONTHS.forEach(m => {
+    h1.push(m,'','');
+    h2.push('Hardware','Software','Managed Services');
+  });
+  const rows = [h1, h2];
+  filtered.accounts.forEach(acc => {
+    const p = window._aopPlans[acc.id] || {};
+    const cr = parseFloat(p.current_revenue||0);
+    const tg = parseFloat(p.target_growth||0);
+    const row = [acc.name, acc.accountManager||acc.owner||'', acc.industry||'',
+                 cr, tg, parseFloat((cr*(1+tg/100)).toFixed(2)),
+                 p.key_solutions||'', p.oem||''];
+    AOP_MONTHS.forEach(m => {
+      row.push(parseFloat(p[`${m}_Hardware`]||0),
+               parseFloat(p[`${m}_Software`]||0),
+               parseFloat(p[`${m}_Managed_Services`]||0));
+    });
+    rows.push(row);
+  });
+  downloadCSV(`AOP_${AOP_FY}_${new Date().toISOString().slice(0,10)}.csv`, rows);
+}
+ 
+// ── DASHBOARD ACHIEVEMENT WIDGET ─────────────────────────────────
+// Called from inside renderDashboard() — returns HTML string
+function renderAopDashboardWidget(filtered) {
+  const curMonth = aopCurrentMonth();
+  const accounts = filtered.accounts;
+  const totCurT  = accounts.reduce((s,a)=>s+aopMonthTarget(a.id,curMonth),0);
+  const totCurA  = accounts.reduce((s,a)=>s+aopMonthActual(a.id,curMonth),0);
+  const totAnnT  = accounts.reduce((s,a)=>s+AOP_MONTHS.reduce((s2,m)=>s2+aopMonthTarget(a.id,m),0),0);
+  const totAnnA  = accounts.reduce((s,a)=>s+AOP_MONTHS.reduce((s2,m)=>s2+aopMonthActual(a.id,m),0),0);
+  const curP     = totCurT>0?Math.round(totCurA/totCurT*100):null;
+  const ytdP     = totAnnT>0?Math.round(totAnnA/totAnnT*100):null;
+  if (totAnnT === 0) return '';
+ 
+  const topAccounts = accounts
+    .filter(a => aopMonthTarget(a.id, curMonth) > 0)
+    .map(a => ({
+      name: a.name,
+      t: aopMonthTarget(a.id, curMonth),
+      a: aopMonthActual(a.id, curMonth),
+    }))
+    .sort((x,y) => y.t - x.t)
+    .slice(0, 6);
+ 
+  return `
+    <div class="card">
+      <h3>📅 AOP Achievement — ${curMonth} / FY ${AOP_FY}</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:10px 0 12px">
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">${curMonth} Target</div>
+          <div style="font-size:1.1em;font-weight:bold">₹${totCurT.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">${curMonth} Actual</div>
+          <div style="font-size:1.1em;font-weight:bold;color:${aopBarColor(curP)}">₹${totCurA.toFixed(1)}L</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">${curMonth} %</div>
+          <div style="font-size:1.1em;font-weight:bold;color:${aopBarColor(curP)}">${curP!==null?curP+'%':'—'}</div>
+        </div>
+        <div class="metric" style="padding:10px">
+          <div style="font-size:0.72em;opacity:0.7">YTD %</div>
+          <div style="font-size:1.1em;font-weight:bold;color:${aopBarColor(ytdP)}">${ytdP!==null?ytdP+'%':'—'}</div>
+        </div>
+      </div>
+      <div style="background:rgba(255,255,255,0.1);border-radius:6px;height:8px;margin-bottom:14px">
+        <div style="height:8px;border-radius:6px;width:${Math.min(curP||0,100)}%;background:${aopBarColor(curP)};transition:width 0.5s"></div>
+      </div>
+      ${topAccounts.map(x => {
+        const p = x.t > 0 ? Math.round(x.a/x.t*100) : null;
+        return `
+        <div style="margin-bottom:9px">
+          <div style="display:flex;justify-content:space-between;font-size:0.82em;margin-bottom:3px">
+            <span>${x.name}</span>
+            <span style="opacity:0.7">₹${x.a.toFixed(1)}L / ₹${x.t.toFixed(1)}L
+              ${p!==null?`<strong style="color:${aopBarColor(p)}">&nbsp;${p}%</strong>`:''}
+            </span>
+          </div>
+          <div style="background:rgba(255,255,255,0.1);border-radius:4px;height:5px">
+            <div style="height:5px;border-radius:4px;width:${Math.min(p||0,100)}%;background:${aopBarColor(p||0)}"></div>
+          </div>
+        </div>`;
+      }).join('')}
+      <button class="btn" style="margin-top:8px" onclick="openTab('aop')">Open AOP →</button>
+    </div>`;
+}
+ 
+
+
+
+
+
+
+window.addEventListener('load', () => {
+ restoreSessionIfAny().catch(err => console.error('session restore failed', err));
+});
+  // ═══════════════════════════════════════════════════════════════
+// PURCHASE ORDER MODULE — Full Approval Chain + PO Scan
+// ═══════════════════════════════════════════════════════════════
+
+const PO_TYPES = ['Managed Services', 'Hardware - Switches/Routers', 'Passive Infrastructure', 'SDWAN Implementation', 'Software/Licensing', 'AMC/Support Contract', 'Subcontract/Services'];
+const PO_STAGES = ['Draft', 'Pending Presales+Finance Approval', 'Presales Approved', 'Finance Approved', 'Both Approved - Pending Implementation', 'Implementation Approved', 'Pending CEO Approval', 'CEO Approved', 'PO Issued to Vendor', 'Goods Received', 'Installation Done', 'Customer Sign-off', 'Invoiced', 'Closed'];
+const PO_APPROVAL_LEVELS = ['Purchase Head', 'CFO', 'MD'];
+
+function canApproveAtStage(stage) {
+  const me = normalizeEmail(currentUser);
+  if (stage === 'Pending Presales+Finance Approval') {
+    return me === normalizeEmail(PRESALES_APPROVER) || me === normalizeEmail(FINANCE_APPROVER) || isSupervisor;
+  }
+  if (stage === 'Both Approved - Pending Implementation') return me === normalizeEmail(IMPLEMENTATION_APPROVER) || isSupervisor;
+  if (stage === 'Pending CEO Approval') return CEO_APPROVERS.map(normalizeEmail).includes(me) || isSupervisor;
+  return false;
+}
+function getApprovalStatusHTML(po) {
+  const steps = [
+    { label: 'Presales', approvedKey: 'presalesApprovedBy', dateKey: 'presalesApprovedAt', pendingStage: 'Pending Presales Approval', approvedStage: 'Presales Approved' },
+    { label: 'Finance', approvedKey: 'financeApprovedBy', dateKey: 'financeApprovedAt', pendingStage: 'Pending Finance Approval', approvedStage: 'Finance Approved' },
+    { label: 'Implementation', approvedKey: 'implementationApprovedBy', dateKey: 'implementationApprovedAt', pendingStage: 'Pending Implementation Approval', approvedStage: 'Implementation Approved' },
+    { label: 'CEO P&L', approvedKey: 'ceoApprovedBy', dateKey: 'ceoApprovedAt', pendingStage: 'Pending CEO Approval', approvedStage: 'CEO Approved' }
+  ];
+  const stageIdx = PO_STAGES.indexOf(po.stage);
+  return `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px">` +
+    steps.map(s => {
+      const done = po[s.approvedKey];
+      const pending = po.stage === s.pendingStage;
+      const bg = done ? '#22c55e' : pending ? '#f59e0b' : 'rgba(255,255,255,0.15)';
+      const label = done ? `✅ ${s.label}: ${po[s.approvedKey]}` : pending ? `⏳ ${s.label}` : `○ ${s.label}`;
+      return `<span class="tag" style="background:${bg}; font-size:0.75em">${label}</span>`;
+    }).join('') + `</div>`;
+}
+
+function getPOStageColor(stage) {
+  const colors = {
+    'Draft': 'rgba(255,255,255,0.2)',
+    'Pending Presales Approval': '#f59e0b',
+    'Presales Approved': '#3b82f6',
+    'Pending Finance Approval': '#f59e0b',
+    'Finance Approved': '#3b82f6',
+    'Pending Implementation Approval': '#f59e0b',
+    'Implementation Approved': '#3b82f6',
+    'Pending CEO Approval': '#ef4444',
+    'CEO Approved': '#22c55e',
+    'PO Issued to Vendor': '#8b5cf6',
+    'Goods Received': '#06b6d4',
+    'Installation Done': '#10b981',
+    'Customer Sign-off': '#22c55e',
+    'Invoiced': '#4ade80',
+    'Closed': 'rgba(255,255,255,0.3)'
+  };
+  return colors[stage] || 'rgba(255,255,255,0.2)';
+}
+
+function normalizePOFromStorage(po) {
+  return {
+    id: po.id || Date.now().toString(),
+    poNumber: po.poNumber || '',
+    poType: po.poType || '',
+    stage: po.stage || 'Draft',
+    opportunityId: po.opportunityId || '',
+    accountId: po.accountId || '',
+    accountName: po.accountName || '',
+    vendorName: po.vendorName || '',
+    vendorPONumber: po.vendorPONumber || '',
+    oem: po.oem || '',
+    dealRegistrationNo: po.dealRegistrationNo || '',
+    description: po.description || '',
+    value: Number(po.value || 0),
+    vendorValue: Number(po.vendorValue || 0),
+    paymentTermsCustomer: po.paymentTermsCustomer || '',
+    paymentTermsVendor: po.paymentTermsVendor || '',
+    approvalLevel: po.approvalLevel || '',
+    // Approval chain fields
+    presalesApprovedBy: po.presalesApprovedBy || '',
+    presalesApprovedAt: po.presalesApprovedAt || '',
+    financeApprovedBy: po.financeApprovedBy || '',
+    financeApprovedAt: po.financeApprovedAt || '',
+    implementationApprovedBy: po.implementationApprovedBy || '',
+    implementationApprovedAt: po.implementationApprovedAt || '',
+    ceoApprovedBy: po.ceoApprovedBy || '',
+    ceoApprovedAt: po.ceoApprovedAt || '',
+    // Delivery fields
+    expectedDelivery: po.expectedDelivery || '',
+    actualDelivery: po.actualDelivery || '',
+    grnNumber: po.grnNumber || '',
+    grnDate: po.grnDate || '',
+    invoiceNumber: po.invoiceNumber || '',
+    invoiceDate: po.invoiceDate || '',
+    notes: po.notes || '',
+    siteAddress: po.siteAddress || '',
+    isSiteWork: po.isSiteWork || false,
+    siteCompletionDate: po.siteCompletionDate || '',
+    // PO scan
+    scannedPOData: po.scannedPOData || '',
+    scannedPOImage: po.scannedPOImage || '',
+    owner: po.owner || '',
+    createdDate: po.createdDate || new Date().toISOString(),
+    modifiedDate: po.modifiedDate || new Date().toISOString()
+  };
+}
+
+function savePurchaseOrders() {
+  if (!Array.isArray(state.data.purchase_orders)) state.data.purchase_orders = [];
+  localStorage.setItem('crmPurchaseOrders', JSON.stringify(state.data.purchase_orders));
+}
+
+function loadPurchaseOrders() {
+  try {
+    const saved = localStorage.getItem('crmPurchaseOrders');
+    state.data.purchase_orders = saved ? JSON.parse(saved).map(normalizePOFromStorage) : [];
+  } catch(e) { state.data.purchase_orders = []; }
+}
+
+function renderPurchaseOrders(filtered) {
+  loadPurchaseOrders();
+  // Non-supervisors see only their own POs
+  const allPos = state.data.purchase_orders || [];
+  const pos = isSupervisor
+    ? allPos
+    : allPos.filter(p => normalizeEmail(p.owner) === normalizeEmail(currentUser));
+
+  const totalValue  = pos.reduce((s, p) => s + (p.value || 0), 0);
+  const totalVendor = pos.reduce((s, p) => s + (p.vendorValue || 0), 0);
+  const totalMargin = totalValue - totalVendor;
+  const marginPct   = totalValue > 0 ? ((totalMargin / totalValue) * 100).toFixed(1) : 0;
+  const pendingApprovals = pos.filter(p => (p.stage||'').startsWith('Pending')).length;
+  const myApprovals = pos.filter(p => canApproveAtStage(p.stage));
+
+  // Won opps for this user — use full state (not filtered) so nothing is missed
+  const allOpps = state.data.opportunities || [];
+  const wonOpps = allOpps.filter(o => o.stage === 'Closed Won' &&
+    (isSupervisor ||
+      normalizeEmail(o.owner) === normalizeEmail(currentUser) ||
+      normalizeEmail(o.salesOwner) === normalizeEmail(currentUser) ||
+      normalizeEmail(getOpportunityManagerEmail(o)) === normalizeEmail(currentUser)
     )
+  );
+  const wonOppsWithoutPO = wonOpps.filter(o => !pos.some(p => p.opportunityId === o.id));
 
+  const byStage = {};
+  PO_STAGES.forEach(s => byStage[s] = []);
+  pos.forEach(po => { (byStage[po.stage] || byStage['Draft']).push(po); });
 
-@app.route("/api/activities", methods=["GET"])
-def list_activities():
-    viewer_email = (request.args.get("viewer_email") or "").strip()
-    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
+  return `
+  <!-- ── Summary bar ── -->
+  <div class="card">
+    <h2>📦 Purchase Orders</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:14px">
+      <div class="metric" style="padding:12px;text-align:center">
+        <div style="font-size:0.78em;opacity:0.7">Total POs</div>
+        <div style="font-size:1.4em;font-weight:bold">${pos.length}</div>
+      </div>
+      <div class="metric" style="padding:12px;text-align:center">
+        <div style="font-size:0.78em;opacity:0.7">Customer Value</div>
+        <div style="font-size:1.3em;font-weight:bold;color:#4ade80">₹${(totalValue/100000).toFixed(1)}L</div>
+      </div>
+      <div class="metric" style="padding:12px;text-align:center">
+        <div style="font-size:0.78em;opacity:0.7">Gross Margin</div>
+        <div style="font-size:1.3em;font-weight:bold;color:#f59e0b">₹${(totalMargin/100000).toFixed(1)}L (${marginPct}%)</div>
+      </div>
+      <div class="metric" style="padding:12px;text-align:center">
+        <div style="font-size:0.78em;opacity:0.7">Pending Approvals</div>
+        <div style="font-size:1.3em;font-weight:bold;color:${pendingApprovals > 0 ? '#f87171' : '#4ade80'}">${pendingApprovals}</div>
+      </div>
+      <div class="metric" style="padding:12px;text-align:center;${wonOppsWithoutPO.length > 0 ? 'border:2px solid #f59e0b' : ''}">
+        <div style="font-size:0.78em;opacity:0.7">🏆 Won — No PO Yet</div>
+        <div style="font-size:1.3em;font-weight:bold;color:#f59e0b">${wonOppsWithoutPO.length}</div>
+      </div>
+    </div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" type="button" onclick="openPurchaseOrderModal()">+ New PO</button>
+      <button class="btn" type="button" onclick="exportPurchaseCsv()">⬇ Export CSV</button>
+      <button class="btn btn-success" type="button" onclick="document.getElementById('wonPoScanInput').click()">🏆 Scan Won PO</button>
+    </div>
+  </div>
 
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if viewer_role in ("supervisor", "admin"):
-                cur.execute(
-                    """
-                    SELECT id, type, subject, notes, date, owner, account_id, account_name, created_at, updated_at
-                    FROM activities
-                    ORDER BY date DESC, updated_at DESC
-                    """
-                )
-                return jsonify(cur.fetchall())
+  <!-- ── Won opps waiting for PO ── -->
+  ${wonOppsWithoutPO.length > 0 ? `
+  <div class="card" style="border:2px solid #f59e0b;margin-top:12px">
+    <h3 style="margin-bottom:4px">🏆 Closed Won — PO Placement Pending (${wonOppsWithoutPO.length})</h3>
+    <p style="font-size:0.85em;opacity:0.75;margin-bottom:14px">These opportunities are won but no Purchase Order has been raised yet. Create a PO to proceed.</p>
+    <div class="grid">
+      ${wonOppsWithoutPO.map(o => {
+        const acc = (state.data.accounts||[]).find(a => String(a.id) === String(o.accountId));
+        return `
+        <div style="background:rgba(245,158,11,0.12);border:1px solid #f59e0b;border-radius:12px;padding:16px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+            <div>
+              <div style="font-weight:700;font-size:1em;margin-bottom:4px">🏆 ${o.name}</div>
+              <div style="font-size:0.85em;opacity:0.8">🏢 ${acc?.name || o.accountId || 'No Account'}</div>
+              <div style="font-size:0.82em;opacity:0.7;margin-top:2px">👤 ${formatUserLabel(o.salesOwner || o.owner || 'NA')}</div>
+            </div>
+            <div style="text-align:right;white-space:nowrap">
+              <div style="font-size:1.3em;font-weight:bold;color:#4ade80">₹${((o.value||0)/100000).toFixed(1)}L</div>
+              <span style="background:#22c55e;color:white;padding:2px 8px;border-radius:6px;font-size:0.75em">WON</span>
+            </div>
+          </div>
+          ${o.finalPricingProposal ? `<div style="font-size:0.8em;opacity:0.75;margin-top:8px;padding:6px 8px;background:rgba(0,0,0,0.15);border-radius:6px">📄 ${o.finalPricingProposal.slice(0,120)}${o.finalPricingProposal.length>120?'…':''}</div>` : ''}
+          <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+            <button type="button" class="btn btn-success" onclick="openPurchaseOrderModal(null,'${o.id}','${(acc?.id||o.accountId||'')}','${(acc?.name||'').replace(/'/g,'')}')">+ Create PO</button>
+            <button type="button" class="btn" onclick="document.getElementById('wonPoScanInput').click()">🏆 Scan Won PO</button>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>` : ''}
 
-            if not viewer_email:
-                return jsonify({"error": "viewer_email is required for non-supervisor access"}), 400
+  <!-- ── Awaiting my approval ── -->
+  ${myApprovals.length > 0 ? `
+  <div class="card" style="border:2px solid #f59e0b;margin-top:12px">
+    <h3>⚡ Awaiting Your Approval (${myApprovals.length})</h3>
+    <div class="grid" style="margin-top:10px">
+      ${myApprovals.map(po => `
+      <div class="item-card" style="border:1px solid #f59e0b">
+        <h3>${po.poNumber || 'Draft PO'} — ${po.accountName || 'No Account'}</h3>
+        <div style="color:#4ade80;font-weight:bold">₹${((po.value||0)/100000).toFixed(1)}L</div>
+        <div style="font-size:0.85em;margin:6px 0"><span class="tag" style="background:#f59e0b">${po.stage}</span></div>
+        ${getApprovalStatusHTML(po)}
+        <div style="margin-top:10px">
+          <button type="button" class="btn btn-success" onclick="approveCurrentStage('${po.id}')">✅ Approve Now</button>
+          <button type="button" class="btn" onclick="editPurchaseOrder('${po.id}')">View Details</button>
+        </div>
+      </div>`).join('')}
+    </div>
+  </div>` : ''}
 
-            cur.execute(
-                """
-                SELECT id, type, subject, notes, date, owner, account_id, account_name, created_at, updated_at
-                FROM activities
-                WHERE lower(owner)=lower(%s)
-                ORDER BY date DESC, updated_at DESC
-                """,
-                (viewer_email,),
-            )
-            return jsonify(cur.fetchall())
-    finally:
-        conn.close()
+  <!-- ── All POs by stage ── -->
+  ${pos.length > 0 ? `
+  <div style="margin-top:20px">
+    <h3 style="margin-bottom:12px">📋 PO Pipeline by Stage</h3>
+    ${PO_STAGES.map(stage => {
+      const stagePOs = byStage[stage] || [];
+      if (!stagePOs.length) return '';
+      return `
+      <div class="card" style="margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span><span class="tag" style="background:${getPOStageColor(stage)}">${stage}</span> <strong>${stagePOs.length} PO${stagePOs.length>1?'s':''}</strong></span>
+          <span style="font-size:0.85em;opacity:0.8">₹${(stagePOs.reduce((s,p)=>s+(p.value||0),0)/100000).toFixed(1)}L</span>
+        </div>
+        <div class="grid">
+          ${stagePOs.map(po => `
+          <div class="item-card" onclick="editPurchaseOrder('${po.id}')">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start">
+              <h3 style="font-size:0.9em;margin:0;flex:1">${po.poNumber || 'Draft PO'}</h3>
+              <span class="tag" style="font-size:0.75em">${po.poType || 'General'}</span>
+            </div>
+            <div style="color:#4ade80;font-weight:bold;margin:6px 0">₹${((po.value||0)/100000).toFixed(1)}L
+              ${po.vendorValue ? `<span style="opacity:0.7;font-size:0.85em"> | Vendor ₹${((po.vendorValue||0)/100000).toFixed(1)}L | Margin ₹${(((po.value||0)-(po.vendorValue||0))/100000).toFixed(1)}L</span>` : ''}
+            </div>
+            <div style="font-size:0.82em;opacity:0.85;margin-bottom:6px">
+              🏢 ${po.accountName || 'NA'} | 🏭 ${po.vendorName || 'NA'} | 🔧 ${po.oem || 'NA'}
+            </div>
+            ${getApprovalStatusHTML(po)}
+            ${po.scannedPOImage ? `<span class="tag" style="background:#8b5cf6;margin-top:6px">📄 PO Scan</span>` : ''}
+            ${po.expectedDelivery ? `<div style="margin-top:4px;font-size:0.8em">
+              ${new Date(po.expectedDelivery)<new Date()&&!['Goods Received','Closed','Invoiced','Customer Sign-off'].includes(po.stage)
+                ? `<span class="tag" style="background:#ef4444">⚠ Overdue: ${fmtDate(po.expectedDelivery)}</span>`
+                : `<span class="tag">📅 ${fmtDate(po.expectedDelivery)}</span>`}
+            </div>` : ''}
+            <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="btn" onclick="event.stopPropagation();editPurchaseOrder('${po.id}')">Edit</button>
+              ${po.stage==='Draft' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPOForApproval('${po.id}')">Submit for Approval</button>` : ''}
+              ${canApproveAtStage(po.stage) ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();approveCurrentStage('${po.id}')">✅ Approve</button>` : ''}
+              ${po.stage==='CEO Approved' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();issuePOToVendor('${po.id}')">Issue PO to Vendor</button>` : ''}
+              ${po.stage==='PO Issued to Vendor' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();recordGRN('${po.id}')">Record GRN</button>` : ''}
+              ${po.stage==='Goods Received' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();markInstallationDone('${po.id}')">Mark Installation Done</button>` : ''}
+              ${po.stage==='Installation Done' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();customerSignoff('${po.id}')">Customer Sign-off</button>` : ''}
+              ${po.stage==='Customer Sign-off' ? `<button type="button" class="btn btn-success" onclick="event.stopPropagation();raiseInvoice('${po.id}')">Raise Invoice</button>` : ''}
+              ${po.stage==='Invoiced' ? `<button type="button" class="btn" onclick="event.stopPropagation();closePO('${po.id}')">Close PO</button>` : ''}
+            </div>
+          </div>`).join('')}
+        </div>
+      </div>`;
+    }).join('')}
+  </div>` : `
+  <div class="card" style="text-align:center;padding:40px;margin-top:12px">
+    <div style="font-size:3em;margin-bottom:10px">📦</div>
+    <div style="font-size:1.1em;opacity:0.7;margin-bottom:16px">No Purchase Orders yet</div>
+    <button class="btn btn-success" type="button" onclick="openPurchaseOrderModal()">+ Create First PO</button>
+  </div>`}
 
+  <!-- ── Approval chain reference ── -->
+  <div class="card" style="margin-top:12px">
+    <h3>🔄 Approval Flow</h3>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;font-size:0.85em">
+      ${PO_APPROVAL_CHAIN.map((step, i) => `
+        <div style="background:rgba(255,255,255,0.12);padding:8px 14px;border-radius:8px;text-align:center">
+          <div style="font-weight:bold">${step.label}</div>
+          <div style="opacity:0.8;font-size:0.82em">${step.email}</div>
+        </div>
+        ${i < PO_APPROVAL_CHAIN.length-1 ? '<div style="font-size:1.5em">→</div>' : ''}
+      `).join('')}
+    </div>
+  </div>
+  `;
+}
 
-@app.route("/api/leads", methods=["GET"])
-def list_leads():
-    viewer_email = (request.args.get("viewer_email") or "").strip()
-    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
+function openPurchaseOrderModal(po = null, preOppId = '', preAccId = '', preAccName = '') {
+  const filtered = getFilteredData();
+  document.getElementById('modal').innerHTML = `
+  <div class="modal-content">
+    <h2>${po ? 'Edit' : 'New'} Purchase Order</h2>
+    <div style="margin:8px 0 16px; padding:10px; border-radius:8px; background:rgba(255,255,255,0.15); font-size:0.85em">
+      📅 Created: ${fmtDateTime(po?.createdDate || new Date().toISOString())} | 🕒 Updated: ${fmtDateTime(po?.modifiedDate || new Date().toISOString())}
+    </div>
 
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if _is_supervisor(viewer_role) or viewer_role == "presales":
-                cur.execute(
-                    """
-                    SELECT id, name, company, email, phone, source, status, notes, owner, created_at, updated_at
-                    FROM leads
-                    ORDER BY updated_at DESC
-                    """
-                )
-                return jsonify(cur.fetchall())
+    ${po ? `<div style="margin-bottom:16px">${getApprovalStatusHTML(po)}</div>` : ''}
 
-            if not viewer_email:
-                return jsonify({"error": "viewer_email is required for non-supervisor access"}), 400
+    <div style="margin-bottom:16px; padding:12px; background:rgba(255,255,255,0.12); border-radius:8px">
+      <h3 style="margin-bottom:10px">📄 Scan Customer PO</h3>
+      <input type="file" id="poScanInput" accept="image/*,application/pdf" style="display:none" onchange="handlePOScan(event, '${po?.id || ''}')">
+      <button type="button" class="btn" onclick="document.getElementById('poScanInput').click()">📷 Upload PO Scan (Photo/PDF)</button>
+      ${po?.scannedPOImage ? `<div style="margin-top:8px"><span class="tag" style="background:#22c55e">✅ PO Scan Attached</span></div>` : ''}
+      ${po?.scannedPOData ? `<div style="margin-top:8px; font-size:0.82em; opacity:0.9; background:rgba(0,0,0,0.2); padding:8px; border-radius:6px"><b>AI Extracted:</b><br>${po.scannedPOData}</div>` : ''}
+      <div id="poScanStatus" style="margin-top:6px; font-size:0.85em"></div>
+    </div>
 
-            cur.execute(
-                """
-                SELECT id, name, company, email, phone, source, status, notes, owner, created_at, updated_at
-                FROM leads
-                WHERE lower(owner)=lower(%s)
-                ORDER BY updated_at DESC
-                """,
-                (viewer_email,),
-            )
-            return jsonify(cur.fetchall())
-    finally:
-        conn.close()
+    <form onsubmit="savePurchaseOrder(event, ${po ? `'${po.id}'` : 'null'})">
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">PO Number</label>
+      <input class="input" name="poNumber" placeholder="e.g. DNISPL/PO/2026/001" value="${po?.poNumber || ''}">
 
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">PO Type *</label>
+      <select class="input" required name="poType">
+        <option value="">Select PO Type *</option>
+        ${PO_TYPES.map(t => `<option value="${t}" ${po?.poType === t ? 'selected' : ''}>${t}</option>`).join('')}
+      </select>
 
-@app.route("/api/leads", methods=["POST"])
-def upsert_lead():
-    data = request.get_json(silent=True) or {}
-    lead_id = (data.get("id") or "").strip() or f"lead_{int(datetime.utcnow().timestamp() * 1000)}"
-    owner = (data.get("owner") or "").strip()
-    if not owner:
-        return jsonify({"error": "owner is required"}), 400
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Stage</label>
+      <select class="input" name="stage" ${isSupervisor ? '' : 'disabled'}>
+        ${PO_STAGES.map(s => `<option value="${s}" ${(po?.stage || 'Draft') === s ? 'selected' : ''}>${s}</option>`).join('')}
+      </select>
 
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id FROM leads WHERE id=%s", (lead_id,))
-            exists = cur.fetchone()
-            if exists:
-                cur.execute(
-                    """
-                    UPDATE leads
-                    SET name=%s, company=%s, email=%s, phone=%s, source=%s, status=%s, notes=%s, owner=%s, updated_at=now()
-                    WHERE id=%s
-                    """,
-                    (
-                        (data.get("name") or "").strip(),
-                        (data.get("company") or "").strip(),
-                        (data.get("email") or "").strip(),
-                        (data.get("phone") or "").strip(),
-                        (data.get("source") or "").strip(),
-                        (data.get("status") or "").strip(),
-                        (data.get("notes") or "").strip(),
-                        owner,
-                        lead_id,
-                    ),
-                )
-                status = "updated"
-            else:
-                cur.execute(
-                    """
-                    INSERT INTO leads (id, name, company, email, phone, source, status, notes, owner, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
-                    """,
-                    (
-                        lead_id,
-                        (data.get("name") or "").strip(),
-                        (data.get("company") or "").strip(),
-                        (data.get("email") or "").strip(),
-                        (data.get("phone") or "").strip(),
-                        (data.get("source") or "").strip(),
-                        (data.get("status") or "").strip(),
-                        (data.get("notes") or "").strip(),
-                        owner,
-                    ),
-                )
-                status = "created"
-        conn.commit()
-        return jsonify({"status": status, "id": lead_id})
-    finally:
-        conn.close()
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Linked Account</label>
+      <select class="input" name="accountId">
+        <option value="">Select Account</option>
+        ${filtered.accounts.map(a => `<option value="${a.id}" data-name="${a.name}" ${(po?.accountId || preAccId) === a.id ? 'selected' : ''}>${a.name}</option>`).join('')}
+      </select>
 
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Linked Opportunity</label>
+      <select class="input" name="opportunityId">
+        <option value="">Select Opportunity (optional)</option>
+        ${filtered.opportunities.map(o => `<option value="${o.id}" ${(po?.opportunityId || preOppId) === o.id ? 'selected' : ''}>${o.name}${o.stage==='Closed Won'?' 🏆':''}</option>`).join('')}
+      </select>
 
-@app.route("/api/leads/<lead_id>", methods=["DELETE"])
-def delete_lead(lead_id: str):
-    viewer_email = (request.args.get("viewer_email") or "").strip()
-    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, owner FROM leads WHERE id=%s", (lead_id,))
-            row = cur.fetchone()
-            if not row:
-                return jsonify({"error": "lead not found"}), 404
-            if not _is_supervisor(viewer_role):
-                if not viewer_email:
-                    return jsonify({"error": "viewer_email is required"}), 400
-                if (row["owner"] or "").lower() != viewer_email.lower():
-                    return jsonify({"error": "not allowed"}), 403
-            cur.execute("DELETE FROM leads WHERE id=%s", (lead_id,))
-        conn.commit()
-        return jsonify({"status": "deleted", "id": lead_id})
-    finally:
-        conn.close()
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Customer PO Value (₹) *</label>
+          <input class="input" required type="number" name="value" placeholder="₹ Value" value="${po?.value || ''}">
+        </div>
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Vendor Cost (₹)</label>
+          <input class="input" type="number" name="vendorValue" placeholder="₹ Vendor cost" value="${po?.vendorValue || ''}">
+        </div>
+      </div>
 
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Vendor Name *</label>
+      <input class="input" required name="vendorName" placeholder="Distributor / Vendor" value="${po?.vendorName || ''}">
 
-@app.route("/api/contacts", methods=["GET"])
-def list_contacts():
-    viewer_email = (request.args.get("viewer_email") or "").strip()
-    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">OEM / Brand</label>
+      <input class="input" name="oem" placeholder="e.g. Cisco, Fortinet, Juniper" value="${po?.oem || ''}">
 
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if _is_supervisor(viewer_role):
-                cur.execute(
-                    """
-                    SELECT id, name, title, email, phone, role_type, influence_level, emotion, account_id, owner, created_at, updated_at
-                    FROM contacts
-                    ORDER BY updated_at DESC
-                    """
-                )
-                return jsonify(cur.fetchall())
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Deal Registration Number</label>
+      <input class="input" name="dealRegistrationNo" placeholder="OEM deal reg number" value="${po?.dealRegistrationNo || ''}">
 
-            if not viewer_email:
-                return jsonify({"error": "viewer_email is required for non-supervisor access"}), 400
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Vendor PO Number</label>
+      <input class="input" name="vendorPONumber" placeholder="PO issued to vendor" value="${po?.vendorPONumber || ''}">
 
-            cur.execute(
-                """
-                SELECT id, name, title, email, phone, role_type, influence_level, emotion, account_id, owner, created_at, updated_at
-                FROM contacts
-                WHERE lower(owner)=lower(%s)
-                ORDER BY updated_at DESC
-                """,
-                (viewer_email,),
-            )
-            return jsonify(cur.fetchall())
-    finally:
-        conn.close()
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Payment Terms — Customer</label>
+          <input class="input" name="paymentTermsCustomer" placeholder="e.g. 30 days" value="${po?.paymentTermsCustomer || ''}">
+        </div>
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Payment Terms — Vendor</label>
+          <input class="input" name="paymentTermsVendor" placeholder="e.g. 15 days" value="${po?.paymentTermsVendor || ''}">
+        </div>
+      </div>
 
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Expected Delivery</label>
+          <input class="input" type="date" name="expectedDelivery" value="${po?.expectedDelivery || ''}">
+        </div>
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Actual Delivery</label>
+          <input class="input" type="date" name="actualDelivery" value="${po?.actualDelivery || ''}">
+        </div>
+      </div>
 
-@app.route("/api/contacts", methods=["POST"])
-def upsert_contact():
-    data = request.get_json(silent=True) or {}
-    contact_id = (data.get("id") or "").strip() or f"con_{int(datetime.utcnow().timestamp() * 1000)}"
-    owner = (data.get("owner") or "").strip()
-    if not owner:
-        return jsonify({"error": "owner is required"}), 400
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">GRN Number</label>
+      <input class="input" name="grnNumber" placeholder="Goods Receipt Note" value="${po?.grnNumber || ''}">
 
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id FROM contacts WHERE id=%s", (contact_id,))
-            exists = cur.fetchone()
-            if exists:
-                cur.execute(
-                    """
-                    UPDATE contacts
-                    SET name=%s, title=%s, email=%s, phone=%s, role_type=%s, influence_level=%s, emotion=%s,
-                        account_id=%s, owner=%s, updated_at=now()
-                    WHERE id=%s
-                    """,
-                    (
-                        (data.get("name") or "").strip(),
-                        (data.get("title") or "").strip(),
-                        (data.get("email") or "").strip(),
-                        (data.get("phone") or "").strip(),
-                        (data.get("role_type") or data.get("roleType") or "").strip(),
-                        (data.get("influence_level") or data.get("influenceLevel") or "").strip(),
-                        (data.get("emotion") or "").strip(),
-                        (data.get("account_id") or data.get("accountId") or "").strip(),
-                        owner,
-                        contact_id,
-                    ),
-                )
-                status = "updated"
-            else:
-                cur.execute(
-                    """
-                    INSERT INTO contacts (id, name, title, email, phone, role_type, influence_level, emotion, account_id, owner, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
-                    """,
-                    (
-                        contact_id,
-                        (data.get("name") or "").strip(),
-                        (data.get("title") or "").strip(),
-                        (data.get("email") or "").strip(),
-                        (data.get("phone") or "").strip(),
-                        (data.get("role_type") or data.get("roleType") or "").strip(),
-                        (data.get("influence_level") or data.get("influenceLevel") or "").strip(),
-                        (data.get("emotion") or "").strip(),
-                        (data.get("account_id") or data.get("accountId") or "").strip(),
-                        owner,
-                    ),
-                )
-                status = "created"
-        conn.commit()
-        return jsonify({"status": status, "id": contact_id})
-    finally:
-        conn.close()
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">GRN Date</label>
+          <input class="input" type="date" name="grnDate" value="${po?.grnDate || ''}">
+        </div>
+        <div>
+          <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Site Completion Date</label>
+          <input class="input" type="date" name="siteCompletionDate" value="${po?.siteCompletionDate || ''}">
+        </div>
+      </div>
 
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Invoice Number</label>
+      <input class="input" name="invoiceNumber" placeholder="Your invoice to customer" value="${po?.invoiceNumber || ''}">
 
-@app.route("/api/contacts/<contact_id>", methods=["DELETE"])
-def delete_contact(contact_id: str):
-    viewer_email = (request.args.get("viewer_email") or "").strip()
-    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, owner FROM contacts WHERE id=%s", (contact_id,))
-            row = cur.fetchone()
-            if not row:
-                return jsonify({"error": "contact not found"}), 404
-            if not _is_supervisor(viewer_role):
-                if not viewer_email:
-                    return jsonify({"error": "viewer_email is required"}), 400
-                if (row["owner"] or "").lower() != viewer_email.lower():
-                    return jsonify({"error": "not allowed"}), 403
-            cur.execute("DELETE FROM contacts WHERE id=%s", (contact_id,))
-        conn.commit()
-        return jsonify({"status": "deleted", "id": contact_id})
-    finally:
-        conn.close()
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Invoice Date</label>
+      <input class="input" type="date" name="invoiceDate" value="${po?.invoiceDate || ''}">
 
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Site Address</label>
+      <input class="input" name="siteAddress" placeholder="Delivery / installation site" value="${po?.siteAddress || ''}">
 
-@app.route("/api/opportunities", methods=["GET"])
-def list_opportunities():
-    viewer_email = (request.args.get("viewer_email") or "").strip()
-    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            query_all = """
-                    SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
-                           assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
-                           presales_architecture, presales_questions, boq, purchase_costing,
-                           costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
-                           purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                           assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
-                           intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
-                           intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
-                           intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
-                           intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
-                           intake_competitors, intake_win_strategy, created_at, updated_at
-                    FROM opportunities
-                    ORDER BY updated_at DESC
-                    """
-            query_scoped = """
-                SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
-                       assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
-                       presales_architecture, presales_questions, boq, purchase_costing,
-                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
-                       purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                       assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
-                       intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
-                       intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
-                       intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
-                       intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
-                       intake_competitors, intake_win_strategy, created_at, updated_at
-                FROM opportunities
-                WHERE lower(owner)=lower(%s)
-                   OR lower(sales_owner)=lower(%s)
-                   OR lower(assigned_presales)=lower(%s)
-                   OR lower(assigned_salesops)=lower(%s)
-                   OR lower(assigned_purchase)=lower(%s)
-                ORDER BY updated_at DESC
-            """
-            if _is_supervisor(viewer_role):
-                cur.execute(query_all)
-                rows = cur.fetchall()
-                if enforce_opportunity_sla(conn, rows):
-                    cur.execute(query_all)
-                    rows = cur.fetchall()
-                return jsonify(rows)
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Site Work Required?</label>
+      <select class="input" name="isSiteWork">
+        <option value="false" ${!po?.isSiteWork ? 'selected' : ''}>No</option>
+        <option value="true" ${po?.isSiteWork ? 'selected' : ''}>Yes — Passive/Civil work included</option>
+      </select>
 
-            if not viewer_email:
-                return jsonify({"error": "viewer_email is required for non-supervisor access"}), 400
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Description / Scope</label>
+      <textarea name="description" placeholder="What is being procured / delivered">${po?.description || ''}</textarea>
 
-            cur.execute(query_scoped, (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email))
-            rows = cur.fetchall()
-            if enforce_opportunity_sla(conn, rows):
-                cur.execute(query_scoped, (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email))
-                rows = cur.fetchall()
-            return jsonify(rows)
-    finally:
-        conn.close()
+      <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Notes / Risks</label>
+      <textarea name="notes" placeholder="Internal notes, risks, dependencies">${po?.notes || ''}</textarea>
 
+      <div style="margin-top:20px; display:flex; gap:8px; flex-wrap:wrap">
+        <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-success">Save PO</button>
+        ${po?.stage === 'Draft' ? `<button type="button" class="btn btn-success" onclick="event.preventDefault();submitPOForApproval('${po.id}')">Submit for Approval</button>` : ''}
+        ${po ? `<button type="button" class="btn btn-danger" onclick="deletePurchaseOrder('${po.id}')">Delete</button>` : ''}
+      </div>
+    </form>
+  </div>`;
+  document.getElementById('modal').classList.add('show');
+}
 
-@app.route("/api/opportunities", methods=["POST"])
-def upsert_opportunity():
-    data = request.get_json(silent=True) or {}
-    opp_id = (data.get("id") or "").strip() or f"opp_{int(datetime.utcnow().timestamp() * 1000)}"
-    owner = (data.get("owner") or "").strip()
-    if not owner:
-        return jsonify({"error": "owner is required"}), 400
-
-    payload = {
-        "name": (data.get("name") or "").strip(),
-        "account_id": (data.get("account_id") or data.get("accountId") or "").strip(),
-        "value": float(data.get("value") or 0),
-        "stage": (data.get("stage") or "").strip(),
-        "deal_type": (data.get("deal_type") or data.get("dealType") or "").strip(),
-        "owner": owner,
-        "sales_owner": (data.get("sales_owner") or data.get("salesOwner") or owner).strip(),
-        "workflow_stage": (data.get("workflow_stage") or data.get("workflowStage") or "").strip(),
-        "assigned_presales": (data.get("assigned_presales") or data.get("assignedPresales") or "").strip(),
-        "assigned_salesops": (data.get("assigned_salesops") or data.get("assignedSalesOps") or "").strip(),
-        "assigned_purchase": (data.get("assigned_purchase") or data.get("assignedPurchase") or "").strip(),
-        "sales_comments": (data.get("sales_comments") or data.get("salesComments") or "").strip(),
-        "sales_ops_comments": (data.get("sales_ops_comments") or data.get("salesOpsComments") or "").strip(),
-        "requirements": (data.get("requirements") or "").strip(),
-        "presales_architecture": (data.get("presales_architecture") or data.get("presalesArchitecture") or "").strip(),
-        "presales_questions": (data.get("presales_questions") or data.get("presalesQuestions") or "").strip(),
-        "boq": (data.get("boq") or "").strip(),
-        "purchase_costing": (data.get("purchase_costing") or data.get("purchaseCosting") or "").strip(),
-        "costing_tat": (data.get("costing_tat") or data.get("costingTat") or "").strip(),
-        "final_pricing_proposal": (data.get("final_pricing_proposal") or data.get("finalPricingProposal") or "").strip(),
-        "presales_assigned_at": (data.get("presales_assigned_at") or data.get("presalesAssignedAt") or "").strip(),
-        "presales_due_at": (data.get("presales_due_at") or data.get("presalesDueAt") or "").strip(),
-        "salesops_assigned_at": (data.get("salesops_assigned_at") or data.get("salesOpsAssignedAt") or "").strip(),
-        "salesops_due_at": (data.get("salesops_due_at") or data.get("salesOpsDueAt") or "").strip(),
-        "purchase_assigned_at": (data.get("purchase_assigned_at") or data.get("purchaseAssignedAt") or "").strip(),
-        "purchase_due_at": (data.get("purchase_due_at") or data.get("purchaseDueAt") or "").strip(),
-        "costing_returned_at": (data.get("costing_returned_at") or data.get("costingReturnedAt") or "").strip(),
-        "final_proposal_at": (data.get("final_proposal_at") or data.get("finalProposalAt") or "").strip(),
-        "assignment_due_at": (data.get("assignment_due_at") or data.get("assignmentDueAt") or "").strip(),
-        "sales_submitted_at": (data.get("sales_submitted_at") or data.get("salesSubmittedAt") or "").strip(),
-        "presales_escalated_at": (data.get("presales_escalated_at") or data.get("presalesEscalatedAt") or "").strip(),
-        "oem_pricing_required": str(data.get("oem_pricing_required") or data.get("oemPricingRequired") or "").strip().lower() in ("1", "true", "yes", "y"),
-        "intake_problem_statement": (data.get("intake_problem_statement") or data.get("intakeProblemStatement") or "").strip(),
-        "intake_why_now": (data.get("intake_why_now") or data.get("intakeWhyNow") or "").strip(),
-        "intake_business_impact": (data.get("intake_business_impact") or data.get("intakeBusinessImpact") or "").strip(),
-        "intake_current_state": (data.get("intake_current_state") or data.get("intakeCurrentState") or "").strip(),
-        "intake_budget_range": (data.get("intake_budget_range") or data.get("intakeBudgetRange") or "").strip(),
-        "intake_decision_timeline": (data.get("intake_decision_timeline") or data.get("intakeDecisionTimeline") or "").strip(),
-        "intake_risk_if_not_solved": (data.get("intake_risk_if_not_solved") or data.get("intakeRiskIfNotSolved") or "").strip(),
-        "intake_key_stakeholders": (data.get("intake_key_stakeholders") or data.get("intakeKeyStakeholders") or "").strip(),
-        "intake_in_scope": (data.get("intake_in_scope") or data.get("intakeInScope") or "").strip(),
-        "intake_out_of_scope": (data.get("intake_out_of_scope") or data.get("intakeOutOfScope") or "").strip(),
-        "intake_current_environment": (data.get("intake_current_environment") or data.get("intakeCurrentEnvironment") or "").strip(),
-        "intake_pain_points": (data.get("intake_pain_points") or data.get("intakePainPoints") or "").strip(),
-        "intake_compliance_requirements": (data.get("intake_compliance_requirements") or data.get("intakeComplianceRequirements") or "").strip(),
-        "intake_integration_requirements": (data.get("intake_integration_requirements") or data.get("intakeIntegrationRequirements") or "").strip(),
-        "intake_competitors": (data.get("intake_competitors") or data.get("intakeCompetitors") or "").strip(),
-        "intake_win_strategy": (data.get("intake_win_strategy") or data.get("intakeWinStrategy") or "").strip(),
+async function handlePOScan(event, poId) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const statusEl = document.getElementById('poScanStatus');
+  if (statusEl) statusEl.textContent = '🔄 Reading file...';
+  const reader = new FileReader();
+  reader.onload = async function(e) {
+    const base64 = e.target.result;
+    if (statusEl) statusEl.textContent = '🤖 Extracting PO details with AI...';
+    try {
+      const response = await fetch(`${CRM_API_BASE}/api/ai-extract`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image_b64: base64.split(',')[1] || base64,
+          media_type: file.type === 'application/pdf' ? 'application/pdf' : 'image/jpeg',
+          prompt: 'Extract from this Purchase Order document: PO Number, PO Date, Customer Name, Total Value (in INR), Payment Terms, Delivery Address, Scope of Work (what is being supplied/delivered/installed), and any item descriptions or line items. Return as a clean formatted summary with clear section headers.'
+        })
+      });
+      const data = await response.json();
+      const extracted = data?.text || 'Could not extract details.';
+      window._pendingPOScan = { image: base64, data: extracted, poId };
+      if (statusEl) statusEl.innerHTML = `<span style="color:#4ade80">✅ AI Extraction done. Save the PO to attach.</span><br><div style="margin-top:6px; font-size:0.82em; background:rgba(0,0,0,0.2); padding:8px; border-radius:6px">${extracted}</div>`;
+    } catch(err) {
+      window._pendingPOScan = { image: base64, data: 'Manual review needed', poId };
+      if (statusEl) statusEl.textContent = '✅ File attached. AI extraction unavailable — will attach scan only.';
     }
+  };
+  reader.readAsDataURL(file);
+}
 
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, assigned_presales, assigned_salesops, workflow_stage, sales_owner, owner FROM opportunities WHERE id=%s", (opp_id,))
-            exists = cur.fetchone()
-            prev_assigned_presales = ((exists or {}).get("assigned_presales") or "").strip().lower()
-            prev_assigned_salesops = ((exists or {}).get("assigned_salesops") or "").strip().lower()
-            prev_workflow_stage = ((exists or {}).get("workflow_stage") or "").strip()
-            prev_sales_owner = ((exists or {}).get("sales_owner") or (exists or {}).get("owner") or "").strip().lower()
-            deal_type_now = (payload.get("deal_type") or "").strip().lower()
-            if deal_type_now in ("hardware", "mixed") or (payload.get("assigned_presales") or "").strip():
-                payload["assigned_salesops"] = SALES_OPS_OWNER
-                payload["oem_pricing_required"] = True
-                payload["salesops_assigned_at"] = payload.get("salesops_assigned_at") or utc_now()
-                payload["salesops_due_at"] = payload.get("salesops_due_at") or (datetime.utcnow() + timedelta(hours=24)).isoformat(timespec="seconds") + "Z"
+function savePurchaseOrder(e, id) {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target));
+  loadPurchaseOrders();
+  const existing = id ? state.data.purchase_orders.find(p => p.id === id) : null;
+  const accountOpt = e.target.querySelector('select[name="accountId"] option:checked');
+  const scan = window._pendingPOScan;
+  const po = normalizePOFromStorage({
+    ...existing,
+    id: id || Date.now().toString() + Math.random().toString().slice(2),
+    poNumber: data.poNumber || '',
+    poType: data.poType || '',
+    stage: isSupervisor ? (data.stage || 'Draft') : (existing?.stage || 'Draft'),
+    accountId: data.accountId || '',
+    accountName: accountOpt?.dataset?.name || accountOpt?.text || existing?.accountName || '',
+    opportunityId: data.opportunityId || '',
+    vendorName: data.vendorName || '',
+    vendorPONumber: data.vendorPONumber || '',
+    oem: data.oem || '',
+    dealRegistrationNo: data.dealRegistrationNo || '',
+    description: data.description || '',
+    value: parseFloat(data.value || 0),
+    vendorValue: parseFloat(data.vendorValue || 0),
+    paymentTermsCustomer: data.paymentTermsCustomer || '',
+    paymentTermsVendor: data.paymentTermsVendor || '',
+    expectedDelivery: data.expectedDelivery || '',
+    actualDelivery: data.actualDelivery || '',
+    grnNumber: data.grnNumber || '',
+    grnDate: data.grnDate || '',
+    invoiceNumber: data.invoiceNumber || '',
+    invoiceDate: data.invoiceDate || '',
+    siteAddress: data.siteAddress || '',
+    isSiteWork: data.isSiteWork === 'true',
+    siteCompletionDate: data.siteCompletionDate || '',
+    notes: data.notes || '',
+    scannedPOImage: (scan?.poId === id || !id) && scan?.image ? scan.image : (existing?.scannedPOImage || ''),
+    scannedPOData: (scan?.poId === id || !id) && scan?.data ? scan.data : (existing?.scannedPOData || ''),
+    owner: existing?.owner || currentUser,
+    createdDate: existing?.createdDate || new Date().toISOString(),
+    modifiedDate: new Date().toISOString()
+  });
+  window._pendingPOScan = null;
+  if (id) {
+    const idx = state.data.purchase_orders.findIndex(p => p.id === id);
+    if (idx > -1) state.data.purchase_orders[idx] = po;
+    else state.data.purchase_orders.push(po);
+  } else {
+    state.data.purchase_orders.push(po);
+  }
+  savePurchaseOrders();
+  closeModal();
+  render();
+}
 
-            required_intake_fields = [
-                ("intake_problem_statement", "Problem Statement"),
-                ("intake_why_now", "Why Now (Trigger Event)"),
-                ("intake_business_impact", "Business Impact"),
-                ("intake_current_state", "Current State Summary"),
-                ("intake_budget_range", "Budget Range"),
-                ("intake_decision_timeline", "Decision Timeline"),
-            ]
-            workflow_now = (payload.get("workflow_stage") or "").strip()
-            requires_intake = (not exists) or workflow_now == "Assigned to Presales"
-            missing_intake = [label for key, label in required_intake_fields if not payload.get(key)]
-            if requires_intake and missing_intake:
-                return jsonify({"error": "Mandatory presales intake fields missing", "missing_fields": missing_intake}), 400
+function editPurchaseOrder(id) {
+  loadPurchaseOrders();
+  openPurchaseOrderModal(state.data.purchase_orders.find(p => p.id === id));
+}
 
-            if exists:
-                cur.execute(
-                    """
-                    UPDATE opportunities
-                    SET name=%s, account_id=%s, value=%s, stage=%s, deal_type=%s, owner=%s, sales_owner=%s, workflow_stage=%s,
-                        assigned_presales=%s, assigned_salesops=%s, assigned_purchase=%s, sales_comments=%s, sales_ops_comments=%s, requirements=%s,
-                        presales_architecture=%s, presales_questions=%s, boq=%s, purchase_costing=%s,
-                        costing_tat=%s, final_pricing_proposal=%s, presales_assigned_at=%s, presales_due_at=%s, salesops_assigned_at=%s, salesops_due_at=%s,
-                        purchase_assigned_at=%s, purchase_due_at=%s, costing_returned_at=%s, final_proposal_at=%s,
-                        assignment_due_at=%s, sales_submitted_at=%s, presales_escalated_at=%s, oem_pricing_required=%s,
-                        intake_problem_statement=%s, intake_why_now=%s, intake_business_impact=%s, intake_current_state=%s,
-                        intake_budget_range=%s, intake_decision_timeline=%s, intake_risk_if_not_solved=%s,
-                        intake_key_stakeholders=%s, intake_in_scope=%s, intake_out_of_scope=%s, intake_current_environment=%s,
-                        intake_pain_points=%s, intake_compliance_requirements=%s, intake_integration_requirements=%s,
-                        intake_competitors=%s, intake_win_strategy=%s, updated_at=now()
-                    WHERE id=%s
-                    """,
-                    (
-                        payload["name"], payload["account_id"], payload["value"], payload["stage"], payload["deal_type"], payload["owner"],
-                        payload["sales_owner"], payload["workflow_stage"], payload["assigned_presales"], payload["assigned_salesops"],
-                        payload["assigned_purchase"], payload["sales_comments"], payload["sales_ops_comments"], payload["requirements"],
-                        payload["presales_architecture"], payload["presales_questions"], payload["boq"],
-                        payload["purchase_costing"], payload["costing_tat"], payload["final_pricing_proposal"],
-                        payload["presales_assigned_at"], payload["presales_due_at"], payload["salesops_assigned_at"], payload["salesops_due_at"], payload["purchase_assigned_at"],
-                        payload["purchase_due_at"], payload["costing_returned_at"], payload["final_proposal_at"],
-                        payload["assignment_due_at"], payload["sales_submitted_at"], payload["presales_escalated_at"], payload["oem_pricing_required"],
-                        payload["intake_problem_statement"], payload["intake_why_now"], payload["intake_business_impact"], payload["intake_current_state"],
-                        payload["intake_budget_range"], payload["intake_decision_timeline"], payload["intake_risk_if_not_solved"],
-                        payload["intake_key_stakeholders"], payload["intake_in_scope"], payload["intake_out_of_scope"], payload["intake_current_environment"],
-                        payload["intake_pain_points"], payload["intake_compliance_requirements"], payload["intake_integration_requirements"],
-                        payload["intake_competitors"], payload["intake_win_strategy"], opp_id,
-                    ),
-                )
-                status = "updated"
-            else:
-                cur.execute(
-                    """
-                    INSERT INTO opportunities (
-                        id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
-                        assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
-                        presales_architecture, presales_questions, boq, purchase_costing,
-                        costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
-                        purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                        assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
-                        intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
-                        intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
-                        intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
-                        intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
-                        intake_competitors, intake_win_strategy, created_at, updated_at
-                    )
-                    VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, now(), now()
-                    )
-                    """,
-                    (
-                        opp_id, payload["name"], payload["account_id"], payload["value"], payload["stage"], payload["deal_type"], payload["owner"],
-                        payload["sales_owner"], payload["workflow_stage"], payload["assigned_presales"], payload["assigned_salesops"],
-                        payload["assigned_purchase"], payload["sales_comments"], payload["sales_ops_comments"], payload["requirements"],
-                        payload["presales_architecture"], payload["presales_questions"], payload["boq"],
-                        payload["purchase_costing"], payload["costing_tat"], payload["final_pricing_proposal"],
-                        payload["presales_assigned_at"], payload["presales_due_at"], payload["salesops_assigned_at"], payload["salesops_due_at"], payload["purchase_assigned_at"],
-                        payload["purchase_due_at"], payload["costing_returned_at"], payload["final_proposal_at"],
-                        payload["assignment_due_at"], payload["sales_submitted_at"], payload["presales_escalated_at"], payload["oem_pricing_required"],
-                        payload["intake_problem_statement"], payload["intake_why_now"], payload["intake_business_impact"], payload["intake_current_state"],
-                        payload["intake_budget_range"], payload["intake_decision_timeline"], payload["intake_risk_if_not_solved"], payload["intake_key_stakeholders"],
-                        payload["intake_in_scope"], payload["intake_out_of_scope"], payload["intake_current_environment"], payload["intake_pain_points"],
-                        payload["intake_compliance_requirements"], payload["intake_integration_requirements"], payload["intake_competitors"], payload["intake_win_strategy"],
-                    ),
-                )
-                status = "created"
-        conn.commit()
+function deletePurchaseOrder(id) {
+  if (!confirm('Delete this purchase order?')) return;
+  loadPurchaseOrders();
+  state.data.purchase_orders = state.data.purchase_orders.filter(p => p.id !== id);
+  savePurchaseOrders();
+  closeModal();
+  render();
+}
 
-        current_assigned = (payload.get("assigned_presales") or "").strip().lower()
-        current_salesops = (payload.get("assigned_salesops") or "").strip().lower()
-        workflow_now = (payload.get("workflow_stage") or "").strip()
-        sales_now = (payload.get("sales_owner") or payload.get("owner") or "").strip().lower()
+function submitPOForApproval(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po) return;
+  po.stage = 'Pending Presales+Finance Approval';
+  po.modifiedDate = new Date().toISOString();
+  savePurchaseOrders();
+  closeModal();
+  render();
+  // Send email notifications to presales + finance + supervisor
+  fetch(`${CRM_API_BASE}/api/po-notify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      event: 'submitted',
+      po_number: po.poNumber || 'Draft PO',
+      po_id: po.id,
+      account_name: po.accountName || '',
+      stage: po.stage,
+      creator_email: po.owner || currentUser,
+      value: po.value || 0
+    })
+  }).catch(() => {});
+  alert('PO submitted. Presales (vinod.v@dnispl.com) and Finance (rakesh.uniyal@dnispl.com) can now approve in parallel.\n\nEmail notifications sent to approvers.');
+}
 
-        # Fire email when:
-        # 1. Presales is assigned AND workflow just moved to "Assigned to Presales"
-        # 2. OR presales assignee changed while already in that stage
-        presales_just_assigned = (
-            workflow_now == "Assigned to Presales"
-            and bool(current_assigned)
-            and (
-                prev_workflow_stage != "Assigned to Presales"
-                or current_assigned != prev_assigned_presales
-                or status == "created"
-            )
-        )
+function approveCurrentStage(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po) return;
+  const now = new Date().toISOString();
+  const me = normalizeEmail(currentUser);
+  let notifyEvent = null;
 
-        if presales_just_assigned:
-            due_iso = (payload.get("presales_due_at") or "").strip()
-            if not due_iso:
-                base_dt = parse_iso_dt((payload.get("sales_submitted_at") or "").strip()) or datetime.now(timezone.utc)
-                due_iso = (base_dt + timedelta(hours=72)).isoformat().replace("+00:00", "Z")
-
-            account_manager_email = ""
-            acc_id = (payload.get("account_id") or "").strip()
-            if acc_id:
-                try:
-                    with conn.cursor(cursor_factory=RealDictCursor) as cur_am:
-                        cur_am.execute(
-                            """
-                            SELECT u.email FROM accounts a
-                            LEFT JOIN users u ON u.id = a.account_manager_id
-                            WHERE CAST(a.id AS TEXT) = %s
-                            """,
-                            (acc_id,),
-                        )
-                        am_row = cur_am.fetchone()
-                        if am_row:
-                            account_manager_email = (am_row.get("email") or "").strip().lower()
-                except Exception as e:
-                    print(f"[CRM] Could not fetch account manager for email CC: {e}")
-
-            send_opportunity_assignment_email(
-                payload.get("name") or "",
-                opp_id,
-                current_assigned,
-                sales_now,
-                due_iso,
-                account_manager_email,
-            )
-            if current_salesops:
-                send_salesops_assignment_email(
-                    payload.get("name") or "",
-                    opp_id,
-                    current_salesops,
-                    sales_now,
-                    current_assigned,
-                    payload.get("deal_type") or "",
-                    (payload.get("salesops_due_at") or "").strip(),
-                    account_manager_email,
-                )
-        elif current_salesops and (
-            current_salesops != prev_assigned_salesops
-            or status == "created"
-            or str(payload.get("oem_pricing_required") or "").lower() in ("true", "1")
-        ):
-            account_manager_email = ""
-            acc_id = (payload.get("account_id") or "").strip()
-            if acc_id:
-                try:
-                    with conn.cursor(cursor_factory=RealDictCursor) as cur_am:
-                        cur_am.execute(
-                            """
-                            SELECT u.email FROM accounts a
-                            LEFT JOIN users u ON u.id = a.account_manager_id
-                            WHERE CAST(a.id AS TEXT) = %s
-                            """,
-                            (acc_id,),
-                        )
-                        am_row = cur_am.fetchone()
-                        if am_row:
-                            account_manager_email = (am_row.get("email") or "").strip().lower()
-                except Exception as e:
-                    print(f"[CRM] Could not fetch account manager for sales ops CC: {e}")
-            send_salesops_assignment_email(
-                payload.get("name") or "",
-                opp_id,
-                current_salesops,
-                sales_now,
-                current_assigned,
-                payload.get("deal_type") or "",
-                (payload.get("salesops_due_at") or "").strip(),
-                account_manager_email,
-            )
-        return jsonify({"status": status, "id": opp_id})
-    finally:
-        conn.close()
-
-
-@app.route("/api/opportunities/<opp_id>", methods=["DELETE"])
-def delete_opportunity(opp_id: str):
-    viewer_email = (request.args.get("viewer_email") or "").strip()
-    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, owner, sales_owner, assigned_salesops FROM opportunities WHERE id=%s", (opp_id,))
-            row = cur.fetchone()
-            if not row:
-                return jsonify({"error": "opportunity not found"}), 404
-            if not _is_supervisor(viewer_role):
-                if not viewer_email:
-                    return jsonify({"error": "viewer_email is required"}), 400
-                allowed = {
-                    (row.get("owner") or "").lower(),
-                    (row.get("sales_owner") or "").lower(),
-                    (row.get("assigned_salesops") or "").lower(),
-                }
-                if viewer_email.lower() not in allowed:
-                    return jsonify({"error": "not allowed"}), 403
-            cur.execute("DELETE FROM opportunities WHERE id=%s", (opp_id,))
-        conn.commit()
-        return jsonify({"status": "deleted", "id": opp_id})
-    finally:
-        conn.close()
-
-
-@app.route("/api/activities", methods=["POST"])
-def upsert_activity():
-    data = request.get_json(silent=True) or {}
-    activity_id = (data.get("id") or "").strip()
-    activity_type = (data.get("type") or "").strip()
-    subject = (data.get("subject") or "").strip()
-    notes = (data.get("notes") or "").strip()
-    date = (data.get("date") or "").strip()
-    owner = (data.get("owner") or "").strip()
-    account_id = (data.get("account_id") or "").strip()
-    account_name = (data.get("account_name") or "").strip()
-
-    if not activity_type or not subject or not date or not owner:
-        return jsonify({"error": "type, subject, date, owner are required"}), 400
-
-    if not activity_id:
-        activity_id = f"act_{int(datetime.utcnow().timestamp() * 1000)}"
-
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT id FROM activities WHERE id=%s",
-                (activity_id,),
-            )
-            row = cur.fetchone()
-            if row:
-                cur.execute(
-                    """
-                    UPDATE activities
-                    SET type=%s, subject=%s, notes=%s, date=%s, owner=%s, account_id=%s, account_name=%s, updated_at=now()
-                    WHERE id=%s
-                    """,
-                    (
-                        activity_type,
-                        subject,
-                        notes,
-                        date,
-                        owner,
-                        account_id,
-                        account_name,
-                        activity_id,
-                    ),
-                )
-                status = "updated"
-            else:
-                cur.execute(
-                    """
-                    INSERT INTO activities (id, type, subject, notes, date, owner, account_id, account_name, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now(), now())
-                    """,
-                    (
-                        activity_id,
-                        activity_type,
-                        subject,
-                        notes,
-                        date,
-                        owner,
-                        account_id,
-                        account_name,
-                    ),
-                )
-                status = "created"
-        conn.commit()
-        return jsonify({"status": status, "id": activity_id})
-    finally:
-        conn.close()
-
-
-@app.route("/api/activities/<activity_id>", methods=["DELETE"])
-def delete_activity(activity_id: str):
-    viewer_email = (request.args.get("viewer_email") or "").strip()
-    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
-
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT id, owner FROM activities WHERE id=%s",
-                (activity_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                return jsonify({"error": "activity not found"}), 404
-
-            if viewer_role not in ("supervisor", "admin"):
-                if not viewer_email:
-                    return jsonify({"error": "viewer_email is required"}), 400
-                if (row["owner"] or "").lower() != viewer_email.lower():
-                    return jsonify({"error": "not allowed"}), 403
-
-            cur.execute("DELETE FROM activities WHERE id=%s", (activity_id,))
-        conn.commit()
-        return jsonify({"status": "deleted", "id": activity_id})
-    except Exception as exc:
-        return jsonify({"error": f"activity delete failed: {exc}"}), 500
-    finally:
-        conn.close()
-
-
-@app.route("/api/passwords/<email>", methods=["GET"])
-def get_password(email: str):
-    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
-    viewer_email = (request.args.get("viewer_email") or "").strip().lower()
-    if viewer_role not in ("supervisor", "admin") and viewer_email != (email or "").strip().lower():
-        return jsonify({"error": "not allowed"}), 403
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT email, password, updated_at FROM user_passwords WHERE lower(email)=lower(%s)",
-                (email,),
-            )
-            row = cur.fetchone()
-            if not row:
-                return jsonify({"email": email, "password": None})
-            return jsonify(row)
-    finally:
-        conn.close()
-
-
-@app.route("/api/passwords", methods=["POST"])
-def set_password():
-    data = request.get_json(silent=True) or {}
-    viewer_role = (data.get("viewer_role") or "account_manager").strip().lower()
-    viewer_email = (data.get("viewer_email") or "").strip().lower()
-    email = (data.get("email") or "").strip().lower()
-    password = (data.get("password") or "").strip()
-    if not email or not password:
-        return jsonify({"error": "email and password required"}), 400
-    if viewer_role not in ("supervisor", "admin"):
-        if not viewer_email or viewer_email != email:
-            return jsonify({"error": "not allowed"}), 403
-
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO user_passwords (email, password, updated_at)
-                VALUES (%s, %s, now())
-                ON CONFLICT(email)
-                DO UPDATE SET password=EXCLUDED.password, updated_at=EXCLUDED.updated_at
-                """,
-                (email, password),
-            )
-        conn.commit()
-        return jsonify({"status": "ok", "email": email})
-    finally:
-        conn.close()
-
-
-@app.route("/api/aop", methods=["GET"])
-def list_aop_plans():
-    viewer_email = (request.args.get("viewer_email") or "").strip().lower()
-    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
-    fy_year = (request.args.get("fy_year") or "2025-26").strip()
-
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            base_cols = """p.account_id, p.account_name, p.account_manager, p.fy_year,
-                p.current_revenue, p.target_growth, p.updated_by, p.updated_at,
-                p.apr_hardware, p.apr_software, p.apr_managed_services,
-                p.may_hardware, p.may_software, p.may_managed_services,
-                p.jun_hardware, p.jun_software, p.jun_managed_services,
-                p.jul_hardware, p.jul_software, p.jul_managed_services,
-                p.aug_hardware, p.aug_software, p.aug_managed_services,
-                p.sep_hardware, p.sep_software, p.sep_managed_services,
-                p.oct_hardware, p.oct_software, p.oct_managed_services,
-                p.nov_hardware, p.nov_software, p.nov_managed_services,
-                p.dec_hardware, p.dec_software, p.dec_managed_services,
-                p.jan_hardware, p.jan_software, p.jan_managed_services,
-                p.feb_hardware, p.feb_software, p.feb_managed_services,
-                p.mar_hardware, p.mar_software, p.mar_managed_services"""
-            if _is_supervisor(viewer_role):
-                cur.execute(f"SELECT {base_cols} FROM aop_plans p WHERE p.fy_year=%s", (fy_year,))
-            else:
-                if not viewer_email:
-                    return jsonify([])
-                cur.execute(f"SELECT {base_cols} FROM aop_plans p WHERE p.fy_year=%s AND lower(p.account_manager)=lower(%s)", (fy_year, viewer_email))
-            rows = cur.fetchall()
-            month_map = {"apr":"april","may":"may","jun":"june","jul":"july","aug":"august","sep":"september","oct":"october","nov":"november","dec":"december","jan":"january","feb":"february","mar":"march"}
-            out = []
-            for r in rows:
-                win = float(r.get("target_growth") or 0)
-                months = {}
-                for px, mname in month_map.items():
-                    raw = float(r.get(f"{px}_hardware") or 0) + float(r.get(f"{px}_software") or 0) + float(r.get(f"{px}_managed_services") or 0)
-                    months[mname] = round(raw * win * 100, 4)  # convert Cr to Lakhs
-                row_out = {
-                    "account_id": r.get("account_id"),
-                    "account_name": r.get("account_name"),
-                    "owner": r.get("account_manager"),
-                    "fy_year": r.get("fy_year"),
-                    "win_pct": win,
-                    "aop_cr": float(r.get("current_revenue") or 0),
-                    "updated_at": str(r.get("updated_at") or ""),
-                    "months": months,
-                }
-                # Add flat fields in format the frontend expects: april_hardware, april_software etc.
-                for px, mname in month_map.items():
-                    raw = float(r.get(f"{px}_hardware") or 0) * win
-                    row_out[f"{mname}_hardware"] = round(float(r.get(f"{px}_hardware") or 0) * win * 100, 4)
-                    row_out[f"{mname}_software"] = round(float(r.get(f"{px}_software") or 0) * win * 100, 4)
-                    row_out[f"{mname}_managed_services"] = round(float(r.get(f"{px}_managed_services") or 0) * win * 100, 4)
-                out.append(row_out)
-            return jsonify(out)
-    except Exception as exc:
-        return jsonify([])
-    finally:
-        conn.close()
-
-
-@app.route("/api/aop", methods=["POST"])
-def upsert_aop_plan():
-    data = request.get_json(silent=True) or {}
-    account_id = str(data.get("account_id") or "").strip()
-    fy_year = str(data.get("fy_year") or "2025-26").strip()
-    owner = str(data.get("owner") or data.get("viewer_email") or "").strip().lower()
-    if not account_id:
-        return jsonify({"error": "account_id required"}), 400
-
-    plan_data = {k: v for k, v in data.items() if k not in {"account_id", "fy_year", "owner", "viewer_email", "viewer_role"}}
-
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO aop_plans (account_id, fy_year, plan_data, owner, created_at, updated_at)
-                VALUES (%s, %s, %s::jsonb, %s, now(), now())
-                ON CONFLICT (account_id, fy_year)
-                DO UPDATE SET plan_data=EXCLUDED.plan_data, owner=EXCLUDED.owner, updated_at=now()
-                """,
-                (account_id, fy_year, json.dumps(plan_data), owner),
-            )
-        conn.commit()
-        return jsonify({"status": "ok", "account_id": account_id, "fy_year": fy_year})
-    finally:
-        conn.close()
-
-
-@app.route("/api/aop/actuals", methods=["GET"])
-def list_aop_actuals():
-    viewer_email = (request.args.get("viewer_email") or "").strip().lower()
-    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
-    fy_year = (request.args.get("fy_year") or "2025-26").strip()
-
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if _is_supervisor(viewer_role):
-                cur.execute(
-                    """
-                    SELECT account_id, fy_year, month,
-                           COALESCE(hardware,0) AS hardware,
-                           COALESCE(software,0) AS software,
-                           COALESCE(managed_services,0) AS managed_services,
-                           owner, updated_at
-                    FROM aop_actuals
-                    WHERE fy_year=%s
-                    """,
-                    (fy_year,),
-                )
-            else:
-                if not viewer_email:
-                    return jsonify([])
-                cur.execute(
-                    """
-                    SELECT x.account_id, x.fy_year, x.month,
-                           COALESCE(x.hardware,0) AS hardware,
-                           COALESCE(x.software,0) AS software,
-                           COALESCE(x.managed_services,0) AS managed_services,
-                           x.owner, x.updated_at
-                    FROM aop_actuals x
-                    JOIN accounts a ON CAST(a.id AS TEXT) = x.account_id
-                    JOIN users u ON u.id = a.account_manager_id
-                    WHERE x.fy_year=%s AND lower(u.email)=lower(%s)
-                    """,
-                    (fy_year, viewer_email),
-                )
-            return jsonify(cur.fetchall())
-    except Exception as exc:
-        return jsonify([])
-    finally:
-        conn.close()
-
-
-@app.route("/api/aop/actuals", methods=["POST"])
-def upsert_aop_actual():
-    data = request.get_json(silent=True) or {}
-    account_id = str(data.get("account_id") or "").strip()
-    fy_year = str(data.get("fy_year") or "2025-26").strip()
-    month = str(data.get("month") or "").strip()
-    owner = str(data.get("owner") or data.get("viewer_email") or "").strip().lower()
-    if not account_id or not month:
-        return jsonify({"error": "account_id and month required"}), 400
-
-    hardware = float(data.get("hardware") or 0)
-    software = float(data.get("software") or 0)
-    managed_services = float(data.get("managed_services") or 0)
-
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO aop_actuals (account_id, fy_year, month, hardware, software, managed_services, owner, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, now(), now())
-                ON CONFLICT (account_id, fy_year, month)
-                DO UPDATE SET hardware=EXCLUDED.hardware,
-                              software=EXCLUDED.software,
-                              managed_services=EXCLUDED.managed_services,
-                              owner=EXCLUDED.owner,
-                              updated_at=now()
-                """,
-                (account_id, fy_year, month, hardware, software, managed_services, owner),
-            )
-        conn.commit()
-        return jsonify({"status": "ok", "account_id": account_id, "fy_year": fy_year, "month": month})
-    finally:
-        conn.close()
-
-
-@app.route("/api/oauth/microsoft/start", methods=["GET"])
-def microsoft_oauth_start():
-    viewer_email = _normalize_email(request.args.get("viewer_email") or "")
-    if not viewer_email:
-        return jsonify({"error": "viewer_email required"}), 400
-    if not (MS_CLIENT_ID and MS_CLIENT_SECRET and MS_REDIRECT_URI):
-        return jsonify({"error": "Microsoft OAuth env vars missing"}), 500
-
-    state = _build_oauth_state(viewer_email)
-    params = {
-        "client_id": MS_CLIENT_ID,
-        "response_type": "code",
-        "redirect_uri": MS_REDIRECT_URI,
-        "response_mode": "query",
-        "scope": MS_OAUTH_SCOPES,
-        "state": state,
+  if (po.stage === 'Pending Presales+Finance Approval') {
+    // Presales approves
+    if (me === normalizeEmail(PRESALES_APPROVER) && !po.presalesApprovedBy) {
+      po.presalesApprovedBy = currentUser;
+      po.presalesApprovedAt = now;
+      alert('Presales approved ✅ — waiting for Finance approval in parallel');
     }
-    url = f"https://login.microsoftonline.com/{MS_TENANT_ID}/oauth2/v2.0/authorize?" + urllib.parse.urlencode(params)
-    return jsonify({"url": url})
+    // Finance approves
+    else if (me === normalizeEmail(FINANCE_APPROVER) && !po.financeApprovedBy) {
+      po.financeApprovedBy = currentUser;
+      po.financeApprovedAt = now;
+      alert('Finance approved ✅ — waiting for Presales approval in parallel');
+    }
+    // Supervisor can approve both
+    else if (isSupervisor) {
+      if (!po.presalesApprovedBy) { po.presalesApprovedBy = currentUser; po.presalesApprovedAt = now; }
+      if (!po.financeApprovedBy) { po.financeApprovedBy = currentUser; po.financeApprovedAt = now; }
+      alert('Both approved by supervisor ✅');
+    }
+    // Check if both now done — advance to Implementation
+    if (po.presalesApprovedBy && po.financeApprovedBy) {
+      po.stage = 'Both Approved - Pending Implementation';
+      notifyEvent = 'approved';
+      alert('Both Presales & Finance approved ✅ — forwarded to Implementation (pokhraj.yadav@dnispl.com)\n\nEmail notification sent.');
+    }
+  } else if (po.stage === 'Both Approved - Pending Implementation') {
+    po.implementationApprovedBy = currentUser;
+    po.implementationApprovedAt = now;
+    po.stage = 'Pending CEO Approval';
+    notifyEvent = 'approved';
+    alert('Implementation approved ✅ — forwarded to CEO (ashish.mehra@dnispl.com) for P&L sign-off\n\nEmail notification sent.');
+  } else if (po.stage === 'Pending CEO Approval') {
+    po.ceoApprovedBy = currentUser;
+    po.ceoApprovedAt = now;
+    po.stage = 'CEO Approved';
+    notifyEvent = 'ceo_approved';
+    alert('CEO approved ✅ — PO fully approved. Ready to issue to vendor.\n\nEmail notification sent.');
+  }
+  po.modifiedDate = now;
+  savePurchaseOrders();
+  render();
 
+  if (notifyEvent) {
+    fetch(`${CRM_API_BASE}/api/po-notify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: notifyEvent,
+        po_number: po.poNumber || 'Draft PO',
+        po_id: po.id,
+        account_name: po.accountName || '',
+        stage: po.stage,
+        creator_email: po.owner || '',
+        approved_by: currentUser,
+        value: po.value || 0
+      })
+    }).catch(() => {});
+  }
+}
 
-@app.route("/api/oauth/microsoft/callback", methods=["GET"])
-def microsoft_oauth_callback():
-    code = (request.args.get("code") or "").strip()
-    state = (request.args.get("state") or "").strip()
-    if not code:
-        return "Missing code", 400
+function issuePOToVendor(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po) return;
+  const vendorPO = prompt('Enter Vendor PO Number:', po.vendorPONumber || '');
+  if (!vendorPO) return;
+  po.vendorPONumber = vendorPO;
+  po.stage = 'PO Issued to Vendor';
+  po.modifiedDate = new Date().toISOString();
+  savePurchaseOrders();
+  render();
+}
 
-    email = _verify_oauth_state(state)
-    if not email:
-        return "Invalid or expired OAuth state", 400
+function recordGRN(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po) return;
+  const grn = prompt('GRN Number:');
+  if (!grn) return;
+  po.grnNumber = grn;
+  po.grnDate = new Date().toISOString().slice(0, 10);
+  po.actualDelivery = po.actualDelivery || new Date().toISOString().slice(0, 10);
+  po.stage = 'Goods Received';
+  po.modifiedDate = new Date().toISOString();
+  savePurchaseOrders();
+  render();
+}
 
-    token_url = f"https://login.microsoftonline.com/{MS_TENANT_ID}/oauth2/v2.0/token"
-    try:
-        token_data = _http_form_post(
-            token_url,
-            {
-                "client_id": MS_CLIENT_ID,
-                "client_secret": MS_CLIENT_SECRET,
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": MS_REDIRECT_URI,
-                "scope": MS_OAUTH_SCOPES,
-            },
-        )
+function markInstallationDone(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po) return;
+  po.siteCompletionDate = po.siteCompletionDate || new Date().toISOString().slice(0, 10);
+  po.stage = 'Installation Done';
+  po.modifiedDate = new Date().toISOString();
+  savePurchaseOrders();
+  render();
+}
 
-        user = _get_user_row_by_email(email)
-        _upsert_o365_tokens(int(user["id"]), email, token_data)
+function customerSignoff(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po) return;
+  po.stage = 'Customer Sign-off';
+  po.modifiedDate = new Date().toISOString();
+  savePurchaseOrders();
+  render();
+}
 
-        return """
-        <html><body style='font-family:Arial;padding:20px'>
-        <h3>Microsoft 365 connected successfully.</h3>
-        <p>You can close this window and return to CRM.</p>
-        <script>
-          if (window.opener) {
-            window.opener.postMessage({ type: 'ms_o365_connected' }, '*');
-            window.close();
+function raiseInvoice(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po) return;
+  const inv = prompt('Invoice Number:');
+  if (!inv) return;
+  po.invoiceNumber = inv;
+  po.invoiceDate = new Date().toISOString().slice(0, 10);
+  po.stage = 'Invoiced';
+  po.modifiedDate = new Date().toISOString();
+  savePurchaseOrders();
+  render();
+}
+
+function closePO(id) {
+  loadPurchaseOrders();
+  const po = state.data.purchase_orders.find(p => p.id === id);
+  if (!po || !confirm('Close this PO?')) return;
+  po.stage = 'Closed';
+  po.modifiedDate = new Date().toISOString();
+  savePurchaseOrders();
+  render();
+ }
+ async function handleWonPOScan(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  event.target.value = '';
+
+  // Show loading modal immediately
+  document.getElementById('modal').innerHTML = `
+  <div class="modal-content">
+    <h2>🏆 Won PO Scanner</h2>
+    <div id="wonPoStatus" style="padding:16px;background:rgba(255,255,255,0.12);border-radius:8px;margin-bottom:16px">
+      <div style="font-weight:600;margin-bottom:8px">⏳ Loading opportunities & reading PO...</div>
+      <div style="font-size:0.85em;opacity:0.8">Fetching your Closed Won opportunities and extracting PO details via AI.</div>
+    </div>
+    <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+  </div>`;
+  document.getElementById('modal').classList.add('show');
+
+  // Ensure opportunities are loaded from server
+  try {
+    await loadDataFromServer();
+  } catch(e) { /* use cached state */ }
+
+  // Compress/resize image before sending to AI (max 1200px, JPEG 0.75)
+  async function prepareImageB64(file) {
+    if (file.type === 'application/pdf') {
+      return new Promise(res => {
+        const r = new FileReader();
+        r.onload = e => res({ b64: e.target.result.split(',')[1] || e.target.result, mime: 'application/pdf' });
+        r.readAsDataURL(file);
+      });
+    }
+    return new Promise(res => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const MAX = 1200;
+        let w = img.width, h = img.height;
+        if (w > MAX || h > MAX) {
+          if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+          else { w = Math.round(w * MAX / h); h = MAX; }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
+        res({ b64: dataUrl.split(',')[1], mime: 'image/jpeg' });
+      };
+      img.src = url;
+    });
+  }
+
+  const { b64, mime } = await prepareImageB64(file);
+
+  // Build the modal with loaded opportunities
+  const closedWonOpps = state.data.opportunities.filter(o =>
+    o.stage === 'Closed Won' && (
+      isSupervisor ||
+      normalizeEmail(o.owner) === normalizeEmail(currentUser) ||
+      normalizeEmail(o.salesOwner) === normalizeEmail(currentUser) ||
+      normalizeEmail(getOpportunityManagerEmail(o)) === normalizeEmail(currentUser)
+    )
+  );
+
+  document.getElementById('modal').innerHTML = `
+  <div class="modal-content">
+    <h2>🏆 Won PO Scanner</h2>
+    <div id="wonPoStatus" style="padding:16px;background:rgba(255,255,255,0.12);border-radius:8px;margin-bottom:16px">
+      <div style="font-weight:600;margin-bottom:8px">🤖 AI is reading the PO document...</div>
+      <div style="font-size:0.85em;opacity:0.8">Extracting all details. This takes 10–20 seconds.</div>
+    </div>
+    <div id="wonPoContent" style="display:none">
+      <div style="background:rgba(255,255,255,0.12);border-radius:10px;padding:14px;margin-bottom:16px">
+        <h3 style="margin-bottom:10px">📋 AI Extracted Summary</h3>
+        <div id="wonPoExtracted" style="background:rgba(0,0,0,0.2);padding:14px;border-radius:8px;font-size:0.85em;white-space:pre-wrap;max-height:320px;overflow-y:auto"></div>
+      </div>
+      <h3 style="margin-bottom:10px">Link to Opportunity & Create Purchase Order</h3>
+      <form onsubmit="saveWonPOFromScan(event)">
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Link to Opportunity (Closed Won) *</label>
+        <select class="input" required name="opportunityId" onchange="wonPoFillAccount(this)">
+          <option value="">Select Opportunity *</option>
+          ${closedWonOpps.length === 0
+            ? `<option disabled>— No Closed Won opportunities found —</option>`
+            : closedWonOpps.map(o => {
+                const acc = state.data.accounts.find(a => String(a.id) === String(o.accountId));
+                return `<option value="${o.id}" data-account-id="${o.accountId}" data-account-name="${acc?.name || ''}">${o.name}${acc ? ' — ' + acc.name : ''}</option>`;
+              }).join('')
           }
-        </script>
-        </body></html>
-        """
-    except Exception as exc:
-        return f"OAuth failed: {exc}", 500
+        </select>
+        ${closedWonOpps.length === 0 ? `<div style="color:#f87171;font-size:0.85em;margin-top:4px">⚠️ No Closed Won opportunities found. Please mark an opportunity as Closed Won first from the Opportunities tab.</div>` : ''}
 
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Account</label>
+        <input class="input" name="accountName" id="wonPoAccountName" placeholder="Auto-filled from opportunity" readonly>
+        <input type="hidden" name="accountId" id="wonPoAccountId">
 
-@app.route("/api/oauth/microsoft/status", methods=["GET"])
-def microsoft_oauth_status():
-    viewer_email = _normalize_email(request.args.get("viewer_email") or "")
-    if not viewer_email:
-        return jsonify({"connected": False, "error": "viewer_email required"}), 400
-    row = _get_o365_token_row(viewer_email)
-    return jsonify({"connected": bool(row and (row.get("status") or "") == "active")})
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">PO Number *</label>
+        <input class="input" required name="poNumber" placeholder="e.g. DNISPL/PO/2026/001" id="wonPoNumber">
 
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">PO Type *</label>
+        <select class="input" required name="poType">
+          <option value="">Select PO Type *</option>
+          ${PO_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}
+        </select>
 
-@app.route("/api/mom/send", methods=["POST"])
-def send_mom_mail_endpoint():
-    data = request.get_json(silent=True) or {}
-    viewer_email = _normalize_email(data.get("viewer_email") or "")
-    viewer_role = (data.get("viewer_role") or "account_manager").strip().lower()
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Customer PO Value (₹) *</label>
+            <input class="input" required type="number" name="value" id="wonPoValue" placeholder="₹ Value">
+          </div>
+          <div>
+            <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Vendor Cost (₹)</label>
+            <input class="input" type="number" name="vendorValue" placeholder="₹ Vendor cost">
+          </div>
+        </div>
 
-    account_id = str(data.get("account_id") or "").strip()
-    to_emails = _split_emails(data.get("to_emails") or "")
-    cc_emails = _split_emails(data.get("cc_emails") or "")
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Vendor Name</label>
+        <input class="input" name="vendorName" id="wonPoVendor" placeholder="Distributor / Vendor">
 
-    if not to_emails:
-        return jsonify({"error": "to_emails required"}), 400
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">OEM / Brand</label>
+        <input class="input" name="oem" id="wonPoOem" placeholder="e.g. Cisco, Fortinet">
 
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            account_manager_email = viewer_email
-            account_manager_name = (viewer_email.split("@")[0] if viewer_email else "Account Manager")
-            account_name = data.get("account_name") or ""
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Payment Terms — Customer</label>
+        <input class="input" name="paymentTermsCustomer" id="wonPoPaymentTerms" placeholder="e.g. 30 days net">
 
-            if account_id:
-                cur.execute(
-                    """
-                    SELECT a.account_name, u.email AS manager_email, u.name AS manager_name
-                    FROM accounts a
-                    LEFT JOIN users u ON u.id = a.account_manager_id
-                    WHERE CAST(a.id AS TEXT) = %s
-                    """,
-                    (account_id,),
-                )
-                row = cur.fetchone()
-                if row:
-                    account_name = row.get("account_name") or account_name
-                    if row.get("manager_email"):
-                        account_manager_email = _normalize_email(row.get("manager_email"))
-                    if row.get("manager_name"):
-                        account_manager_name = row.get("manager_name")
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Expected Delivery Date</label>
+        <input class="input" type="date" name="expectedDelivery" id="wonPoDelivery">
 
-            if not _is_supervisor(viewer_role) and viewer_email and account_manager_email and viewer_email != account_manager_email:
-                return jsonify({"error": "not allowed to send MoM for this account"}), 403
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Site Address</label>
+        <input class="input" name="siteAddress" id="wonPoSite" placeholder="Delivery / installation address">
 
-            if not account_manager_email:
-                return jsonify({"error": "account manager email not found"}), 400
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Description / Scope</label>
+        <textarea name="description" id="wonPoDescription" placeholder="What is being supplied / delivered / installed"></textarea>
 
-            meeting_date = (data.get("meeting_date") or "").strip() or datetime.now().strftime("%d-%b-%Y")
-            subject = (data.get("subject") or "").strip() or f"Minutes of Meeting | {account_name or 'Account'} | {meeting_date}"
+        <label style="display:block;margin:8px 0 4px;font-size:0.9em;font-weight:600">Notes</label>
+        <textarea name="notes" placeholder="Internal notes, risks, dependencies"></textarea>
 
-            payload = {
-                "account_name": account_name,
-                "meeting_date": meeting_date,
-                "client_name": data.get("client_name") or "Team",
-                "mom_intro": data.get("mom_intro") or "",
-                "mom_discussion": data.get("mom_discussion") or "",
-                "mom_actions": data.get("mom_actions") or "",
-                "mom_next_steps": data.get("mom_next_steps") or "",
-                "account_manager_name": account_manager_name,
-                "account_manager_email": account_manager_email,
-            }
-            html = _build_mom_html(payload)
+        <input type="hidden" name="wonPoData" id="wonPoHiddenData">
+        <input type="hidden" name="wonPoImage" id="wonPoHiddenImage">
 
-            _send_graph_mail(account_manager_email, to_emails, cc_emails, subject, html)
+        <div style="margin-top:20px;display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-success">✅ Create PO from Won Order</button>
+        </div>
+      </form>
+    </div>
+    <div style="margin-top:10px">
+      <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+    </div>
+  </div>`;
+  document.getElementById('modal').classList.add('show');
 
-            activity_id = str(data.get("activity_id") or "").strip()
-            if activity_id:
-                cur.execute(
-                    """
-                    UPDATE activities
-                    SET mom_sent_at=now(),
-                        mom_sent_to=%s,
-                        mom_send_status='sent',
-                        mom_send_error=NULL,
-                        mom_payload=%s,
-                        updated_at=now()
-                    WHERE id=%s
-                    """,
-                    (", ".join(to_emails), json.dumps({**payload, "to_emails": to_emails, "cc_emails": cc_emails, "subject": subject}), activity_id),
-                )
-                conn.commit()
+  // Now call AI extraction
+  try {
+    const wonPoPrompt = `This is a customer Purchase Order (Won PO). Extract fields and return ONLY valid JSON. Do not add markdown, explanation, or code fences.
 
-            return jsonify({"status": "sent", "from": account_manager_email, "to": to_emails, "cc": cc_emails})
-    except Exception as exc:
-        return jsonify({"error": f"MoM send failed: {exc}"}), 500
-    finally:
-        conn.close()
+Return exactly this JSON shape:
+{
+  "po_number": "",
+  "po_date": "",
+  "customer_name": "",
+  "billing_address": "",
+  "delivery_site_address": "",
+  "total_po_value_inr": "",
+  "payment_terms": "",
+  "expected_delivery_date": "",
+  "line_items_scope": "",
+  "oem_brand": "",
+  "vendor_distributor": "",
+  "special_conditions_terms": "",
+  "authorised_signatory": "",
+  "contact_person_details": "",
+  "warranty_amc_terms": "",
+  "installation_requirements": "",
+  "key_observations_risks": ""
+}
 
+Rules:
+- Use empty string if a field is not found.
+- Keep rupee value as written in document.
+- Keep addresses complete.
+- Put all line items and scope into "line_items_scope".
+- Do not return anything except JSON.`;
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
-# Groq vision model — supports image inputs (base64 or URL)
-GROQ_VISION_MODEL = os.environ.get("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct").strip()
+    const response = await fetch(`${CRM_API_BASE}/api/ai-extract`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_b64: b64, media_type: mime, prompt: wonPoPrompt })
+    });
+    const data = await response.json();
+    const extracted = data?.text || (data?.error ? `Error: ${data.error}` : 'Could not extract details.');
 
+    const statusEl = document.getElementById('wonPoStatus');
+    const contentEl = document.getElementById('wonPoContent');
+    const extractedEl = document.getElementById('wonPoExtracted');
 
-@app.route("/api/ai-extract", methods=["POST"])
-def ai_extract():
-    """Proxy AI extraction requests to Groq so the API key stays server-side."""
-    if not GROQ_API_KEY:
-        return jsonify({"error": "AI extraction not configured (GROQ_API_KEY missing)"}), 503
+    function tryParseAiJson(raw) {
+      const source = (raw || '').trim();
+      if (!source || source.startsWith('Error:')) return null;
+      try {
+        return JSON.parse(source);
+      } catch (_) {}
 
-    data = request.get_json(silent=True) or {}
-    prompt = (data.get("prompt") or "").strip()
-    image_b64 = (data.get("image_b64") or "").strip()
-    media_type = (data.get("media_type") or "image/jpeg").strip()
+      const fenced = source.match(/```json\s*([\s\S]*?)```/i) || source.match(/```\s*([\s\S]*?)```/i);
+      if (fenced?.[1]) {
+        try { return JSON.parse(fenced[1].trim()); } catch (_) {}
+      }
 
-    if not image_b64 or not prompt:
-        return jsonify({"error": "image_b64 and prompt are required"}), 400
-
-    # Strip data-URL prefix if present
-    if "," in image_b64:
-        image_b64 = image_b64.split(",", 1)[1]
-
-    # Groq uses OpenAI-compatible format with image_url containing base64
-    data_url = f"data:{media_type};base64,{image_b64}"
-
-    payload = {
-        "model": GROQ_VISION_MODEL,
-        "max_tokens": 2000,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": data_url},
-                    },
-                    {
-                        "type": "text",
-                        "text": prompt,
-                    },
-                ],
-            }
-        ],
+      const start = source.indexOf('{');
+      const end = source.lastIndexOf('}');
+      if (start !== -1 && end !== -1 && end > start) {
+        try { return JSON.parse(source.slice(start, end + 1)); } catch (_) {}
+      }
+      return null;
     }
 
-    try:
-        result = _http_json_request(
-            "https://api.groq.com/openai/v1/chat/completions",
-            method="POST",
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json",
-            },
-        )
-        # OpenAI-compatible response format
-        text = ""
-        for choice in (result.get("choices") or []):
-            text += (choice.get("message") or {}).get("content") or ""
-        if not text:
-            text = "Could not extract details."
-        return jsonify({"text": text})
-    except Exception as exc:
-        return jsonify({"error": f"AI extraction failed: {exc}"}), 500
+    function buildReadableSummary(obj) {
+      if (!obj) return extracted;
+      const rows = [
+        ['PO NUMBER', obj.po_number],
+        ['PO DATE', obj.po_date],
+        ['CUSTOMER / ISSUING COMPANY', obj.customer_name],
+        ['BILLING ADDRESS', obj.billing_address],
+        ['DELIVERY / SITE ADDRESS', obj.delivery_site_address],
+        ['TOTAL PO VALUE (₹)', obj.total_po_value_inr],
+        ['PAYMENT TERMS', obj.payment_terms],
+        ['DELIVERY TIMELINE / EXPECTED DATE', obj.expected_delivery_date],
+        ['LINE ITEMS / SCOPE OF SUPPLY', obj.line_items_scope],
+        ['OEM / BRAND MENTIONED', obj.oem_brand],
+        ['VENDOR / DISTRIBUTOR', obj.vendor_distributor],
+        ['SPECIAL CONDITIONS OR TERMS', obj.special_conditions_terms],
+        ['AUTHORISED SIGNATORY', obj.authorised_signatory],
+        ['CONTACT PERSON & DETAILS', obj.contact_person_details],
+        ['WARRANTY / AMC TERMS', obj.warranty_amc_terms],
+        ['INSTALLATION REQUIREMENTS', obj.installation_requirements],
+        ['KEY OBSERVATIONS / RISKS', obj.key_observations_risks]
+      ];
+      return rows
+        .filter(([, value]) => String(value || '').trim())
+        .map(([label, value]) => `${label}: ${value}`)
+        .join('\n\n');
+    }
 
+    const extractedJson = tryParseAiJson(extracted);
+    const extractedSummary = buildReadableSummary(extractedJson);
 
-@app.route("/api/po-notify", methods=["POST"])
-def po_notify():
-    """Send approval request or approval notification emails for POs via SMTP."""
-    data = request.get_json(silent=True) or {}
-    event = (data.get("event") or "").strip()   # "submitted" | "approved" | "ceo_approved"
-    po_number = (data.get("po_number") or "Draft PO").strip()
-    po_id = (data.get("po_id") or "").strip()
-    account_name = (data.get("account_name") or "").strip()
-    stage = (data.get("stage") or "").strip()
-    creator_email = _normalize_email(data.get("creator_email") or "")
-    approved_by = _normalize_email(data.get("approved_by") or "")
-    value = float(data.get("value") or 0)
+    if (statusEl) statusEl.style.display = 'none';
+    if (extractedEl) extractedEl.textContent = extractedSummary;
+    if (contentEl) contentEl.style.display = 'block';
+    if (document.getElementById('wonPoHiddenData')) document.getElementById('wonPoHiddenData').value = extractedSummary;
+    if (document.getElementById('wonPoHiddenImage')) document.getElementById('wonPoHiddenImage').value = b64.substring(0, 5000);
 
-    def _val():
-        return f"₹{value/100000:.1f}L" if value >= 100000 else f"₹{int(value):,}"
+    // Auto-fill fields from extracted JSON first, text fallback second
+    function cleanExtractedValue(v) {
+      return (v || '')
+        .replace(/^\s*\*\*/g, '')
+        .replace(/\*\*\s*$/g, '')
+        .replace(/\*\*/g, '')
+        .replace(/^[:\-\s|]+/, '')
+        .trim();
+    }
 
-    if event == "submitted":
-        # Notify presales + finance + supervisor
-        to = [
-            "vinod.v@dnispl.com",        # presales approver
-            "rakesh.uniyal@dnispl.com",  # finance approver
-        ]
-        cc = [SUPERVISOR_EMAIL]
-        if creator_email and creator_email not in to and creator_email not in cc:
-            cc.append(creator_email)
-        subject = f"[PO Approval Required] {po_number} | {account_name} | {_val()}"
-        body = (
-            f"A Purchase Order has been submitted for approval.\n\n"
-            f"PO Number  : {po_number}\n"
-            f"Account    : {account_name}\n"
-            f"Value      : {_val()}\n"
-            f"Current Stage: {stage}\n"
-            f"Created By : {creator_email}\n\n"
-            f"Action Required: Please log in to CRM and approve / reject this PO.\n"
-            f"Both Presales and Finance approvals are needed in parallel before it moves forward."
-        )
-        send_email_smtp(to, subject, body, cc_emails=cc)
+    function extractField(text, ...labels) {
+      const lines = text.split('\n');
 
-    elif event == "approved":
-        # Notify creator + supervisor about the approval step
-        to = [e for e in [creator_email, SUPERVISOR_EMAIL] if e and "@" in e]
-        subject = f"[PO Approved] {po_number} — {stage}"
-        body = (
-            f"Purchase Order stage update:\n\n"
-            f"PO Number  : {po_number}\n"
-            f"Account    : {account_name}\n"
-            f"Value      : {_val()}\n"
-            f"New Stage  : {stage}\n"
-            f"Approved By: {approved_by}\n\n"
-        )
-        # Notify next approver
-        if stage == "Both Approved - Pending Implementation":
-            to.append("pokhraj.yadav@dnispl.com")
-            body += "Action Required: Implementation approval needed from pokhraj.yadav@dnispl.com."
-        elif stage == "Pending CEO Approval":
-            to.append("ashish.mehra@dnispl.com")
-            body += "Action Required: P&L / CEO approval needed from ashish.mehra@dnispl.com."
-        send_email_smtp(list(dict.fromkeys(to)), subject, body)
+      for (const label of labels) {
+        const safeLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-    elif event == "ceo_approved":
-        to = [e for e in [creator_email, SUPERVISOR_EMAIL, "vinod.v@dnispl.com", "rakesh.uniyal@dnispl.com"] if e and "@" in e]
-        subject = f"[PO Fully Approved] {po_number} — Ready to Issue"
-        body = (
-            f"Purchase Order has been fully approved and is ready to issue to vendor.\n\n"
-            f"PO Number  : {po_number}\n"
-            f"Account    : {account_name}\n"
-            f"Value      : {_val()}\n"
-            f"Approved By (CEO): {approved_by}\n"
-        )
-        send_email_smtp(list(dict.fromkeys(to)), subject, body)
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
 
-    else:
-        return jsonify({"error": f"unknown event: {event}"}), 400
+          const sameLineRegex = new RegExp(`^\\**\\s*${safeLabel}\\s*\\**\\s*:\\s*(.+)$`, 'i');
+          const sameLineMatch = line.match(sameLineRegex);
+          if (sameLineMatch?.[1]) return cleanExtractedValue(sameLineMatch[1]);
 
-    return jsonify({"status": "ok", "event": event})
+          const onlyLabelRegex = new RegExp(`^\\**\\s*${safeLabel}\\s*\\**\\s*:?\\s*$`, 'i');
+          if (onlyLabelRegex.test(line)) {
+            const nextLine = lines[i + 1] ? cleanExtractedValue(lines[i + 1]) : '';
+            if (nextLine) return nextLine;
+          }
+        }
+      }
 
+      return '';
+    }
 
+    function extractMultilineField(text, ...labels) {
+      const lines = text.split('\n');
 
-# AOP raw data (win_pct applied at query time)
-AOP_RAW_DATA = [
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Vishal Pipes Limited", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Uflex", "win_pct": 0.25, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.35, "september": 0.35, "october": 0.35, "november": 1.04, "december": 0.47, "january": 0.47, "february": 0.47, "march": 1.4}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "TECHBOOKS INTERNATIONAL (Aptara)", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "SIMPA ENERGY INDIA PVT LTD", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "SANSPAREILS GREENLANDS (SG)", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "SANGAM INDIA LTD", "win_pct": 0.25, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.35, "september": 0.35, "october": 0.35, "november": 1.04, "december": 0.47, "january": 0.47, "february": 0.47, "march": 1.4}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Rose IT Solutions", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "AGNISYS TECHNOLOGY Private Limited", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "RMSI PRIVATE LTD", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "R SYSTEMS", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "PPAP Automotive Ltd", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "PHYSICS WALLAH PVT LTD", "win_pct": 0.25, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.35, "september": 0.35, "october": 0.35, "november": 1.04, "december": 0.47, "january": 0.47, "february": 0.47, "march": 1.4}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "PGS (PEPO GLOBAL SOURCING)", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Metro Hospitals & Heart Inst.", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Manav Rachna Institutions", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "MAGICBRICKS.COM (Times Internet)", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "LOGIX GROUP", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "KRIBHCO", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "JIL Information Technology (Jaypee)", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "JAIPRAKASH POWER VENTURES", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "INTERARCH BUILDING PRODUCTS", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "INOX WIND LTD", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "INDIA GLYCOLS LTD", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Honda Cars India Ltd", "win_pct": 0.25, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.35, "september": 0.35, "october": 0.35, "november": 1.04, "december": 0.47, "january": 0.47, "february": 0.47, "march": 1.4}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "HAVELLS INDIA LIMITED", "win_pct": 0.25, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.35, "september": 0.35, "october": 0.35, "november": 1.04, "december": 0.47, "january": 0.47, "february": 0.47, "march": 1.4}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Dharampal Satyapal Limited", "win_pct": 0.25, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.35, "september": 0.35, "october": 0.35, "november": 1.04, "december": 0.47, "january": 0.47, "february": 0.47, "march": 1.4}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "CTA APPARELS", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "BROOKFIELD INDIA OFFICE PARKS", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "BIBA APPARELS", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "MITHILA PLYWOOD Private Limited", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "JAKSON ENGINEERS LIMITED", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Sinch India", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Somany Ceramics", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Rx-Logix", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "UNICLOUD LABS PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "GUJARAT FLUOROCHEMICALS LIMITED", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Jagran Prakashan Limited", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "INNOVATIVE VIEW INDIA PVT LTD", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "VECTUS INDUSTRIES LIMITED", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "ONEXTEL TECHNOLOGIES / TELSPIEL COMMUNICATIONS", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "SHARDA UNIVERSITY", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Addverbb", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "YoekiSoft Pvt Ltd", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Magic Software Pvt Ltd(Magic Edtech)", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "ESRI INDIA TECHNOLOGIES PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "INDIAN ENERGY EXCHANGE LIMITED", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "QRG Enterprises", "win_pct": 0.25, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.35, "september": 0.35, "october": 0.35, "november": 1.04, "december": 0.47, "january": 0.47, "february": 0.47, "march": 1.4}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Go2Cloud Solutions Pvt Ltd", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Phoenix Contact (I) Pvt Ltd", "win_pct": 0.18, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Akums Drugs and Pharmaceuticals Ltd", "win_pct": 0.19, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "LUMAX INDUSTRIES LIMITED", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "GREENLAM INDUSTRIES LIMITED", "win_pct": 0.1, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Ashiana Housing", "win_pct": 0.1, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Poly Medicure Limited", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "SANT NIRANKARI MISSON", "win_pct": 0.15, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "STONEX INDIA PRIVATE LIMITED", "win_pct": 0.12, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.025, "september": 0.025, "october": 0.025, "november": 0.075, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Hindustan Power", "win_pct": 0.15, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "SATYA MICROCAPITAL LIMITED", "win_pct": 0.2, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Rockwell Automation", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "AWFIS SPACE SOLUTIONS PRIVATE LIMITED", "win_pct": 0.15, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.025, "september": 0.025, "october": 0.025, "november": 0.075, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Bikanervala Foods Private Limited", "win_pct": 0.2, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Save Financial Services Pvt Ltd", "win_pct": 0.12, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "HUNCH CIRCLE PRIVATE LIMITED", "win_pct": 0.15, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "FENA PRIVATE LIMITED", "win_pct": 0.15, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "INFOMERICS VALUATION AND RATING PRIVATE LIMITED", "win_pct": 0.15, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.025, "september": 0.025, "october": 0.025, "november": 0.075, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "ANAND Group", "win_pct": 0.18, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "orient Bell", "win_pct": 0.1, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Trinity Touch Pvt Ltd", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "KAPOOR WATCH COMPANY PRIVATE LTD", "win_pct": 0.1, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.025, "september": 0.025, "october": 0.025, "november": 0.075, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "DARK MATTER TECHNOLOGIES INDIA PRIVATE Limited", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "PHOENIX FAMILY OFFICE ADVISERS PVT LTD", "win_pct": 0.1, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "INGENUITY BUSINESS SERVICES PVT LTD", "win_pct": 0.12, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "IDVB RECYCLING PRIVATE LTD", "win_pct": 0.35, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "CEASEFIRE INDUSTRIES PVT LTD", "win_pct": 0.15, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "PATH ORG", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "ZEACLOUD SERVICES PRIVATE LTD", "win_pct": 0.15, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.025, "september": 0.025, "october": 0.025, "november": 0.075, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "ORIENTAL STRUCTURAL ENGINEERS PVT LTD", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "HEALTHQUAD CAPITAL ADVISORS PRIVATE LTD", "win_pct": 0.15, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "ADRIANNA PAPELL KD INDIA PRIVATE LTD", "win_pct": 0.18, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "CHRYS CAPITAL", "win_pct": 0.15, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "SPRIX MANABIE EDUCATION PRIVATE LTD", "win_pct": 0.1, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "HASKONINGDHV CONSULTING PRIVATE LTD", "win_pct": 0.12, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "AGARWAL PACKERS AND MOVERS LTD", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "THE CHILDREN S INVESTMENT FUND FOUNDATION", "win_pct": 0.15, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "FJR INDIA PRIVATE Limited", "win_pct": 0.15, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "ALTF COWORKING", "win_pct": 0.15, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0208, "september": 0.0208, "october": 0.0208, "november": 0.0625, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "EAII ADVISORS PRIVATE LTD", "win_pct": 0.15, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "DELHI STATE COOPERATIVE BANK LTD", "win_pct": 0.18, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "ANUSHA TECHNOVISION PVT LTD", "win_pct": 0.15, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "WHALE CLOUD TECHNOLOGY INDIA PVT LTD", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "KHD HUMBOLDT WEDAG INDIA PVT LTD", "win_pct": 0.12, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "DEVANSH AJUKESHAN AND WELFEYAR SOSAITY", "win_pct": 0.05, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "HPPL HINDUSTAN POWER PROJECTS PRIVATE Limited", "win_pct": 0.15, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "AREA27 Private Limited", "win_pct": 0.1, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "ORIFLAME INDIA PRIVATE LTD", "win_pct": 0.1, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "MANSUKH SECURITIES AND FINANCE Limited", "win_pct": 0.15, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "KOCHHAR AND COMPANY", "win_pct": 0.15, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "OGI SOFTWARE PRIVATE Limited", "win_pct": 0.12, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Airtel", "win_pct": 0.7, "aop_cr": 20.0, "months_raw": {"april": 1.0, "may": 1.0, "june": 1.0, "july": 3.0, "august": 1.666, "september": 1.666, "october": 1.666, "november": 4.998, "december": 2.334, "january": 2.334, "february": 2.334, "march": 7.002}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Airtel Payment Bank", "win_pct": 0.8, "aop_cr": 3.0, "months_raw": {"april": 0.15, "may": 0.15, "june": 0.15, "july": 0.45, "august": 0.2499, "september": 0.2499, "october": 0.2499, "november": 0.7497, "december": 0.3501, "january": 0.3501, "february": 0.3501, "march": 1.0503}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Altius", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Anonet", "win_pct": 0.8, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Crest", "win_pct": 0.6, "aop_cr": 7.0, "months_raw": {"april": 0.35, "may": 0.35, "june": 0.35, "july": 1.05, "august": 0.5831, "september": 0.5831, "october": 0.5831, "november": 1.7493, "december": 0.8169, "january": 0.8169, "february": 0.8169, "march": 2.4507}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Ctrl S", "win_pct": 0.5, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Den", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Exitel", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Hathway", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Huges", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "NTT", "win_pct": 0.4, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Nxtra by Airtel", "win_pct": 0.6, "aop_cr": 5.0, "months_raw": {"april": 0.25, "may": 0.25, "june": 0.25, "july": 0.75, "august": 0.4165, "september": 0.4165, "october": 0.4165, "november": 1.2495, "december": 0.5835, "january": 0.5835, "february": 0.5835, "march": 1.7505}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Sify", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Tata", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Tikona", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Yotta", "win_pct": 0.5, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Delhivery", "win_pct": 0.75, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0867, "september": 0.0867, "october": 0.0867, "november": 0.2601, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Cinepolis", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Luminous Power", "win_pct": 0.75, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0867, "september": 0.0867, "october": 0.0867, "november": 0.2601, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Medanta The Medicity", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "CENTRIENT PHARMACEUTICALS INDIA PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Infogain India Private Limited", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "SMARTWORLD DEVELOPERS PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "OAKNORTH GLOBAL PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "G4S SECURITY SYSTEMS (INDIA) PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "XEBIA IT ARCHITECTS INDIA PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "SKH Metals", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "YATRA ONLINE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "SANDHAR TECHNOLOGIES LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Jaquar group", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "BLUE TOKAI(Muhavra Enterprises Pvt Ltd)", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "VLCC", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "UNICHARM INDIA PVT LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Innovative Facility/AIHP", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Smart Works", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "EasyRewardz Software Services Pvt Ltd", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "ANADRONE SYSTEMS PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Bharat Seats Ltd", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Krishna Maruti", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Park Plus", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "JUNIPER GREEN ENERGY PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "AdGlobal360 India Pvt Ltd", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Green panel Industries Ltd", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "BLUPINE ENERGY PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Xceedance", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "CE SERVICED INDIA PVT LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "INTECH ORGANICS LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "TRIDENT HILL PVT LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "MAHARASHTRA SEAMLESS LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "KRISUMI CORPORATION PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "CTAP SYSTEMS", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "ROOP AUTOMOTIVES LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "ANAQUA INDIA LLP", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "JAE INDIA PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "SONI AUTO & ALLIED INDUSTRIES Limited", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "IDP EDUCATION INDIA PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "FLUID3 INFOTECH PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "ELECTRO RENT INDIA PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "SANKYU INDIA LOGISTICS &ENGINEERING", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "UNIQUS CONSULTECH INC", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "PRECISION PYRAMID PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "XEBIA IT ARCHITECTS INDIA PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "SHIMODA TRADING INDIA PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "XP INDIA", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "NISSHINBO COMPREHENSIVE PRECISION MACHINING GURGAON PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "NEXXBASE MARKETING Private Limited", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "ORBIS FINANCIAL CORPORATION LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "PENTAX MEDICAL INDIA Private Limited", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Univo Education", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Barista", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Brookfield Properties", "win_pct": 0.5, "aop_cr": 4.0, "months_raw": {"april": 0.175, "may": 0.175, "june": 0.175, "july": 0.525, "august": 0.3034, "september": 0.3034, "october": 0.3034, "november": 0.9103, "december": 0.4084, "january": 0.4084, "february": 0.4084, "march": 1.2253}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Azure Power", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Gentari", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Appinventiv", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "L M PUBLIC SCHOOL", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "LOCON SOLUTIONS PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "IDEMITSU FINE COMPOSITES INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.5, "months_raw": {"april": 0.025, "may": 0.025, "june": 0.025, "july": 0.075, "august": 0.0433, "september": 0.0433, "october": 0.0433, "november": 0.13, "december": 0.0583, "january": 0.0583, "february": 0.0583, "march": 0.175}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "JATO DYNAMICS", "win_pct": 0.5, "aop_cr": 0.4, "months_raw": {"april": 0.02, "may": 0.02, "june": 0.02, "july": 0.06, "august": 0.0347, "september": 0.0347, "october": 0.0347, "november": 0.104, "december": 0.0467, "january": 0.0467, "february": 0.0467, "march": 0.14}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ROOTSTRONG TECHNOLOGIES PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "CALLAWAY GOLF Private Limited", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "EYE Q VISION", "win_pct": 0.5, "aop_cr": 0.7, "months_raw": {"april": 0.035, "may": 0.035, "june": 0.035, "july": 0.105, "august": 0.0607, "september": 0.0607, "october": 0.0607, "november": 0.1821, "december": 0.0817, "january": 0.0817, "february": 0.0817, "march": 0.2451}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "MGF SOURCING", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "INDORAMA SYNTHETICS I Limited", "win_pct": 0.5, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0867, "september": 0.0867, "october": 0.0867, "november": 0.2601, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "NETWORK BULLSTUDY Private Limited", "win_pct": 0.5, "aop_cr": 0.4, "months_raw": {"april": 0.02, "may": 0.02, "june": 0.02, "july": 0.06, "august": 0.0347, "september": 0.0347, "october": 0.0347, "november": 0.104, "december": 0.0467, "january": 0.0467, "february": 0.0467, "march": 0.14}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "NAVIGA GLOBAL", "win_pct": 0.5, "aop_cr": 0.4, "months_raw": {"april": 0.02, "may": 0.02, "june": 0.02, "july": 0.06, "august": 0.0347, "september": 0.0347, "october": 0.0347, "november": 0.104, "december": 0.0467, "january": 0.0467, "february": 0.0467, "march": 0.14}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SYAC INNOVATIONS PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.4, "months_raw": {"april": 0.02, "may": 0.02, "june": 0.02, "july": 0.06, "august": 0.0347, "september": 0.0347, "october": 0.0347, "november": 0.104, "december": 0.0467, "january": 0.0467, "february": 0.0467, "march": 0.14}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "IDP EDUCATION INDIA Private Limited", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ISON XPERIENCES INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "MACE PROJECT & COST MANAGEMENT Private Limited", "win_pct": 0.5, "aop_cr": 0.85, "months_raw": {"april": 0.0425, "may": 0.0425, "june": 0.0425, "july": 0.1275, "august": 0.0737, "september": 0.0737, "october": 0.0737, "november": 0.2211, "december": 0.0992, "january": 0.0992, "february": 0.0992, "march": 0.2976}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "TRAVEL CORPORATION OF INDIA", "win_pct": 0.5, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0867, "september": 0.0867, "october": 0.0867, "november": 0.2601, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ALP AEROFLEX INDIA Private Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ROADSTAR TRUCKING", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "UCHIYAMA INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ASTI INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "CRS GLOBAL SERVICES PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "VYGON INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SSDN TECHNOLOGIES Private Limited", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SUEZ ENVIRONMENT INDIA Limited", "win_pct": 0.5, "aop_cr": 1.5, "months_raw": {"april": 0.075, "may": 0.075, "june": 0.075, "july": 0.225, "august": 0.13, "september": 0.13, "october": 0.13, "november": 0.3901, "december": 0.175, "january": 0.175, "february": 0.175, "march": 0.5252}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SCA TECHNOLOGIES INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "LEX IP CARE LLP", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "MASTERS UNION SCHOOL OF BUSINESS", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "OLUMPUS CORPORATION", "win_pct": 0.5, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0867, "september": 0.0867, "october": 0.0867, "november": 0.2601, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "Ireo", "win_pct": 0.5, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0867, "september": 0.0867, "october": 0.0867, "november": 0.2601, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "Wizfair", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "Paap Automotive", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "Polymedicure", "win_pct": 0.5, "aop_cr": 0.5, "months_raw": {"april": 0.025, "may": 0.025, "june": 0.025, "july": 0.075, "august": 0.0433, "september": 0.0433, "october": 0.0433, "november": 0.13, "december": 0.0583, "january": 0.0583, "february": 0.0583, "march": 0.175}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "Aye Finance", "win_pct": 0.5, "aop_cr": 0.5, "months_raw": {"april": 0.025, "may": 0.025, "june": 0.025, "july": 0.075, "august": 0.0433, "september": 0.0433, "october": 0.0433, "november": 0.13, "december": 0.0583, "january": 0.0583, "february": 0.0583, "march": 0.175}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "HBA CPAS AND CONSULTANTS", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "MRS BECTOR'S FOOD SPECIALTIES Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SISTEMA SHYAM TELESERVICES Limited", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ILOG SOLUTIONS INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "MINISTRY OF MINES", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "CLARION INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "BENGAL AEROTROPOLIS PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SML LABEL", "win_pct": 0.5, "aop_cr": 0.5, "months_raw": {"april": 0.025, "may": 0.025, "june": 0.025, "july": 0.075, "august": 0.0433, "september": 0.0433, "october": 0.0433, "november": 0.13, "december": 0.0583, "january": 0.0583, "february": 0.0583, "march": 0.175}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "PINKERTON INDIA", "win_pct": 0.5, "aop_cr": 0.5, "months_raw": {"april": 0.025, "may": 0.025, "june": 0.025, "july": 0.075, "august": 0.0433, "september": 0.0433, "october": 0.0433, "november": 0.13, "december": 0.0583, "january": 0.0583, "february": 0.0583, "march": 0.175}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "BALBIX INDIA Private Limited", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SEAMLESS INFOTECH PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SAFFRON NETWORKS Private Limited", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SANKYU INDIA LOGISTICS & ENGINEERING PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SAGACIOUS RESEARCH Private Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ZABIN INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "PACE STOCK BROKING SERVICES Private Limited", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SAVANNAHSEEDSPrivate Limited", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "CAPARO MARUTI Limited", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "AUSTRALIA INDIA INSTITUTE PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ADGLOBAL360 INDIA PVT LTD", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "DYNATA", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "INDIAN NATIONAL ACADEMY OF ENGINEERING", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Caparo Maruti", "win_pct": 0.3, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Hellmann Worldwide Logistics", "win_pct": 0.28, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "JumpCloud", "win_pct": 0.38, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "JB Jewels and Metals", "win_pct": 0.4, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Voice Communication Delhi", "win_pct": 0.35, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "SEB Administrative Services", "win_pct": 0.38, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Ministry of Steel", "win_pct": 0.2, "aop_cr": 0.35, "months_raw": {"april": 0.0175, "may": 0.0175, "june": 0.0175, "july": 0.0292, "august": 0.0292, "september": 0.0292, "october": 0.0408, "november": 0.0408, "december": 0.0408, "january": 0.0292, "february": 0.0292, "march": 0.0292}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Telecraft E Solutions", "win_pct": 0.38, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "CIMMYT", "win_pct": 0.35, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Energia Systems", "win_pct": 0.38, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Eglo India Production", "win_pct": 0.36, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Astrantia Real Estate", "win_pct": 0.38, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Asia Pragati Capfin", "win_pct": 0.35, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Damcosoft", "win_pct": 0.4, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "SMK Petrochemicals", "win_pct": 0.32, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Shri Guru Ram Dass Ed. Society", "win_pct": 0.32, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "FIBS Logistics", "win_pct": 0.38, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Kailash Healthcare", "win_pct": 0.25, "aop_cr": 0.35, "months_raw": {"april": 0.0175, "may": 0.0175, "june": 0.0175, "july": 0.0292, "august": 0.0292, "september": 0.0292, "october": 0.0408, "november": 0.0408, "december": 0.0408, "january": 0.0292, "february": 0.0292, "march": 0.0292}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Jupiter Aluminium Industries", "win_pct": 0.36, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Veolia Water India", "win_pct": 0.22, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Aamor Inox", "win_pct": 0.36, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Remfry & Sagar", "win_pct": 0.4, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Envirocare Infrasolutions", "win_pct": 0.38, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Neurolytica Consulting", "win_pct": 0.4, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Brys Hotels", "win_pct": 0.35, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "FICCI", "win_pct": 0.28, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Hughes Communications India", "win_pct": 0.22, "aop_cr": 0.4, "months_raw": {"april": 0.02, "may": 0.02, "june": 0.02, "july": 0.0333, "august": 0.0333, "september": 0.0333, "october": 0.0467, "november": 0.0467, "december": 0.0467, "january": 0.0333, "february": 0.0333, "march": 0.0333}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "DEE Development Engineers", "win_pct": 0.35, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Yatra Online", "win_pct": 0.25, "aop_cr": 0.35, "months_raw": {"april": 0.0175, "may": 0.0175, "june": 0.0175, "july": 0.0292, "august": 0.0292, "september": 0.0292, "october": 0.0408, "november": 0.0408, "december": 0.0408, "january": 0.0292, "february": 0.0292, "march": 0.0292}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "MMTC", "win_pct": 0.18, "aop_cr": 0.0, "months_raw": {"april": 0.0, "may": 0.0, "june": 0.0, "july": 0.0, "august": 0.0, "september": 0.0, "october": 0.0, "november": 0.0, "december": 0.0, "january": 0.0, "february": 0.0, "march": 0.0}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "OLX India", "win_pct": 0.25, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Medanta The Medicity", "win_pct": 0.28, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Dhanuka Agritech", "win_pct": 0.3, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "E4E / Savista Global", "win_pct": 0.25, "aop_cr": 0.0, "months_raw": {"april": 0.0, "may": 0.0, "june": 0.0, "july": 0.0, "august": 0.0, "september": 0.0, "october": 0.0, "november": 0.0, "december": 0.0, "january": 0.0, "february": 0.0, "march": 0.0}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Urban Company", "win_pct": 0.25, "aop_cr": 0.0, "months_raw": {"april": 0.0, "may": 0.0, "june": 0.0, "july": 0.0, "august": 0.0, "september": 0.0, "october": 0.0, "november": 0.0, "december": 0.0, "january": 0.0, "february": 0.0, "march": 0.0}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "CP Wholesale India", "win_pct": 0.25, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "AWFIS", "win_pct": 0.28, "aop_cr": 0.35, "months_raw": {"april": 0.0175, "may": 0.0175, "june": 0.0175, "july": 0.0292, "august": 0.0292, "september": 0.0292, "october": 0.0408, "november": 0.0408, "december": 0.0408, "january": 0.0292, "february": 0.0292, "march": 0.0292}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "BharatPe", "win_pct": 0.25, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Varun Group", "win_pct": 0.22, "aop_cr": 0.4, "months_raw": {"april": 0.02, "may": 0.02, "june": 0.02, "july": 0.0333, "august": 0.0333, "september": 0.0333, "october": 0.0467, "november": 0.0467, "december": 0.0467, "january": 0.0333, "february": 0.0333, "march": 0.0333}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Delhi Waste Management", "win_pct": 0.25, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Cashify", "win_pct": 0.3, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "SGT University", "win_pct": 0.28, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Louis Dreyfus Commodities", "win_pct": 0.25, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Qualfon Technology Support", "win_pct": 0.25, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Caparo Group India", "win_pct": 0.22, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Estee Advisors", "win_pct": 0.38, "aop_cr": 10.0, "months_raw": {"april": 0.5, "may": 0.5, "june": 0.5, "july": 0.833, "august": 0.833, "september": 0.833, "october": 1.167, "november": 1.167, "december": 1.167, "january": 0.833, "february": 0.833, "march": 0.833}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Brookfield India Office Parks", "win_pct": 0.25, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Flender Drives", "win_pct": 0.35, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Relaxo Footwears", "win_pct": 0.25, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "ANANT RAJ LIMITED", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "DEGANIA MEDICAL DEVICES", "win_pct": 0.25, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "Denso International India", "win_pct": 0.35, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "DSY Creations", "win_pct": 0.25, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "HL Mando Anand", "win_pct": 0.3, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "Joyson Anand Abhishek Safety", "win_pct": 0.2, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "MUNJAL KIRIU INDUSTRIES", "win_pct": 0.25, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "Ambrane India Pvt Ltd", "win_pct": 0.6, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}}
-]
+      for (const label of labels) {
+        const safeLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-# ---------------------------------------------------------------------------
-# SALARY API
-# ---------------------------------------------------------------------------
-@app.route("/api/salary", methods=["GET"])
-def get_salary():
-    viewer_email = _normalize_email(request.args.get("viewer_email") or "")
-    if not viewer_email:
-        return jsonify({})
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT salary_data FROM user_salary WHERE lower(email)=lower(%s)", (viewer_email,))
-            row = cur.fetchone()
-            if row:
-                d = row.get("salary_data") or {}
-                if isinstance(d, str):
-                    try: d = json.loads(d)
-                    except: d = {}
-                return jsonify(d)
-            return jsonify({})
-    finally:
-        conn.close()
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          const labelRegex = new RegExp(`^\\**\\s*${safeLabel}\\s*\\**\\s*:?\\s*(.*)$`, 'i');
+          const match = line.match(labelRegex);
 
-@app.route("/api/salary", methods=["POST"])
-def save_salary():
-    data = request.get_json(silent=True) or {}
-    viewer_email = _normalize_email(data.get("viewer_email") or "")
-    if not viewer_email:
-        return jsonify({"error": "viewer_email required"}), 400
-    salary_data = {k: v for k, v in data.items() if k not in {"viewer_email", "viewer_role"}}
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO user_salary (email, salary_data, updated_at) VALUES (%s, %s::jsonb, now()) ON CONFLICT (email) DO UPDATE SET salary_data=EXCLUDED.salary_data, updated_at=now()",
-                (viewer_email, json.dumps(salary_data))
-            )
-        conn.commit()
-        return jsonify({"status": "ok"})
-    finally:
-        conn.close()
+          if (match) {
+            const inlineValue = cleanExtractedValue(match[1] || '');
+            if (inlineValue) return inlineValue;
 
-
-# ---------------------------------------------------------------------------
-# REPORTS TEAM
-# ---------------------------------------------------------------------------
-@app.route("/api/reports/team", methods=["GET"])
-def reports_team():
-    viewer_role = (request.args.get("viewer_role") or "").strip().lower()
-    if not _is_supervisor(viewer_role):
-        return jsonify({"error": "supervisor only"}), 403
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, email, name, role FROM users WHERE role IN ('account_manager','presales') ORDER BY name")
-            return jsonify(cur.fetchall())
-    finally:
-        conn.close()
-
-
-# ---------------------------------------------------------------------------
-# KRA REPORT
-# ---------------------------------------------------------------------------
-@app.route("/api/reports/kra", methods=["GET"])
-def kra_report():
-    viewer_email = _normalize_email(request.args.get("viewer_email") or "")
-    viewer_role  = (request.args.get("viewer_role") or "account_manager").strip().lower()
-    target_email = _normalize_email(request.args.get("target_email") or viewer_email)
-    fy_year      = (request.args.get("fy_year") or "2025-26").strip()
-    quarter      = (request.args.get("quarter") or "Q1").strip().upper()
-
-    if not _is_supervisor(viewer_role) and viewer_email != target_email:
-        return jsonify({"error": "not authorized"}), 403
-
-    qmonths = {"Q1":["april","may","june"],"Q2":["july","august","september"],"Q3":["october","november","december"],"Q4":["january","february","march"]}
-    q_frac  = {"Q1":0.15,"Q2":0.25,"Q3":0.35,"Q4":0.25}
-    months  = qmonths.get(quarter, ["april","may","june"])
-    frac    = q_frac.get(quarter, 0.15)
-
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-
-            # PRESALES KRA
-            if viewer_role == "presales" or "vinod" in target_email:
-                cur.execute("""SELECT COUNT(*) AS total,
-                    COUNT(CASE WHEN lower(workflow_stage) IN ('won','closed won') THEN 1 END) AS won,
-                    COUNT(CASE WHEN final_pricing_proposal IS NOT NULL AND final_pricing_proposal<>'' THEN 1 END) AS proposals,
-                    COALESCE(SUM(value),0) AS pipeline
-                    FROM opportunities WHERE lower(assigned_presales)=lower(%s)""", (target_email,))
-                r = cur.fetchone() or {}
-                proposals = int(r.get("proposals") or 0)
-                won_opps  = int(r.get("won") or 0)
-                pipeline  = float(r.get("pipeline") or 0) / 10000000
-                win_rate  = round(won_opps/proposals*100,1) if proposals > 0 else 0
-                cur.execute("SELECT COUNT(*) AS c FROM opportunities WHERE lower(assigned_presales)=lower(%s) AND presales_architecture IS NOT NULL AND presales_architecture<>''", (target_email,))
-                pocs = int((cur.fetchone() or {}).get("c") or 0)
-                return jsonify({"role":"presales","target_email":target_email,"quarter":quarter,"fy_year":fy_year,
-                    "kras":[
-                        {"id":"win_rate","name":"Proposal & RFP Win Rate","weight":30,"target":">=75% win rate","actual_label":f"{win_rate}% ({won_opps} won / {proposals} submitted)","actual_value":win_rate,"target_value":75,"unit":"%","achievement_pct":min(round(win_rate/75*100,1) if proposals else 0,150)},
-                        {"id":"solution_design","name":"Solution Design & Technical Accuracy","weight":25,"target":"<2 revision cycles; >=90% BOQ accuracy","actual_label":f"{pocs} architectures submitted","actual_value":pocs,"target_value":None,"unit":"count","achievement_pct":None,"manual":True},
-                        {"id":"pipeline","name":"Revenue Pipeline Contribution","weight":10,"target":">=12 POCs/demos per quarter","actual_label":f"{pocs} POCs; Pipeline Rs{pipeline:.1f}Cr","actual_value":pocs,"target_value":12,"unit":"POCs","achievement_pct":min(round(pocs/12*100,1),150)},
-                        {"id":"expertise","name":"Product & Technology Expertise","weight":10,"target":">=3 certs/year; 40hrs training/year","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
-                        {"id":"collaboration","name":"Cross-functional Collaboration","weight":15,"target":"Stakeholder feedback; quarterly review","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
-                        {"id":"innovation","name":"Innovation & Thought Leadership","weight":10,"target":"COE lab setup; case studies","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
-                    ]})
-
-            # ACCOUNT MANAGER KRA
-            cur.execute("SELECT COALESCE(SUM(value),0) AS won FROM opportunities WHERE lower(owner)=lower(%s) AND lower(workflow_stage) IN ('won','closed won')", (target_email,))
-            won_cr = float((cur.fetchone() or {}).get("won") or 0) / 10000000
-
-            # Build quarter sum from flat columns, multiply by win_pct (stored in target_growth)
-            q_month_map = {"Q1":["apr","may","jun"],"Q2":["jul","aug","sep"],"Q3":["oct","nov","dec"],"Q4":["jan","feb","mar"]}
-            q_prefixes = q_month_map.get(quarter, ["apr","may","jun"])
-            month_sum_expr = " + ".join([f"COALESCE(p.{px}_hardware,0)+COALESCE(p.{px}_software,0)+COALESCE(p.{px}_managed_services,0)" for px in q_prefixes])
-            cur.execute(f"""
-                SELECT COALESCE(SUM(({month_sum_expr}) * COALESCE(p.target_growth, 1)), 0) AS q_target
-                FROM aop_plans p
-                WHERE p.fy_year=%s AND lower(p.account_manager)=lower(%s)
-            """, (fy_year, target_email))
-            q_target = round(float((cur.fetchone() or {}).get("q_target") or 0), 4)
-            rev_ach   = min(round(won_cr/q_target*100,1) if q_target > 0 else 0, 150)
-
-            cur.execute("SELECT COUNT(DISTINCT a.id) AS total FROM accounts a JOIN users u ON u.id=a.account_manager_id WHERE lower(u.email)=lower(%s)", (target_email,))
-            total_accts = int((cur.fetchone() or {}).get("total") or 0)
-            cur.execute("SELECT COUNT(DISTINCT c.account_id) AS covered FROM contacts c JOIN accounts a ON CAST(a.id AS TEXT)=c.account_id JOIN users u ON u.id=a.account_manager_id WHERE lower(u.email)=lower(%s)", (target_email,))
-            covered_accts = int((cur.fetchone() or {}).get("covered") or 0)
-            cov_pct = round(covered_accts/total_accts*100,1) if total_accts > 0 else 0
-
-            cur.execute("SELECT COUNT(DISTINCT o.account_id) AS c FROM opportunities o JOIN accounts a ON CAST(a.id AS TEXT)=o.account_id JOIN users u ON u.id=a.account_manager_id WHERE lower(u.email)=lower(%s) AND lower(o.workflow_stage) IN ('won','closed won')", (target_email,))
-            new_act = int((cur.fetchone() or {}).get("c") or 0)
-            new_act_ach = min(round(new_act/6*100,1), 150)
-
-            cur.execute("SELECT COALESCE(SUM(value),0) AS pipe FROM opportunities WHERE lower(owner)=lower(%s) AND lower(workflow_stage) NOT IN ('won','closed won','lost','closed lost')", (target_email,))
-            pipe_cr     = float((cur.fetchone() or {}).get("pipe") or 0) / 10000000
-            pipe_target = q_target * 3
-            pipe_ach    = min(round(pipe_cr/pipe_target*100,1) if pipe_target > 0 else 0, 150)
-
-            cur.execute("SELECT COUNT(*) AS c FROM opportunities WHERE lower(owner)=lower(%s) AND value>=10000000", (target_email,))
-            qual     = int((cur.fetchone() or {}).get("c") or 0)
-            qual_ach = min(round(qual/9*100,1), 150)
-
-            return jsonify({"role":"account_manager","target_email":target_email,"quarter":quarter,"fy_year":fy_year,
-                "q_target_cr":round(q_target,2),"won_value_cr":round(won_cr,2),
-                "kras":[
-                    {"id":"revenue","name":"Revenue & Sales Target Achievement","weight":25,"target":f"Rs{q_target:.2f}Cr ({quarter})","actual_label":f"Rs{won_cr:.2f}Cr won","actual_value":won_cr,"target_value":q_target,"unit":"Cr","achievement_pct":rev_ach},
-                    {"id":"account_coverage","name":"Account Coverage","weight":40,"target":"100% accounts with contacts in CRM","actual_label":f"{covered_accts}/{total_accts} accounts ({cov_pct}%)","actual_value":cov_pct,"target_value":100,"unit":"%","achievement_pct":min(cov_pct,150)},
-                    {"id":"new_account","name":"New Account Activation","weight":20,"target":"6 new accounts with approved PO","actual_label":f"{new_act} accounts with PO","actual_value":new_act,"target_value":6,"unit":"accounts","achievement_pct":new_act_ach},
-                    {"id":"pipeline","name":"Pipeline & Opportunity Management","weight":10,"target":f"3x quota (Rs{pipe_target:.1f}Cr)","actual_label":f"Rs{pipe_cr:.2f}Cr pipeline","actual_value":pipe_cr,"target_value":pipe_target,"unit":"Cr","achievement_pct":pipe_ach},
-                    {"id":"qual_opps","name":"Qualified Opportunity Creation","weight":5,"target":"Min 3 opps/month >=Rs1Cr","actual_label":f"{qual} qualified opps","actual_value":qual,"target_value":9,"unit":"opps","achievement_pct":qual_ach},
-                ]})
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
-    finally:
-        conn.close()
-
-
-# ---------------------------------------------------------------------------
-# INCENTIVE REPORT
-# ---------------------------------------------------------------------------
-@app.route("/api/reports/incentive", methods=["GET"])
-def incentive_report():
-    viewer_email = _normalize_email(request.args.get("viewer_email") or "")
-    viewer_role  = (request.args.get("viewer_role") or "account_manager").strip().lower()
-    target_email = _normalize_email(request.args.get("target_email") or viewer_email)
-    quarter      = (request.args.get("quarter") or "Q1").strip().upper()
-    if not _is_supervisor(viewer_role) and viewer_email != target_email:
-        return jsonify({"error": "not authorized"}), 403
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT salary_data FROM user_salary WHERE lower(email)=lower(%s)", (target_email,))
-            row = cur.fetchone()
-            sal = {}
-            if row:
-                d = row.get("salary_data") or {}
-                if isinstance(d, str):
-                    try: d = json.loads(d)
-                    except: d = {}
-                sal = d
-        fixed = float(sal.get("fixed_annual_lakhs") or 0)
-        var   = float(sal.get("variable_annual_lakhs") or 0)
-        qfrac = {"Q1":0.15,"Q2":0.25,"Q3":0.35,"Q4":0.25}.get(quarter, 0.15)
-        q_var = round(var * qfrac, 2)
-        slabs = [
-            {"label":"Below Threshold","min":0,"max":84.99,"payout_pct":0},
-            {"label":"Threshold","min":85,"max":99.99,"payout_pct":70},
-            {"label":"On Target","min":100,"max":109.99,"payout_pct":100},
-            {"label":"Stretch","min":110,"max":119.99,"payout_pct":120},
-            {"label":"Accelerator","min":120,"max":999,"payout_pct":150},
-        ]
-        return jsonify({"target_email":target_email,"quarter":quarter,"fixed_annual_lakhs":fixed,
-            "variable_annual_lakhs":var,"quarterly_variable_lakhs":q_var,
-            "salary_configured":bool(sal),"slabs":slabs})
-    finally:
-        conn.close()
-
-
-# ---------------------------------------------------------------------------
-# AOP BULK IMPORT
-# ---------------------------------------------------------------------------
-@app.route("/api/aop/bulk-import", methods=["POST"])
-def aop_bulk_import():
-    data = request.get_json(silent=True) or {}
-    viewer_role = (data.get("viewer_role") or "").strip().lower()
-    if not _is_supervisor(viewer_role):
-        return jsonify({"error": "supervisor only"}), 403
-    rows = data.get("rows") or []
-    if not rows:
-        rows = AOP_RAW_DATA
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            ok = skipped = 0
-            month_map = {
-                "april":"apr","may":"may","june":"jun","july":"jul","august":"aug","september":"sep",
-                "october":"oct","november":"nov","december":"dec","january":"jan","february":"feb","march":"mar"
+            const collected = [];
+            for (let j = i + 1; j < lines.length; j++) {
+              const next = lines[j].trim();
+              if (!next) break;
+              if (/^\**[A-Z][A-Z0-9\s\/&().,\-]{2,}\**\s*:?\s*$/.test(next)) break;
+              collected.push(cleanExtractedValue(next));
             }
-            for row in rows:
-                account_name = (row.get("account_name") or "").strip()
-                am_email     = (row.get("am_email") or "").strip().lower()
-                win_pct      = float(row.get("win_pct") or 0)
-                aop_cr       = float(row.get("aop_cr") or 0)
-                months_raw   = row.get("months_raw") or {}
-                if not account_name or not am_email:
-                    skipped += 1; continue
+            if (collected.length) return collected.join(' ');
+          }
+        }
+      }
 
-                # Find account
-                cur.execute("SELECT id FROM accounts WHERE lower(account_name)=lower(%s) LIMIT 1", (account_name,))
-                acc = cur.fetchone()
-                if not acc:
-                    skipped += 1; continue
+      return '';
+    }
 
-                account_id = str(acc["id"])
-                # Build flat column values — distribute AOP evenly across HW/SW/SV (100%/0%/0% default since we only have total)
-                # Store total in hardware column, win_pct in target_growth
-                col_vals = {}
-                for mname, prefix in month_map.items():
-                    raw = float(months_raw.get(mname) or 0)
-                    col_vals[f"{prefix}_hardware"] = round(raw, 6)
-                    col_vals[f"{prefix}_software"] = 0.0
-                    col_vals[f"{prefix}_managed_services"] = 0.0
+    const poNum = extractedJson?.po_number || extractField(extracted, 'PO NUMBER', 'PO NO', 'ORDER NUMBER');
+    const poVal = extractedJson?.total_po_value_inr || extractField(extracted, 'TOTAL PO VALUE (₹)', 'TOTAL PO VALUE', 'TOTAL VALUE', 'PO VALUE', 'AMOUNT');
+    const payTerms = extractedJson?.payment_terms || extractMultilineField(extracted, 'PAYMENT TERMS');
+    const vendor = extractedJson?.vendor_distributor || extractField(extracted, 'VENDOR / DISTRIBUTOR', 'VENDOR', 'DISTRIBUTOR');
+    const oem = extractedJson?.oem_brand || extractField(extracted, 'OEM / BRAND MENTIONED', 'OEM / BRAND', 'OEM', 'BRAND');
+    const site = extractedJson?.delivery_site_address || extractMultilineField(extracted, 'DELIVERY / SITE ADDRESS', 'SITE ADDRESS', 'DELIVERY ADDRESS');
+    const billing = extractedJson?.billing_address || extractMultilineField(extracted, 'BILLING ADDRESS');
+    const scope = extractedJson?.line_items_scope || extractMultilineField(extracted, 'LINE ITEMS / SCOPE OF SUPPLY', 'SCOPE OF SUPPLY', 'LINE ITEMS');
+    const delivDate = extractedJson?.expected_delivery_date || extractField(extracted, 'DELIVERY TIMELINE / EXPECTED DATE', 'DELIVERY TIMELINE', 'EXPECTED DATE', 'DELIVERY DATE');
 
-                cols = ", ".join(col_vals.keys())
-                placeholders = ", ".join(["%s"] * len(col_vals))
-                update_set = ", ".join([f"{k}=EXCLUDED.{k}" for k in col_vals.keys()])
-                if not col_vals:
-                    skipped += 1
-                    continue
-                cur.execute(f"""
-                    INSERT INTO aop_plans (account_id, account_name, account_manager, fy_year,
-                        current_revenue, target_growth, updated_by, created_at, updated_at, {cols})
-                    VALUES (%s, %s, %s, '2025-26', %s, %s, %s, now(), now(), {placeholders})
-                    ON CONFLICT (account_id, fy_year) DO UPDATE SET
-                        account_manager=EXCLUDED.account_manager,
-                        current_revenue=EXCLUDED.current_revenue,
-                        target_growth=EXCLUDED.target_growth,
-                        updated_by=EXCLUDED.updated_by,
-                        updated_at=now(), {update_set}
-                """, (account_id, account_name, am_email, aop_cr, win_pct, am_email, *col_vals.values()))
-                ok += 1
-        conn.commit()
-        return jsonify({"status":"ok","imported":ok,"skipped":skipped})
-    except Exception as exc:
-        return jsonify({"error":str(exc)}), 500
-    finally:
-        conn.close()
+    if (poNum && document.getElementById('wonPoNumber')) document.getElementById('wonPoNumber').value = poNum;
+    if (payTerms && document.getElementById('wonPoPaymentTerms')) document.getElementById('wonPoPaymentTerms').value = payTerms;
+    if (vendor && document.getElementById('wonPoVendor')) document.getElementById('wonPoVendor').value = vendor;
+    if (oem && document.getElementById('wonPoOem')) document.getElementById('wonPoOem').value = oem;
+    if ((site || billing) && document.getElementById('wonPoSite')) document.getElementById('wonPoSite').value = site || billing;
+    if (scope && document.getElementById('wonPoDescription')) document.getElementById('wonPoDescription').value = scope;
 
-if __name__ == "__main__":
-    init_db()
-    port = int(os.environ.get("PORT", "8001"))
-    print(f"Simple CRM backend running on port {port}")
-    print("DB host:", urlparse(DATABASE_URL).hostname)
-    app.run(host="0.0.0.0", port=port, debug=True)
+    // Try to parse PO value
+    if (poVal) {
+      const normalized = poVal.replace(/₹/g, '').replace(/,/g, '').trim();
+      const lakhMatch = normalized.match(/^([\d.]+)\s*L$/i);
+      const croreMatch = normalized.match(/^([\d.]+)\s*Cr$/i);
+      const numMatch = normalized.match(/[\d.]+/);
+
+      let v = NaN;
+      if (lakhMatch) v = parseFloat(lakhMatch[1]) * 100000;
+      else if (croreMatch) v = parseFloat(croreMatch[1]) * 10000000;
+      else if (numMatch) v = parseFloat(numMatch[0]);
+
+      if (!isNaN(v) && document.getElementById('wonPoValue')) {
+        document.getElementById('wonPoValue').value = Math.round(v);
+      }
+    }
+
+    if (delivDate && document.getElementById('wonPoDelivery')) {
+      const dateMatch = delivDate.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+      if (dateMatch) {
+        const [, d, m, y] = dateMatch;
+        const yr = y.length === 2 ? `20${y}` : y;
+        document.getElementById('wonPoDelivery').value = `${yr}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+      }
+    }
+
+  } catch(err) {
+    const statusEl = document.getElementById('wonPoStatus');
+    const contentEl = document.getElementById('wonPoContent');
+    if (statusEl) statusEl.innerHTML = `<div style="color:#f87171;font-weight:600">⚠️ AI extraction failed: ${err.message}<br><span style="font-size:0.85em;opacity:0.8">Check that GROQ_API_KEY is set on the server. You can still fill the form manually below.</span></div>`;
+    if (contentEl) contentEl.style.display = 'block';
+    if (document.getElementById('wonPoExtracted')) document.getElementById('wonPoExtracted').textContent = 'AI extraction failed. Please fill manually.';
+  }
+}
+
+function wonPoFillAccount(sel) {
+  const opt = sel.options[sel.selectedIndex];
+  document.getElementById('wonPoAccountId').value = opt.dataset.accountId || '';
+  document.getElementById('wonPoAccountName').value = opt.dataset.accountName || '';
+}
+
+function saveWonPOFromScan(e) {
+  e.preventDefault();
+  const fd = Object.fromEntries(new FormData(e.target));
+  loadPurchaseOrders();
+
+  const opp = state.data.opportunities.find(o => o.id === fd.opportunityId);
+  const nowIso = new Date().toISOString();
+
+  const po = normalizePOFromStorage({
+    id: Date.now().toString() + Math.random().toString().slice(2),
+    poNumber: fd.poNumber || '',
+    poType: fd.poType || '',
+    stage: 'Pending Presales+Finance Approval',
+    opportunityId: fd.opportunityId || '',
+    accountId: fd.accountId || opp?.accountId || '',
+    accountName: fd.accountName || '',
+    vendorName: fd.vendorName || '',
+    oem: fd.oem || '',
+    description: fd.description || '',
+    value: parseFloat(fd.value || 0),
+    vendorValue: parseFloat(fd.vendorValue || 0),
+    paymentTermsCustomer: fd.paymentTermsCustomer || '',
+    expectedDelivery: fd.expectedDelivery || '',
+    siteAddress: fd.siteAddress || '',
+    notes: fd.notes || '',
+    scannedPOData: fd.wonPoData || '',
+    scannedPOImage: fd.wonPoImage || '',
+    owner: currentUser,
+    createdDate: nowIso,
+    modifiedDate: nowIso
+  });
+
+  state.data.purchase_orders.push(po);
+  savePurchaseOrders();
+  closeModal();
+  state.activeTab = 'purchase';
+  render();
+  alert(`✅ Purchase Order created from Won PO scan!\n\nPO is now in approval queue.\nPresales (vinod.v) and Finance (rakesh.uniyal) can approve in parallel.`);
+} 
+ async function handleRFPScan(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  event.target.value = '';
+
+  document.getElementById('modal').innerHTML = `
+  <div class="modal-content">
+    <h2>📄 RFP Scanner</h2>
+    <div id="rfpStatus" style="padding:16px;background:rgba(255,255,255,0.12);border-radius:8px;margin-bottom:16px">
+      <div style="font-weight:600;margin-bottom:8px">🔄 Reading RFP...</div>
+      <div style="font-size:0.85em;opacity:0.8">AI is extracting all details. This takes 10-15 seconds.</div>
+    </div>
+    <div id="rfpContent" style="display:none">
+      <div id="rfpExtracted" style="background:rgba(0,0,0,0.2);padding:14px;border-radius:8px;font-size:0.85em;margin-bottom:16px;white-space:pre-wrap;max-height:300px;overflow-y:auto"></div>
+      <h3 style="margin-bottom:10px">Create Opportunity from RFP</h3>
+      <form onsubmit="saveRFPOpportunity(event)">
+        <input class="input" required name="name" placeholder="Opportunity Name *">
+        <select class="input" required name="accountId">
+          <option value="">Select Account *</option>
+          ${getFilteredData().accounts.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}
+        </select>
+        <input class="input" required type="number" name="value" placeholder="Estimated Value (₹) *">
+        <select class="input" required name="stage">
+          <option value="Discovery">Discovery</option>
+          <option value="Proposal">Proposal</option>
+        </select>
+        <input id="rfpHiddenData" type="hidden" name="rfpData">
+        <input id="rfpHiddenImage" type="hidden" name="rfpImage">
+        <div style="margin-top:16px;display:flex;gap:8px">
+          <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-success">Create Opportunity with RFP</button>
+        </div>
+      </form>
+    </div>
+    <div style="margin-top:10px">
+      <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+    </div>
+  </div>`;
+  document.getElementById('modal').classList.add('show');
+
+  const reader = new FileReader();
+  reader.onload = async function(e) {
+    const base64 = e.target.result;
+    try {
+      const rfpPrompt = `Extract ALL details from this RFP (Request for Proposal) document and return a structured summary with these sections:
+
+RFP NUMBER: (if present)
+ISSUING ORGANIZATION: 
+DATE ISSUED:
+SUBMISSION DEADLINE:
+ESTIMATED VALUE / BUDGET: (in INR if stated)
+SCOPE OF WORK: (detailed - what exactly is being requested, list all items/services)
+TECHNICAL REQUIREMENTS: (hardware, software, certifications, OEM preferences)
+COMPLIANCE / ELIGIBILITY CRITERIA:
+EVALUATION CRITERIA: (how bids will be scored)
+KEY CONTACTS: (name, email, phone if present)
+DELIVERY TIMELINE:
+PAYMENT TERMS:
+SPECIAL CONDITIONS OR NOTES:
+WIN STRATEGY HINTS: (any clues about incumbent, preferences, or evaluation weightage)
+
+Be thorough and extract every detail visible in the document.`;
+      const response = await fetch(`${CRM_API_BASE}/api/ai-extract`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image_b64: base64.split(',')[1] || base64,
+          media_type: file.type === 'application/pdf' ? 'application/pdf' : 'image/jpeg',
+          prompt: rfpPrompt
+        })
+      });
+      const data = await response.json();
+      const extracted = data?.text || 'Could not extract details.';
+
+      document.getElementById('rfpStatus').style.display = 'none';
+      document.getElementById('rfpContent').style.display = 'block';
+      document.getElementById('rfpExtracted').textContent = extracted;
+      document.getElementById('rfpHiddenData').value = extracted;
+      document.getElementById('rfpHiddenImage').value = base64;
+
+    } catch(err) {
+      document.getElementById('rfpStatus').innerHTML = `
+        <div style="color:#f87171;font-weight:600">⚠ AI extraction failed</div>
+        <div style="font-size:0.85em;margin-top:6px">${err.message}</div>
+        <div style="font-size:0.85em;margin-top:6px">You can still create the opportunity manually.</div>`;
+      document.getElementById('rfpContent').style.display = 'block';
+      document.getElementById('rfpHiddenImage').value = base64;
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+async function saveRFPOpportunity(e) {
+  e.preventDefault();
+  const fd = Object.fromEntries(new FormData(e.target));
+  const rfpData = fd.rfpData || '';
+  const rfpImage = fd.rfpImage || '';
+  const nowIso = new Date().toISOString();
+  const oppId = `opp_${Date.now()}`;
+
+  // Auto-populate intake fields from RFP extracted text
+  function extractSection(text, label) {
+    const regex = new RegExp(`${label}[:\\s]+([\\s\\S]*?)(?=\\n[A-Z ]+:|$)`, 'i');
+    const match = text.match(regex);
+    return (match?.[1] || '').trim().slice(0, 500);
+  }
+
+  const payload = {
+    id: oppId,
+    name: fd.name,
+    account_id: fd.accountId,
+    value: parseFloat(fd.value || 0),
+    stage: fd.stage || 'Discovery',
+    owner: currentUser,
+    sales_owner: currentUser,
+    workflow_stage: 'Sales Review',
+    sales_submitted_at: nowIso,
+    assignment_due_at: addHours(nowIso, 4),
+    presales_due_at: addHours(nowIso, 72),
+    // Populate intake from RFP
+    intake_problem_statement: extractSection(rfpData, 'SCOPE OF WORK') || 'See RFP scan attached',
+    intake_why_now: extractSection(rfpData, 'SUBMISSION DEADLINE') ? `RFP deadline: ${extractSection(rfpData, 'SUBMISSION DEADLINE')}` : 'RFP received — deadline driven',
+    intake_business_impact: extractSection(rfpData, 'ESTIMATED VALUE') || extractSection(rfpData, 'BUDGET') || fd.value,
+    intake_current_state: extractSection(rfpData, 'TECHNICAL REQUIREMENTS') || 'See RFP scan',
+    intake_budget_range: extractSection(rfpData, 'ESTIMATED VALUE') || extractSection(rfpData, 'BUDGET') || fd.value,
+    intake_decision_timeline: extractSection(rfpData, 'SUBMISSION DEADLINE') || extractSection(rfpData, 'DELIVERY TIMELINE') || 'As per RFP',
+    intake_in_scope: extractSection(rfpData, 'SCOPE OF WORK'),
+    intake_compliance_requirements: extractSection(rfpData, 'COMPLIANCE') || extractSection(rfpData, 'ELIGIBILITY'),
+    intake_competitors: extractSection(rfpData, 'WIN STRATEGY HINTS'),
+    intake_win_strategy: extractSection(rfpData, 'EVALUATION CRITERIA'),
+    intake_pain_points: extractSection(rfpData, 'SPECIAL CONDITIONS'),
+    intake_key_stakeholders: extractSection(rfpData, 'KEY CONTACTS'),
+    sales_comments: `RFP scanned on ${new Date().toLocaleDateString()}. Full RFP details auto-extracted below.\n\n${rfpData.slice(0, 1000)}`,
+    requirements: rfpData.slice(0, 2000),
+  };
+
+  try {
+    await upsertOpportunityToApi(payload);
+    state.data.opportunities = await fetchOpportunitiesFromApi();
+
+    // Store RFP scan in localStorage against this opp
+    if (rfpImage) {
+      localStorage.setItem(`rfp_scan_${oppId}`, JSON.stringify({ image: rfpImage, data: rfpData }));
+    }
+
+    saveData();
+    closeModal();
+    state.activeTab = 'opportunities';
+    render();
+    alert(`✅ Opportunity created from RFP!\n\nAll intake fields have been pre-filled from the RFP. Review and edit before sending to Presales.`);
+  } catch(err) {
+    alert(`Could not save opportunity: ${err.message}`);
+  }
+}
+ function exportOpportunitiesCsv() {
+  const filtered = getFilteredData();
+  const opps = filtered.opportunities;
+  if (!opps.length) { alert('No opportunities to export.'); return; }
+  const rows = opps.map(o => {
+    const account = state.data.accounts.find(a => a.id === o.accountId);
+    const win = getWinProbSafe(o);
+    return [
+      o.id, o.name, account?.name || '', o.value,
+      (o.value / 100000).toFixed(1) + 'L',
+      o.stage, o.workflowStage || '',
+      o.salesOwner || o.owner || '',
+      o.assignedPresales || '', o.assignedPurchase || '',
+      win + '%', Math.round((o.value || 0) * win / 100),
+      o.intakeProblemStatement || '', o.intakeWhyNow || '',
+      o.intakeBusinessImpact || '', o.intakeBudgetRange || '',
+      o.intakeDecisionTimeline || '', o.requirements || '',
+      o.boq ? 'Yes' : 'No', o.purchaseCosting ? 'Yes' : 'No',
+      o.finalPricingProposal ? 'Yes' : 'No',
+      fmtDate(o.createdDate), fmtDate(o.modifiedDate)
+    ];
+    });
+    rows.unshift([
+      'ID','Opportunity','Account','Value (₹)','Value (L)',
+      'Stage','Workflow Stage','Sales Owner',
+      'Presales','Purchase',
+      'Win %','Weighted Value (₹)',
+      'Problem Statement','Why Now',
+      'Business Impact','Budget Range',
+      'Decision Timeline','Requirements',
+      'BOQ','Costing','Final Proposal',
+      'Created','Updated'
+    ]);
+    downloadCSV(`opportunities_${new Date().toISOString().slice(0,10)}.csv`, rows);
+   
+  }
+  
+  // --- A11y autofix for form controls (id/name + label-for) ---
+  function fixFormA11y(root = document) {
+    const controls = root.querySelectorAll('input, select, textarea');
+  
+    controls.forEach((el, idx) => {
+      if (!el.id) el.id = `fld_${Date.now()}_${idx}`;
+      if (!el.name) el.name = el.id;
+    });
+  
+    const labels = root.querySelectorAll('label');
+    labels.forEach((label) => {
+      if (label.htmlFor) return;
+      if (label.querySelector('input,select,textarea')) return;
+  
+      let target = label.nextElementSibling;
+      while (target && !target.matches?.('input,select,textarea')) {
+        target = target.nextElementSibling;
+      }
+  
+      if (!target) {
+        target = label.parentElement?.querySelector?.('input,select,textarea') || null;
+      }
+  
+      if (target) {
+        if (!target.id) target.id = `fld_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        if (!target.name) target.name = target.id;
+        label.htmlFor = target.id;
+      }
+    });
+  }
+  
+  window.addEventListener('load', () => {
+    fixFormA11y(document);
+  });
+  
+  const formFixObserver = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      m.addedNodes.forEach((n) => {
+        if (n.nodeType === 1) fixFormA11y(n);
+      });
+    }
+  });
+  formFixObserver.observe(document.body, { childList: true, subtree: true });
+  </script>
+
+<script>
+// ============================================================
+// REPORTS TAB — KRA, Incentive, AOP Import
+// ============================================================
+const isSupervisorFn = () => getUserRole() === 'supervisor' || (typeof isSupervisor !== 'undefined' && isSupervisor);
+
+let reportsState = {
+  kra: null, incentive: null, team: [], salary: {},
+  selectedUser: null, quarter: 'Q1', activeSection: 'kra',
+  loading: false, aopImportStatus: null, manualScores: {},
+};
+
+async function loadReportsData() {
+  const role = getUserRole();
+  const email = state.currentUser;
+  const sup = isSupervisorFn();
+  if (sup && reportsState.team.length === 0) {
+    try {
+      const r = await fetch(`${CRM_API_BASE}/api/reports/team?viewer_email=${encodeURIComponent(email)}&viewer_role=${encodeURIComponent(role)}`);
+      const d = await r.json();
+      if (Array.isArray(d)) { reportsState.team = d; render(); }
+    } catch(e) {}
+  }
+  if (!reportsState.selectedUser) reportsState.selectedUser = email;
+  const target = reportsState.selectedUser;
+  const q = reportsState.quarter;
+  const qs = `viewer_email=${encodeURIComponent(email)}&viewer_role=${encodeURIComponent(role)}&target_email=${encodeURIComponent(target)}&quarter=${q}&fy_year=2025-26`;
+  try {
+    const [kraRes, incRes, salRes] = await Promise.all([
+      fetch(`${CRM_API_BASE}/api/reports/kra?${qs}`),
+      fetch(`${CRM_API_BASE}/api/reports/incentive?${qs}`),
+      fetch(`${CRM_API_BASE}/api/salary?viewer_email=${encodeURIComponent(target)}&viewer_role=${encodeURIComponent(role)}`),
+    ]);
+    reportsState.kra = await kraRes.json();
+    reportsState.incentive = await incRes.json();
+    reportsState.salary = await salRes.json();
+    render();
+  } catch(e) { console.error('Reports load error', e); }
+}
+
+function renderReports() {
+  const role = getUserRole();
+  const sup = isSupervisorFn();
+  const sec = reportsState.activeSection;
+  const sections = sup ? ['kra','incentive','salary','aop-import']
+    : role === 'presales' ? ['kra']
+    : ['kra','incentive','salary'];
+  const labels = {kra:'KRA Scorecard', incentive:'Incentive Calculator', salary:'My Salary Setup', 'aop-import':'AOP Import'};
+
+  return `<div style="padding:16px;max-width:1000px;margin:0 auto">
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+    <h2 style="margin:0;color:white;font-size:1.3rem">📊 Reports & KRA</h2>
+    ${sup ? `<select onchange="reportsState.selectedUser=this.value;reportsState.kra=null;reportsState.incentive=null;loadReportsData()" style="padding:6px 10px;border-radius:6px;border:none;background:rgba(255,255,255,0.15);color:white">
+      ${reportsState.team.map(u=>`<option value="${u.email}" ${reportsState.selectedUser===u.email?'selected':''}>${u.name||u.email} (${u.role})</option>`).join('')}
+    </select>` : ''}
+    <select onchange="reportsState.quarter=this.value;reportsState.kra=null;loadReportsData()" style="padding:6px 10px;border-radius:6px;border:none;background:rgba(255,255,255,0.15);color:white">
+      ${['Q1','Q2','Q3','Q4'].map(q=>`<option value="${q}" ${reportsState.quarter===q?'selected':''}>${q} FY25-26</option>`).join('')}
+    </select>
+    <button class="btn" onclick="reportsState.kra=null;loadReportsData()">↻ Refresh</button>
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+    ${sections.map(s=>`<button onclick="reportsState.activeSection='${s}';render()" style="padding:8px 18px;border-radius:8px;border:none;cursor:pointer;font-weight:600;background:${sec===s?'white':'rgba(255,255,255,0.15)'};color:${sec===s?'#667eea':'white'}">${labels[s]}</button>`).join('')}
+  </div>
+  ${!reportsState.kra && sec!=='aop-import' && sec!=='salary' ? `<div style="color:white;opacity:0.7;text-align:center;padding:40px">Loading...</div>` :
+    sec==='kra' ? renderKraSection() :
+    sec==='incentive' ? renderIncentiveSection() :
+    sec==='salary' ? renderSalarySection() :
+    renderAopImportSection()}
+</div>`;
+}
+
+function kraColor(p){return p===null||p===undefined?'#94a3b8':p>=120?'#22c55e':p>=100?'#3b82f6':p>=85?'#f59e0b':'#ef4444';}
+function kraLabel(p){return p===null||p===undefined?'Manual Input':p>=120?'⭐ Accelerator':p>=110?'🚀 Stretch':p>=100?'✅ On Target':p>=85?'⚠️ Threshold':'❌ Below Threshold';}
+
+function overallKraScore(kras) {
+  const withScores = kras.map(k => {
+    const manual = reportsState.manualScores[k.id];
+    return {...k, achievement_pct: k.manual && manual !== undefined ? parseFloat(manual) : k.achievement_pct};
+  }).filter(k => k.achievement_pct !== null && k.achievement_pct !== undefined);
+  const tw = withScores.reduce((s,k)=>s+(k.weight||0),0);
+  return tw > 0 ? Math.round(withScores.reduce((s,k)=>s+(k.achievement_pct*k.weight),0)/tw*10)/10 : 0;
+}
+
+function renderKraSection() {
+  const kra = reportsState.kra;
+  if (!kra || kra.error) return `<div style="color:#fca5a5;padding:20px;background:rgba(255,255,255,0.08);border-radius:12px">⚠️ ${kra?.error||'No KRA data — AOP import may be needed first.'}</div>`;
+  const score = overallKraScore(kra.kras||[]);
+  return `
+<button onclick="printKraReport()" style="padding:8px 16px;border-radius:8px;border:none;background:white;color:#667eea;font-weight:600;cursor:pointer;margin-bottom:12px;display:block">🖨️ Print / Export PDF</button>
+<div style="background:rgba(255,255,255,0.08);border-radius:12px;padding:20px;margin-bottom:16px">
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+    <div>
+      <div style="color:rgba(255,255,255,0.6);font-size:0.82rem">${kra.target_email} · ${kra.quarter} · FY${kra.fy_year}</div>
+      <div style="color:white;font-size:1.05rem;font-weight:700;margin-top:4px">Overall: <span style="color:${kraColor(score)}">${score}%</span> <span style="font-size:0.82rem;font-weight:400">${kraLabel(score)}</span></div>
+      ${kra.q_target_cr ? `<div style="color:rgba(255,255,255,0.6);font-size:0.8rem">Quarter Target: ₹${kra.q_target_cr}Cr · Won: ₹${kra.won_value_cr||0}Cr</div>` : ''}
+    </div>
+    <div style="font-size:2.2rem;font-weight:800;color:${kraColor(score)}">${score}%</div>
+  </div>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px">
+${(kra.kras||[]).map(k=>{
+  const ms = reportsState.manualScores[k.id];
+  const pct = k.manual && ms!==undefined ? parseFloat(ms) : k.achievement_pct;
+  const bar = pct!==null&&pct!==undefined ? Math.min(pct,100) : 0;
+  return `<div style="background:rgba(255,255,255,0.08);border-radius:10px;padding:14px">
+    <div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:8px">
+      <div style="flex:1">
+        <div style="color:white;font-weight:600;font-size:0.92rem">${k.name} <span style="opacity:0.5;font-size:0.78rem">(${k.weight}% weight)</span></div>
+        <div style="color:rgba(255,255,255,0.55);font-size:0.78rem;margin-top:2px">Target: ${k.target}</div>
+        <div style="color:rgba(255,255,255,0.8);font-size:0.8rem;margin-top:2px">Actual: ${k.actual_label}</div>
+      </div>
+      <div style="text-align:right;min-width:100px">
+        ${k.manual && ms===undefined ? `
+          <div style="color:#94a3b8;font-size:0.75rem;margin-bottom:3px">Enter % score:</div>
+          <input type="number" min="0" max="150" placeholder="0–150" value="${ms||''}"
+            onchange="reportsState.manualScores['${k.id}']=this.value;render()"
+            style="width:72px;padding:4px 6px;border-radius:6px;border:1px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.1);color:white;text-align:center">
+        ` : `
+          <div style="font-size:1.25rem;font-weight:700;color:${kraColor(pct)}">${pct!==null&&pct!==undefined?pct+'%':'—'}</div>
+          <div style="font-size:0.72rem;color:rgba(255,255,255,0.55)">${kraLabel(pct)}</div>
+        `}
+      </div>
+    </div>
+    <div style="background:rgba(255,255,255,0.1);border-radius:4px;height:5px">
+      <div style="height:100%;width:${bar}%;background:${kraColor(pct)};border-radius:4px;transition:width 0.4s"></div>
+    </div>
+  </div>`;
+}).join('')}
+</div>`;
+}
+function printKraReport() {
+  const kra = reportsState.kra;
+  const score = overallKraScore(kra.kras || []);
+  const win = window.open('', '_blank');
+  win.document.write(`
+    <!DOCTYPE html><html><head><title>KRA Report</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 32px; color: #1a1a1a; max-width: 720px; margin: 0 auto; }
+      h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+      .meta { font-size: 13px; color: #666; margin-bottom: 24px; }
+      .summary { display: flex; gap: 32px; background: #f4f4f4; border-radius: 10px; padding: 16px 20px; margin-bottom: 24px; }
+      .summary-item label { font-size: 12px; color: #888; display: block; margin-bottom: 4px; }
+      .summary-item span { font-size: 28px; font-weight: 700; }
+      .kra-card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; }
+      .kra-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 10px; }
+      .kra-name { font-size: 14px; font-weight: 600; color: #1a1a1a; }
+      .kra-weight { font-size: 12px; color: #999; font-weight: 400; }
+      .kra-sub { font-size: 12px; color: #666; margin-top: 3px; }
+      .kra-pct { font-size: 20px; font-weight: 700; text-align: right; }
+      .kra-label { font-size: 11px; color: #999; text-align: right; margin-top: 2px; }
+      .bar-track { background: #e5e7eb; border-radius: 4px; height: 5px; }
+      .bar-fill { height: 100%; border-radius: 4px; }
+      @media print { body { padding: 16px; } }
+    </style>
+    </head><body>
+    <h1>KRA Report</h1>
+    <div class="meta">${kra.target_email} &nbsp;·&nbsp; ${kra.quarter} &nbsp;·&nbsp; FY${kra.fy_year} &nbsp;·&nbsp; Generated: ${new Date().toLocaleString()}</div>
+    <div class="summary">
+      <div class="summary-item">
+        <label>Overall KRA Score</label>
+        <span style="color:${kraColor(score)}">${score}%</span>
+      </div>
+      ${kra.q_target_cr ? `
+      <div class="summary-item">
+        <label>Quarter Target</label>
+        <span>₹${kra.q_target_cr}Cr</span>
+      </div>
+      <div class="summary-item">
+        <label>Won</label>
+        <span>₹${kra.won_value_cr || 0}Cr</span>
+      </div>` : ''}
+    </div>
+    ${(kra.kras || []).map(k => {
+      const ms = reportsState.manualScores[k.id];
+      const pct = k.manual && ms !== undefined ? parseFloat(ms) : k.achievement_pct;
+      const bar = pct !== null && pct !== undefined ? Math.min(pct, 100) : 0;
+      const displayPct = pct !== null && pct !== undefined ? pct + '%' : '—';
+      return `
+      <div class="kra-card">
+        <div class="kra-top">
+          <div>
+            <div class="kra-name">${k.name} <span class="kra-weight">(${k.weight}% weight)</span></div>
+            <div class="kra-sub">Target: ${k.target}</div>
+            <div class="kra-sub">Actual: ${k.actual_label}</div>
+          </div>
+          <div>
+            <div class="kra-pct" style="color:${kraColor(pct)}">${displayPct}</div>
+            <div class="kra-label">${kraLabel(pct)}</div>
+          </div>
+        </div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:${bar}%;background:${kraColor(pct)}"></div>
+        </div>
+      </div>`;
+    }).join('')}
+    <script>window.onload = function(){ window.print(); }<\/script>
+    </body></html>
+  `);
+  win.document.close();
+}
+function renderIncentiveSection() {
+  const inc = reportsState.incentive;
+  const kra = reportsState.kra;
+  if (!inc) return '<div style="color:white;opacity:0.7;padding:20px">Loading...</div>';
+  if (!inc.quarterly_variable_lakhs) return `<div style="background:rgba(255,255,255,0.08);border-radius:12px;padding:24px;color:white">
+    <div style="font-size:1.05rem;font-weight:600;margin-bottom:8px">⚙️ Salary not configured</div>
+    <div style="opacity:0.7;margin-bottom:12px">Set up your salary in the <b>My Salary Setup</b> tab first.</div>
+    <button class="btn" onclick="reportsState.activeSection='salary';render()">Go to Salary Setup →</button>
+  </div>`;
+
+  const score = kra ? overallKraScore(kra.kras||[]) : 0;
+  const slab = inc.slabs.find(s=>score>=s.min&&score<=s.max)||inc.slabs[0];
+  const payout = Math.round(inc.quarterly_variable_lakhs*(slab.payout_pct/100)*100)/100;
+
+  return `<div style="display:flex;flex-direction:column;gap:12px">
+  <div style="background:rgba(255,255,255,0.08);border-radius:12px;padding:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+  <div style="color:white;font-weight:700;font-size:1.05rem">💰 Incentive Summary — ${inc.quarter}</div>
+  <button onclick="printIncentiveReport()" style="padding:8px 16px;border-radius:8px;border:none;background:white;color:#667eea;font-weight:600;cursor:pointer;font-size:0.82rem">🖨️ Print / Export PDF</button>
+</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">
+      ${[['Fixed Annual','₹'+inc.fixed_annual_lakhs+'L'],['Variable Annual','₹'+inc.variable_annual_lakhs+'L'],
+         ['Quarterly Variable','₹'+inc.quarterly_variable_lakhs+'L'],['KRA Score',score+'%'],
+         ['Slab',slab.label],['Payout %',slab.payout_pct+'%'],['Est. Payout','₹'+payout+'L']]
+        .map(([l,v])=>`<div style="background:rgba(255,255,255,0.08);border-radius:8px;padding:10px">
+          <div style="color:rgba(255,255,255,0.55);font-size:0.72rem">${l}</div>
+          <div style="color:white;font-weight:700;font-size:1rem;margin-top:3px">${v}</div>
+        </div>`).join('')}
+    </div>
+  </div>
+  <div style="background:rgba(255,255,255,0.08);border-radius:12px;padding:20px">
+    <div style="color:white;font-weight:600;margin-bottom:10px">Payout Slabs</div>
+    ${inc.slabs.map(s=>{
+      const active=score>=s.min&&score<=s.max;
+      return `<div style="display:flex;justify-content:space-between;padding:9px 12px;border-radius:7px;margin-bottom:4px;background:${active?'rgba(255,255,255,0.18)':'rgba(255,255,255,0.04)'};border:1px solid ${active?'rgba(255,255,255,0.35)':'transparent'}">
+        <span style="color:white;font-weight:${active?700:400}">${s.label}${active?' ◀':''}</span>
+        <span style="color:rgba(255,255,255,0.8)">${s.min}–${s.max>500?'∞':s.max}% → ${s.payout_pct}% = ₹${Math.round(inc.quarterly_variable_lakhs*s.payout_pct/100*100)/100}L</span>
+      </div>`;
+    }).join('')}
+  </div>
+  <div style="color:rgba(255,255,255,0.4);font-size:0.72rem;padding:0 4px">* Manual KRAs must be scored in the KRA tab for full accuracy.</div>
+</div>`;
+}
+function printIncentiveReport() {
+  const inc = reportsState.incentive;
+  const kra = reportsState.kra;
+  const score = kra ? overallKraScore(kra.kras || []) : 0;
+  const slab = inc.slabs.find(s => score >= s.min && score <= s.max) || inc.slabs[0];
+  const payout = Math.round(inc.quarterly_variable_lakhs * (slab.payout_pct / 100) * 100) / 100;
+  const win = window.open('', '_blank');
+  win.document.write(`
+    <!DOCTYPE html><html><head><title>Incentive Report</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 32px; color: #1a1a1a; max-width: 720px; margin: 0 auto; }
+      h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+      .meta { font-size: 13px; color: #666; margin-bottom: 24px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 24px; }
+      .stat { background: #f4f4f4; border-radius: 8px; padding: 12px; }
+      .stat label { font-size: 11px; color: #888; display: block; margin-bottom: 4px; }
+      .stat span { font-size: 18px; font-weight: 700; color: #1a1a1a; }
+      .section-title { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+      .slab-row { display: flex; justify-content: space-between; padding: 9px 12px; border-radius: 7px; margin-bottom: 4px; font-size: 13px; }
+      .slab-active { background: #eef2ff; border: 1px solid #c7d2fe; font-weight: 700; }
+      .slab-inactive { background: #f9f9f9; border: 1px solid #e5e7eb; color: #555; }
+      .note { font-size: 11px; color: #999; margin-top: 16px; }
+      @media print { body { padding: 16px; } }
+    </style>
+    </head><body>
+    <h1>Incentive Report</h1>
+    <div class="meta">${inc.quarter} &nbsp;·&nbsp; Generated: ${new Date().toLocaleString()}</div>
+    <div class="grid">
+      ${[['Fixed Annual', '₹'+inc.fixed_annual_lakhs+'L'],
+         ['Variable Annual', '₹'+inc.variable_annual_lakhs+'L'],
+         ['Quarterly Variable', '₹'+inc.quarterly_variable_lakhs+'L'],
+         ['KRA Score', score+'%'],
+         ['Slab', slab.label],
+         ['Payout %', slab.payout_pct+'%'],
+         ['Estimated Payout', '₹'+payout+'L']]
+        .map(([l,v]) => `<div class="stat"><label>${l}</label><span>${v}</span></div>`).join('')}
+    </div>
+    <div class="section-title">Payout Slabs</div>
+    ${inc.slabs.map(s => {
+      const active = score >= s.min && score <= s.max;
+      return `<div class="slab-row ${active ? 'slab-active' : 'slab-inactive'}">
+        <span>${s.label}${active ? ' ◀ Current' : ''}</span>
+        <span>${s.min}–${s.max > 500 ? '∞' : s.max}% → ${s.payout_pct}% = ₹${Math.round(inc.quarterly_variable_lakhs * s.payout_pct / 100 * 100) / 100}L</span>
+      </div>`;
+    }).join('')}
+    <div class="note">* Manual KRAs must be scored in the KRA tab for full accuracy.</div>
+    <script>window.onload = function(){ window.print(); }<\/script>
+    </body></html>
+  `);
+  win.document.close();
+}
+function renderSalarySection() {
+  const sal = reportsState.salary||{};
+  const viewerEmail = state.currentUser;
+  const target = reportsState.selectedUser || viewerEmail;
+  const canView = isSupervisorFn() ? true : viewerEmail === target;
+  if (!canView) return `<div style="color:#fca5a5;padding:20px">You can only view your own salary details.</div>`;
+  return `<div style="background:rgba(255,255,255,0.08);border-radius:12px;padding:24px;max-width:440px">
+  <div style="color:white;font-weight:700;font-size:1.05rem;margin-bottom:4px">🔒 Salary Setup</div>
+  <div style="color:rgba(255,255,255,0.55);font-size:0.8rem;margin-bottom:18px">Visible only to you. Used for incentive calculations.</div>
+  <div style="display:flex;flex-direction:column;gap:12px">
+    <div>
+      <label style="color:rgba(255,255,255,0.7);font-size:0.82rem;display:block;margin-bottom:3px">Fixed Annual CTC (₹ Lakhs)</label>
+      <input id="sal_fixed" type="number" min="0" step="0.5" value="${sal.fixed_annual_lakhs||''}" placeholder="e.g. 10"
+        style="width:100%;padding:9px;border-radius:7px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:white;font-size:0.95rem;box-sizing:border-box">
+    </div>
+    <div>
+      <label style="color:rgba(255,255,255,0.7);font-size:0.82rem;display:block;margin-bottom:3px">Variable Annual (₹ Lakhs)</label>
+      <input id="sal_variable" type="number" min="0" step="0.5" value="${sal.variable_annual_lakhs||''}" placeholder="e.g. 2"
+        style="width:100%;padding:9px;border-radius:7px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:white;font-size:0.95rem;box-sizing:border-box">
+    </div>
+    <div style="color:rgba(255,255,255,0.4);font-size:0.75rem">Q1=15% · Q2=25% · Q3=35% · Q4=25% of annual variable</div>
+    <button class="btn" onclick="saveSalary()">Save</button>
+    ${sal.fixed_annual_lakhs?`<div style="color:#86efac;font-size:0.8rem">✅ Saved. Variable: ₹${sal.variable_annual_lakhs||0}L/year</div>`:''}
+  </div>
+</div>`;
+}
+
+async function saveSalary() {
+  const fixed = parseFloat(document.getElementById('sal_fixed')?.value||0);
+  const variable = parseFloat(document.getElementById('sal_variable')?.value||0);
+  const target = reportsState.selectedUser||state.currentUser;
+  try {
+    await fetch(`${CRM_API_BASE}/api/salary`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({viewer_email:target, viewer_role:getUserRole(), fixed_annual_lakhs:fixed, variable_annual_lakhs:variable})
+    });
+    reportsState.salary = {fixed_annual_lakhs:fixed, variable_annual_lakhs:variable};
+    reportsState.incentive = null;
+    alert('Saved!');
+    loadReportsData();
+  } catch(e) { alert('Error: '+e.message); }
+}
+
+function renderAopImportSection() {
+  return `<div style="background:rgba(255,255,255,0.08);border-radius:12px;padding:24px;max-width:560px">
+  <div style="color:white;font-weight:700;font-size:1.05rem;margin-bottom:4px">📥 AOP Bulk Import</div>
+  <div style="color:rgba(255,255,255,0.55);font-size:0.8rem;margin-bottom:16px">Imports win-probability weighted monthly AOP for all AMs. Run once after setup or when AOP is updated.</div>
+  <div style="background:rgba(255,200,0,0.08);border:1px solid rgba(255,200,0,0.25);border-radius:8px;padding:10px;margin-bottom:14px;color:rgba(255,220,100,0.9);font-size:0.78rem">
+    ⚠️ This overwrites existing AOP plan data for all matched accounts.
+  </div>
+  <button class="btn" onclick="runAopImport()" style="background:linear-gradient(135deg,#f59e0b,#d97706)">🚀 Run AOP Import</button>
+  ${reportsState.aopImportStatus?`<div style="margin-top:14px;padding:10px;border-radius:8px;background:rgba(255,255,255,0.08);color:white;font-size:0.82rem">${reportsState.aopImportStatus}</div>`:''}
+</div>`;
+}
+
+async function runAopImport() {
+  reportsState.aopImportStatus = '⏳ Running import...';
+  render();
+  try {
+    const r = await fetch(`${CRM_API_BASE}/api/aop/bulk-import`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({viewer_role:'supervisor'})
+    });
+    const res = await r.json();
+    reportsState.aopImportStatus = res.error
+      ? `❌ Error: ${res.error}`
+      : `✅ Done: ${res.imported} imported, ${res.skipped} skipped (not yet in CRM).`;
+  } catch(e) { reportsState.aopImportStatus = `❌ Network error: ${e.message}`; }
+  render();
+}
+</script>
+  </body>
+  </html>
