@@ -1127,7 +1127,8 @@ async function refreshMicrosoftStatus() {
 async function openMicrosoftConnect() {
  try {
   const r = await fetch(`${CRM_API_BASE}/api/oauth/microsoft/start?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`);
-  const data = await r.json();
+  let data;
+  try { data = await r.json(); } catch (_) { throw new Error(`Server error (${r.status}) — check SMTP/OAuth env vars on server`); }
   if (!r.ok) throw new Error(data.error || 'could not start Microsoft OAuth');
   const w = window.open(data.url, 'ms_oauth', 'width=560,height=720');
   if (!w) {
