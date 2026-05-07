@@ -893,12 +893,13 @@ def enforce_opportunity_sla(conn, rows):
                 updates["presales_assigned_at"] = (
                     parse_iso_dt(row.get("presales_assigned_at")) or assignment_due
                 ).isoformat().replace("+00:00", "Z")
-                send_presales_assignment_email(
-                    row.get("name") or "",
-                    row.get("id") or "",
-                    updates["assigned_presales"],
-                    presales_due.isoformat().replace("+00:00", "Z"),
-                )
+                if not (row.get("presales_assigned_at") or "").strip():
+                    send_presales_assignment_email(
+                        row.get("name") or "",
+                        row.get("id") or "",
+                        updates["assigned_presales"],
+                        presales_due.isoformat().replace("+00:00", "Z"),
+                    )
 
             has_proposal = bool((row.get("final_pricing_proposal") or "").strip())
             if has_proposal and workflow_stage != "Final Proposal Shared":
