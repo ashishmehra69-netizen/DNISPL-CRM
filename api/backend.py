@@ -1862,6 +1862,9 @@ def upsert_opportunity():
         "intake_integration_requirements": (data.get("intake_integration_requirements") or data.get("intakeIntegrationRequirements") or "").strip(),
         "intake_competitors": (data.get("intake_competitors") or data.get("intakeCompetitors") or "").strip(),
         "intake_win_strategy": (data.get("intake_win_strategy") or data.get("intakeWinStrategy") or "").strip(),
+        "closure_date": (data.get("closure_date") or data.get("closureDate") or data.get("expectedClosureDate") or "").strip() or None,
+        "presales_comments": (data.get("presales_comments") or data.get("presalesComments") or "").strip(),
+        "competition_position": (data.get("competition_position") or data.get("competitionPosition") or "").strip(),
     }
 
     conn = get_conn()
@@ -1908,7 +1911,9 @@ def upsert_opportunity():
                         intake_budget_range=%s, intake_decision_timeline=%s, intake_risk_if_not_solved=%s,
                         intake_key_stakeholders=%s, intake_in_scope=%s, intake_out_of_scope=%s, intake_current_environment=%s,
                         intake_pain_points=%s, intake_compliance_requirements=%s, intake_integration_requirements=%s,
-                        intake_competitors=%s, intake_win_strategy=%s, updated_at=now()
+                        intake_competitors=%s, intake_win_strategy=%s,
+                        closure_date=%s, presales_comments=%s, competition_position=%s,
+                        updated_at=now()
                     WHERE id=%s
                     """,
                     (
@@ -1924,7 +1929,9 @@ def upsert_opportunity():
                         payload["intake_budget_range"], payload["intake_decision_timeline"], payload["intake_risk_if_not_solved"],
                         payload["intake_key_stakeholders"], payload["intake_in_scope"], payload["intake_out_of_scope"], payload["intake_current_environment"],
                         payload["intake_pain_points"], payload["intake_compliance_requirements"], payload["intake_integration_requirements"],
-                        payload["intake_competitors"], payload["intake_win_strategy"], opp_id,
+                        payload["intake_competitors"], payload["intake_win_strategy"],
+                        payload["closure_date"], payload["presales_comments"], payload["competition_position"],
+                        opp_id,
                     ),
                 )
                 status = "updated"
@@ -1942,7 +1949,9 @@ def upsert_opportunity():
                         intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
                         intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
                         intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
-                        intake_competitors, intake_win_strategy, created_at, updated_at
+                        intake_competitors, intake_win_strategy,
+                        closure_date, presales_comments, competition_position,
+                        created_at, updated_at
                     )
                     VALUES (
                         %s, %s, %s, %s, %s, %s, %s, %s, %s,
@@ -1950,7 +1959,9 @@ def upsert_opportunity():
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, now(), now()
+                        %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s,
+                        now(), now()
                     )
                     """,
                     (
@@ -1966,6 +1977,7 @@ def upsert_opportunity():
                         payload["intake_budget_range"], payload["intake_decision_timeline"], payload["intake_risk_if_not_solved"], payload["intake_key_stakeholders"],
                         payload["intake_in_scope"], payload["intake_out_of_scope"], payload["intake_current_environment"], payload["intake_pain_points"],
                         payload["intake_compliance_requirements"], payload["intake_integration_requirements"], payload["intake_competitors"], payload["intake_win_strategy"],
+                        payload["closure_date"], payload["presales_comments"], payload["competition_position"],
                     ),
                 )
                 status = "created"
