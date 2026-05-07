@@ -908,7 +908,7 @@ def enforce_opportunity_sla(conn, rows):
                 ).isoformat().replace("+00:00", "Z")
             elif (
                 not has_proposal
-                and workflow_stage in ("Assigned to Presales", "Awaiting Purchase Costing", "Costing Returned")
+                and workflow_stage in ("Assigned to Presales", "Awaiting Sales Ops Pricing", "Pricing Returned to Presales")
                 and now > presales_due
                 and not (row.get("presales_escalated_at") or "").strip()
             ):
