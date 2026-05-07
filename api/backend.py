@@ -893,13 +893,12 @@ def enforce_opportunity_sla(conn, rows):
                 updates["presales_assigned_at"] = (
                     parse_iso_dt(row.get("presales_assigned_at")) or assignment_due
                 ).isoformat().replace("+00:00", "Z")
-                if not (row.get("presales_assigned_at") or "").strip():
-                    send_presales_assignment_email(
-                        row.get("name") or "",
-                        row.get("id") or "",
-                        updates["assigned_presales"],
-                        presales_due.isoformat().replace("+00:00", "Z"),
-                    )
+                send_presales_assignment_email(
+                    row.get("name") or "",
+                    row.get("id") or "",
+                    updates["assigned_presales"],
+                    presales_due.isoformat().replace("+00:00", "Z"),
+                )
 
             has_proposal = bool((row.get("final_pricing_proposal") or "").strip())
             if has_proposal and workflow_stage != "Final Proposal Shared":
@@ -1835,17 +1834,17 @@ def upsert_opportunity():
         "purchase_costing": (data.get("purchase_costing") or data.get("purchaseCosting") or "").strip(),
         "costing_tat": (data.get("costing_tat") or data.get("costingTat") or "").strip(),
         "final_pricing_proposal": (data.get("final_pricing_proposal") or data.get("finalPricingProposal") or "").strip(),
-        "presales_assigned_at": (data.get("presales_assigned_at") or data.get("presalesAssignedAt") or "").strip() or None,
-        "presales_due_at": (data.get("presales_due_at") or data.get("presalesDueAt") or "").strip() or None,
-        "salesops_assigned_at": (data.get("salesops_assigned_at") or data.get("salesOpsAssignedAt") or "").strip() or None,
-        "salesops_due_at": (data.get("salesops_due_at") or data.get("salesOpsDueAt") or "").strip() or None,
-        "purchase_assigned_at": (data.get("purchase_assigned_at") or data.get("purchaseAssignedAt") or "").strip() or None,
-        "purchase_due_at": (data.get("purchase_due_at") or data.get("purchaseDueAt") or "").strip() or None,
-        "costing_returned_at": (data.get("costing_returned_at") or data.get("costingReturnedAt") or "").strip() or None,
-        "final_proposal_at": (data.get("final_proposal_at") or data.get("finalProposalAt") or "").strip() or None,
-        "assignment_due_at": (data.get("assignment_due_at") or data.get("assignmentDueAt") or "").strip() or None,
-        "sales_submitted_at": (data.get("sales_submitted_at") or data.get("salesSubmittedAt") or "").strip() or None,
-        "presales_escalated_at": (data.get("presales_escalated_at") or data.get("presalesEscalatedAt") or "").strip() or None,
+        "presales_assigned_at": (data.get("presales_assigned_at") or data.get("presalesAssignedAt") or "").strip(),
+        "presales_due_at": (data.get("presales_due_at") or data.get("presalesDueAt") or "").strip(),
+        "salesops_assigned_at": (data.get("salesops_assigned_at") or data.get("salesOpsAssignedAt") or "").strip(),
+        "salesops_due_at": (data.get("salesops_due_at") or data.get("salesOpsDueAt") or "").strip(),
+        "purchase_assigned_at": (data.get("purchase_assigned_at") or data.get("purchaseAssignedAt") or "").strip(),
+        "purchase_due_at": (data.get("purchase_due_at") or data.get("purchaseDueAt") or "").strip(),
+        "costing_returned_at": (data.get("costing_returned_at") or data.get("costingReturnedAt") or "").strip(),
+        "final_proposal_at": (data.get("final_proposal_at") or data.get("finalProposalAt") or "").strip(),
+        "assignment_due_at": (data.get("assignment_due_at") or data.get("assignmentDueAt") or "").strip(),
+        "sales_submitted_at": (data.get("sales_submitted_at") or data.get("salesSubmittedAt") or "").strip(),
+        "presales_escalated_at": (data.get("presales_escalated_at") or data.get("presalesEscalatedAt") or "").strip(),
         "oem_pricing_required": str(data.get("oem_pricing_required") or data.get("oemPricingRequired") or "").strip().lower() in ("1", "true", "yes", "y"),
         "intake_problem_statement": (data.get("intake_problem_statement") or data.get("intakeProblemStatement") or "").strip(),
         "intake_why_now": (data.get("intake_why_now") or data.get("intakeWhyNow") or "").strip(),
@@ -1973,19 +1972,13 @@ def upsert_opportunity():
                 status = "created"
         conn.commit()
 
+        current_assigned = (payload.get("assigned_presales") or "").strip().lower()
+        current_salesops = (payload.get("assigned_salesops") or "").strip().lower()
         workflow_now = (payload.get("workflow_stage") or "").strip()
         sales_now = (payload.get("sales_owner") or payload.get("owner") or "").strip().lower()
 
-        current_assigned = (payload.get("assigned_presales") or "").strip().lower()
-        if workflow_now == "Assigned to Presales" and not current_assigned:
-            current_assigned = PRESALES_OWNER.strip().lower()
-
-        current_salesops = (payload.get("assigned_salesops") or "").strip().lower()
-        if workflow_now == "Assigned to Presales" and not current_salesops:
-            current_salesops = SALES_OPS_OWNER.strip().lower()
-
         # Fire email when:
-        # 1. Workflow just moved to "Assigned to Presales" (manually or on create)
+        # 1. Presales is assigned AND workflow just moved to "Assigned to Presales"
         # 2. OR presales assignee changed while already in that stage
         presales_just_assigned = (
             workflow_now == "Assigned to Presales"
