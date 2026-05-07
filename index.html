@@ -3198,6 +3198,8 @@ async function submitFinalPricing(id) {
 
 async function saveLead(e, id) {
  e.preventDefault();
+ const submitBtn = e.target?.querySelector('button[type="submit"]');
+ if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving…'; }
  const data = Object.fromEntries(new FormData(e.target));
  const existing = id ? state.data.leads.find(l => l.id === id) : null;
  const payload = {
@@ -3221,12 +3223,15 @@ async function saveLead(e, id) {
   closeModal();
   render();
  } catch (err) {
+  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Save'; }
   alert(`Could not save lead to shared backend: ${err.message}`);
  }
 }
 
 async function saveAccount(e, id) {
  e.preventDefault();
+ const submitBtn = e.target?.querySelector('button[type="submit"]');
+ if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving…'; }
  const data = Object.fromEntries(new FormData(e.target));
 
  const suspectAnswers = {};
@@ -3262,12 +3267,15 @@ async function saveAccount(e, id) {
   closeModal();
   render();
  } catch (err) {
+  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Save'; }
   alert(`Could not save account to shared backend: ${err.message}`);
  }
 }
 
 async function saveContact(e, id) {
  e.preventDefault();
+ const submitBtn = e.target?.querySelector('button[type="submit"]');
+ if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving…'; }
  const data = Object.fromEntries(new FormData(e.target));
  const existing = id ? state.data.contacts.find(c => c.id === id) : null;
  const payload = {
@@ -3292,12 +3300,15 @@ async function saveContact(e, id) {
   closeModal();
   render();
  } catch (err) {
+  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Save'; }
   alert(`Could not save contact to shared backend: ${err.message}`);
  }
 }
 
 async function saveOpportunity(e, id) {
  e.preventDefault();
+ const submitBtn = e.target?.querySelector('button[type="submit"]');
+ if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving…'; }
  const existing = id ? state.data.opportunities.find(o => o.id === id) : null;
  const nowIso = new Date().toISOString();
  const editorRole = getUserRole();
@@ -3377,6 +3388,7 @@ async function saveOpportunity(e, id) {
   closeModal();
   render();
  } catch (err) {
+  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Save'; }
   alert(`Could not save opportunity to shared backend: ${err.message}`);
  }
 }
