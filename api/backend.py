@@ -908,7 +908,7 @@ def enforce_opportunity_sla(conn, rows):
                 ).isoformat().replace("+00:00", "Z")
             elif (
                 not has_proposal
-                and workflow_stage in ("Assigned to Presales", "Awaiting Sales Ops Pricing", "Pricing Returned to Presales")
+                and workflow_stage in ("Assigned to Presales", "Awaiting Purchase Costing", "Costing Returned")
                 and now > presales_due
                 and not (row.get("presales_escalated_at") or "").strip()
             ):
@@ -1862,9 +1862,6 @@ def upsert_opportunity():
         "intake_integration_requirements": (data.get("intake_integration_requirements") or data.get("intakeIntegrationRequirements") or "").strip(),
         "intake_competitors": (data.get("intake_competitors") or data.get("intakeCompetitors") or "").strip(),
         "intake_win_strategy": (data.get("intake_win_strategy") or data.get("intakeWinStrategy") or "").strip(),
-        "closure_date": (data.get("closure_date") or data.get("closureDate") or data.get("expectedClosureDate") or "").strip() or None,
-        "presales_comments": (data.get("presales_comments") or data.get("presalesComments") or "").strip(),
-        "competition_position": (data.get("competition_position") or data.get("competitionPosition") or "").strip(),
     }
 
     conn = get_conn()
@@ -1911,9 +1908,7 @@ def upsert_opportunity():
                         intake_budget_range=%s, intake_decision_timeline=%s, intake_risk_if_not_solved=%s,
                         intake_key_stakeholders=%s, intake_in_scope=%s, intake_out_of_scope=%s, intake_current_environment=%s,
                         intake_pain_points=%s, intake_compliance_requirements=%s, intake_integration_requirements=%s,
-                        intake_competitors=%s, intake_win_strategy=%s,
-                        closure_date=%s, presales_comments=%s, competition_position=%s,
-                        updated_at=now()
+                        intake_competitors=%s, intake_win_strategy=%s, updated_at=now()
                     WHERE id=%s
                     """,
                     (
@@ -1922,20 +1917,18 @@ def upsert_opportunity():
                         payload["assigned_purchase"], payload["sales_comments"], payload["sales_ops_comments"], payload["requirements"],
                         payload["presales_architecture"], payload["presales_questions"], payload["boq"],
                         payload["purchase_costing"], payload["costing_tat"], payload["final_pricing_proposal"],
-                        payload["presales_assigned_at"], payload["presales_due_at"], payload["salesops_assigned_at"], payload["salesops_due_at"],
-                        payload["purchase_assigned_at"], payload["purchase_due_at"], payload["costing_returned_at"], payload["final_proposal_at"],
+                        payload["presales_assigned_at"], payload["presales_due_at"], payload["salesops_assigned_at"], payload["salesops_due_at"], payload["purchase_assigned_at"],
+                        payload["purchase_due_at"], payload["costing_returned_at"], payload["final_proposal_at"],
                         payload["assignment_due_at"], payload["sales_submitted_at"], payload["presales_escalated_at"], payload["oem_pricing_required"],
                         payload["intake_problem_statement"], payload["intake_why_now"], payload["intake_business_impact"], payload["intake_current_state"],
                         payload["intake_budget_range"], payload["intake_decision_timeline"], payload["intake_risk_if_not_solved"],
                         payload["intake_key_stakeholders"], payload["intake_in_scope"], payload["intake_out_of_scope"], payload["intake_current_environment"],
                         payload["intake_pain_points"], payload["intake_compliance_requirements"], payload["intake_integration_requirements"],
-                        payload["intake_competitors"], payload["intake_win_strategy"],
-                        payload["closure_date"], payload["presales_comments"], payload["competition_position"],
-                        opp_id,
+                        payload["intake_competitors"], payload["intake_win_strategy"], opp_id,
                     ),
                 )
                 status = "updated"
-           else:
+            else:
                 cur.execute(
                     """
                     INSERT INTO opportunities (
@@ -1949,9 +1942,7 @@ def upsert_opportunity():
                         intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
                         intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
                         intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
-                        intake_competitors, intake_win_strategy,
-                        closure_date, presales_comments, competition_position,
-                        created_at, updated_at
+                        intake_competitors, intake_win_strategy, created_at, updated_at
                     )
                     VALUES (
                         %s, %s, %s, %s, %s, %s, %s, %s, %s,
@@ -1959,9 +1950,7 @@ def upsert_opportunity():
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s,
-                        now(), now()
+                        %s, %s, %s, %s, %s, %s, %s, %s, now(), now()
                     )
                     """,
                     (
@@ -1970,14 +1959,13 @@ def upsert_opportunity():
                         payload["assigned_purchase"], payload["sales_comments"], payload["sales_ops_comments"], payload["requirements"],
                         payload["presales_architecture"], payload["presales_questions"], payload["boq"],
                         payload["purchase_costing"], payload["costing_tat"], payload["final_pricing_proposal"],
-                        payload["presales_assigned_at"], payload["presales_due_at"], payload["salesops_assigned_at"], payload["salesops_due_at"],
-                        payload["purchase_assigned_at"], payload["purchase_due_at"], payload["costing_returned_at"], payload["final_proposal_at"],
+                        payload["presales_assigned_at"], payload["presales_due_at"], payload["salesops_assigned_at"], payload["salesops_due_at"], payload["purchase_assigned_at"],
+                        payload["purchase_due_at"], payload["costing_returned_at"], payload["final_proposal_at"],
                         payload["assignment_due_at"], payload["sales_submitted_at"], payload["presales_escalated_at"], payload["oem_pricing_required"],
                         payload["intake_problem_statement"], payload["intake_why_now"], payload["intake_business_impact"], payload["intake_current_state"],
                         payload["intake_budget_range"], payload["intake_decision_timeline"], payload["intake_risk_if_not_solved"], payload["intake_key_stakeholders"],
                         payload["intake_in_scope"], payload["intake_out_of_scope"], payload["intake_current_environment"], payload["intake_pain_points"],
                         payload["intake_compliance_requirements"], payload["intake_integration_requirements"], payload["intake_competitors"], payload["intake_win_strategy"],
-                        payload["closure_date"], payload["presales_comments"], payload["competition_position"],
                     ),
                 )
                 status = "created"
@@ -3303,3 +3291,4 @@ if __name__ == "__main__":
     print(f"Simple CRM backend running on port {port}")
     print("DB host:", urlparse(DATABASE_URL).hostname)
     app.run(host="0.0.0.0", port=port, debug=True)
+
