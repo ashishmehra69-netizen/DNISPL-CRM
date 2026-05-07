@@ -88,7 +88,7 @@
 const SUPERVISOR_EMAIL = 'ashish.mehra@dnispl.com';
 const PASSWORD = 'crm2026'; // Simple password for demo
 const PRESALES_OWNER = 'vinod.v@dnispl.com';
-const PURCHASE_OWNER = 'soumya.m@dnispl.com';
+const PURCHASE_OWNER = 'soumya.m.s@dnispl.com';
 const SALES_OPS_OWNER = 'soumya.m@dnispl.com';
 const FINANCE_APPROVER = 'rakesh.uniyal@dnispl.com';
 const PRESALES_APPROVER = 'vinod.v@dnispl.com';
@@ -1127,8 +1127,7 @@ async function refreshMicrosoftStatus() {
 async function openMicrosoftConnect() {
  try {
   const r = await fetch(`${CRM_API_BASE}/api/oauth/microsoft/start?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`);
-  let data;
-  try { data = await r.json(); } catch (_) { throw new Error(`Server error (${r.status}) — check SMTP/OAuth env vars on server`); }
+  const data = await r.json();
   if (!r.ok) throw new Error(data.error || 'could not start Microsoft OAuth');
   const w = window.open(data.url, 'ms_oauth', 'width=560,height=720');
   if (!w) {
@@ -2024,7 +2023,7 @@ function renderOpportunities(filtered) {
         return `<button type="button"
           onclick="setOppStageFilter('${s}')"
           style="padding:8px 16px;border-radius:20px;border:2px solid ${color};
-            background:${active ? color : 'white'};
+            background:${active ? color : 'transparent'};
             color:${active ? 'white' : color};
             font-weight:600;font-size:0.85em;cursor:pointer;transition:all 0.2s">
           ${stageIcons[s]} ${s} <span style="opacity:0.85">(${count})</span>
@@ -3199,8 +3198,6 @@ async function submitFinalPricing(id) {
 
 async function saveLead(e, id) {
  e.preventDefault();
- const submitBtn = e.target?.querySelector('button[type="submit"]');
- if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving…'; }
  const data = Object.fromEntries(new FormData(e.target));
  const existing = id ? state.data.leads.find(l => l.id === id) : null;
  const payload = {
@@ -3224,15 +3221,12 @@ async function saveLead(e, id) {
   closeModal();
   render();
  } catch (err) {
-  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Save'; }
   alert(`Could not save lead to shared backend: ${err.message}`);
  }
 }
 
 async function saveAccount(e, id) {
  e.preventDefault();
- const submitBtn = e.target?.querySelector('button[type="submit"]');
- if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving…'; }
  const data = Object.fromEntries(new FormData(e.target));
 
  const suspectAnswers = {};
@@ -3268,15 +3262,12 @@ async function saveAccount(e, id) {
   closeModal();
   render();
  } catch (err) {
-  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Save'; }
   alert(`Could not save account to shared backend: ${err.message}`);
  }
 }
 
 async function saveContact(e, id) {
  e.preventDefault();
- const submitBtn = e.target?.querySelector('button[type="submit"]');
- if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving…'; }
  const data = Object.fromEntries(new FormData(e.target));
  const existing = id ? state.data.contacts.find(c => c.id === id) : null;
  const payload = {
@@ -3301,15 +3292,12 @@ async function saveContact(e, id) {
   closeModal();
   render();
  } catch (err) {
-  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Save'; }
   alert(`Could not save contact to shared backend: ${err.message}`);
  }
 }
 
 async function saveOpportunity(e, id) {
  e.preventDefault();
- const submitBtn = e.target?.querySelector('button[type="submit"]');
- if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving…'; }
  const existing = id ? state.data.opportunities.find(o => o.id === id) : null;
  const nowIso = new Date().toISOString();
  const editorRole = getUserRole();
@@ -3389,7 +3377,6 @@ async function saveOpportunity(e, id) {
   closeModal();
   render();
  } catch (err) {
-  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Save'; }
   alert(`Could not save opportunity to shared backend: ${err.message}`);
  }
 }
