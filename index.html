@@ -3150,10 +3150,12 @@ async function submitPresalesPack(id) {
  presalesArchitecture: architecture || '',
  presalesQuestions: questions || '',
  boq,
- assignedPurchase: PURCHASE_OWNER,
+ assignedPurchase: '',
+ assignedSalesOps: SALES_OPS_OWNER,
  purchaseAssignedAt: now,
  purchaseDueAt: addHours(now, 24),
- workflowStage: 'Awaiting Purchase Costing'
+ workflowStage: 'Awaiting Sales Ops Pricing'
+
  });
 }
 
@@ -3172,7 +3174,8 @@ async function submitPurchaseCosting(id) {
  purchaseCosting: costing,
  costingTat: tatISO || opp.costingTat || '',
  costingReturnedAt: now,
- workflowStage: 'Costing Returned to Presales'
+ workflowStage: 'Pricing Returned to Presales'
+
  });
 }
 
