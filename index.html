@@ -680,9 +680,11 @@ async function restoreSessionIfAny() {
  if (isSupervisor) return 'supervisor';
  const email = (currentUser || '').toLowerCase();
  const PRESALES_USERS = ['vinod.v@dnispl.com'];
- const PURCHASE_USERS = ['soumya.m@dnispl.com'];
+ const PURCHASE_USERS = [];
+ const SALESOPS_USERS = ['soumya.m@dnispl.com'];
  if (PRESALES_USERS.includes(email)) return 'presales';
  if (PURCHASE_USERS.includes(email)) return 'purchase';
+ if (SALESOPS_USERS.includes(email)) return 'salesops';
  if (email.includes('presales') || email.includes('pre.sales') || email.includes('solutions')) return 'presales';
  if (email.includes('purchase') || email.includes('procurement') || email.includes('sourcing')) return 'purchase';
  return 'sales';
