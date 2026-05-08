@@ -694,9 +694,9 @@ function getViewerRoleForApi() {
  const role = getUserRole();
  if (role === 'presales') return 'presales';
  if (role === 'purchase') return 'purchase';
+ if (role === 'salesops') return 'salesops';
  return 'account_manager';
 }
-
 function normalizeEmail(value) {
  return String(value || '').trim().toLowerCase();
 }
