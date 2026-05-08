@@ -1143,7 +1143,7 @@ def list_accounts():
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if viewer_role in ("supervisor", "admin"):
+            if _is_supervisor(viewer_role):
                 cur.execute(
                     """
                     SELECT a.id, a.account_name, a.created_at, a.updated_at,
@@ -1480,7 +1480,7 @@ def list_activities():
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if viewer_role in ("supervisor", "admin"):
+            if _is_supervisor(viewer_role):
                 cur.execute(
                     """
                     SELECT id, type, subject, notes, date, owner, account_id, account_name, created_at, updated_at
