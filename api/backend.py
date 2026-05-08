@@ -522,7 +522,7 @@ def compute_suspect_score(data: dict) -> int:
 
 
 def _is_supervisor(viewer_role: str) -> bool:
-    return (viewer_role or "").strip().lower() in ("supervisor", "admin")
+    return (viewer_role or "").strip().lower() in ("supervisor", "admin", "salesops")
 
 
 def _normalize_email(value: str) -> str:
