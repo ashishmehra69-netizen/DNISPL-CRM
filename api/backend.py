@@ -1,4 +1,5 @@
 import csv
+import fitz
 import json
 import base64
 import hashlib
@@ -2584,9 +2585,23 @@ def send_mom_mail_endpoint():
     finally:
         conn.close()
 
+def _pdf_to_base64_images(pdf_bytes: bytes, max_pages: int = 5, dpi: int = 150):
+    images = []
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        page_count = min(len(doc), max_pages)
+        for i in range(page_count):
+            page = doc[i]
+            pix = page.get_pixmap(dpi=dpi, alpha=False)
+            img_bytes = pix.tobytes("jpeg")
+            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+            images.append(img_b64)
+    finally:
+        doc.close()
+    return images
+
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
-# Groq vision model — supports image inputs (base64 or URL)
 GROQ_VISION_MODEL = os.environ.get("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct").strip()
 
 
@@ -2604,34 +2619,41 @@ def ai_extract():
     if not image_b64 or not prompt:
         return jsonify({"error": "image_b64 and prompt are required"}), 400
 
-    # Strip data-URL prefix if present
     if "," in image_b64:
         image_b64 = image_b64.split(",", 1)[1]
 
-    # Groq uses OpenAI-compatible format with image_url containing base64
-    data_url = f"data:{media_type};base64,{image_b64}"
-
-    payload = {
-        "model": GROQ_VISION_MODEL,
-        "max_tokens": 2000,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": data_url},
-                    },
-                    {
-                        "type": "text",
-                        "text": prompt,
-                    },
-                ],
-            }
-        ],
-    }
-
     try:
+        content_parts = [{"type": "text", "text": prompt}]
+
+        if media_type == "application/pdf":
+            pdf_bytes = base64.b64decode(image_b64)
+            pdf_images = _pdf_to_base64_images(pdf_bytes, max_pages=5, dpi=150)
+
+            if not pdf_images:
+                return jsonify({"error": "Could not read PDF pages"}), 400
+
+            for img_b64 in pdf_images:
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                })
+        else:
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{media_type};base64,{image_b64}"}
+            })
+
+        payload = {
+            "model": GROQ_VISION_MODEL,
+            "max_tokens": 2000,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": content_parts,
+                }
+            ],
+        }
+
         result = _http_json_request(
             "https://api.groq.com/openai/v1/chat/completions",
             method="POST",
@@ -2641,13 +2663,16 @@ def ai_extract():
                 "Content-Type": "application/json",
             },
         )
-        # OpenAI-compatible response format
+
         text = ""
         for choice in (result.get("choices") or []):
             text += (choice.get("message") or {}).get("content") or ""
+
         if not text:
             text = "Could not extract details."
+
         return jsonify({"text": text})
+
     except Exception as exc:
         return jsonify({"error": f"AI extraction failed: {exc}"}), 500
 
