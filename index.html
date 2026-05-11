@@ -2011,8 +2011,7 @@ function renderOpportunities(filtered) {
   const pipeValue = openOpps.reduce((s,o) => s+(o.value||0), 0);
 
   // Filtered list for current stage tab
-  const viewOpps = oppStageFilter === 'All' ? allOpps : allOpps.filter(o => o.stage === oppStageFilter);
-
+  const viewOpps = oppStageFilter === 'All' ? allOpps : oppStageFilter === 'Presales Pending' ? allOpps.filter(o => (o.workflowStage || '') === 'Assigned to Presales') : allOpps.filter(o => o.stage === oppStageFilter);
   // Stage pill buttons — clicking 'Closed Won' pill activates won view
   const presalesPendingCount = allOpps.filter(o => (o.workflowStage || o.workflow_stage || '') === 'Assigned to Presales').length;
   const pillBar = `
@@ -2030,7 +2029,7 @@ function renderOpportunities(filtered) {
           ${stageIcons[s]} ${s} <span style="opacity:0.85">(${count})</span>
         </button>`;
       }).join('')}
-      <div style="padding:8px 16px;border-radius:20px;border:2px solid #f97316;background:rgba(249,115,22,0.15);color:#f97316;font-weight:600;font-size:0.85em;display:${presalesPendingCount > 0 ? 'flex' : 'none'};align-items:center;gap:6px">⏳ Pending with Presales <span style="background:#f97316;color:white;border-radius:10px;padding:1px 8px;font-size:0.85em">${presalesPendingCount}</span></div>
+      <button type="button" onclick="setOppStageFilter('Presales Pending')" style="padding:8px 16px;border-radius:20px;border:2px solid #f97316;background:${oppStageFilter === 'Presales Pending' ? '#f97316' : 'rgba(249,115,22,0.15)'};color:${oppStageFilter === 'Presales Pending' ? 'white' : '#f97316'};font-weight:600;font-size:0.85em;display:${presalesPendingCount > 0 ? 'flex' : 'none'};align-items:center;gap:6px;cursor:pointer">⏳ Pending with Presales <span style="background:#f97316;color:white;border-radius:10px;padding:1px 8px;font-size:0.85em">${presalesPendingCount}</span></button>
     </div>`;
 
   // Won opportunities — rich expanded cards
@@ -2198,7 +2197,7 @@ function renderOpportunities(filtered) {
       <button class="btn btn-success" type="button" onclick="document.getElementById('wonPoScanInput').click()">🏆 Scan Won PO</button>
     </div>
   </div>
-  ${oppStageFilter === 'All' ? renderGrouped() : renderSingleStage()}
+  ${oppStageFilter === 'All' ? renderGrouped() : oppStageFilter === 'Presales Pending' ? renderSingleStage() : renderSingleStage()}
   `;
 }
 
