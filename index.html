@@ -2014,6 +2014,7 @@ function renderOpportunities(filtered) {
   const viewOpps = oppStageFilter === 'All' ? allOpps : allOpps.filter(o => o.stage === oppStageFilter);
 
   // Stage pill buttons — clicking 'Closed Won' pill activates won view
+  const presalesPendingCount = allOpps.filter(o => (o.workflowStage || o.workflow_stage || '') === 'Assigned to Presales').length;
   const pillBar = `
     <div style="display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 4px">
       ${stages.map(s => {
@@ -2029,6 +2030,7 @@ function renderOpportunities(filtered) {
           ${stageIcons[s]} ${s} <span style="opacity:0.85">(${count})</span>
         </button>`;
       }).join('')}
+      <div style="padding:8px 16px;border-radius:20px;border:2px solid #f97316;background:rgba(249,115,22,0.15);color:#f97316;font-weight:600;font-size:0.85em;display:${presalesPendingCount > 0 ? 'flex' : 'none'};align-items:center;gap:6px">⏳ Pending with Presales <span style="background:#f97316;color:white;border-radius:10px;padding:1px 8px;font-size:0.85em">${presalesPendingCount}</span></div>
     </div>`;
 
   // Won opportunities — rich expanded cards
