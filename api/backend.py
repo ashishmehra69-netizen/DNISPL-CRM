@@ -2601,15 +2601,14 @@ def _pdf_to_base64_images(pdf_bytes: bytes, max_pages: int = 5, dpi: int = 150):
     return images
 
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
-GROQ_VISION_MODEL = os.environ.get("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct").strip()
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
 
 @app.route("/api/ai-extract", methods=["POST"])
 def ai_extract():
-    """Proxy AI extraction requests to Groq so the API key stays server-side."""
-    if not GROQ_API_KEY:
-        return jsonify({"error": "AI extraction not configured (GROQ_API_KEY missing)"}), 503
+    """Proxy AI extraction requests to Anthropic Claude so the API key stays server-side."""
+    if not ANTHROPIC_API_KEY:
+        return jsonify({"error": "AI extraction not configured (ANTHROPIC_API_KEY missing)"}), 503
 
     data = request.get_json(silent=True) or {}
     prompt = (data.get("prompt") or "").strip()
@@ -2623,7 +2622,7 @@ def ai_extract():
         image_b64 = image_b64.split(",", 1)[1]
 
     try:
-        content_parts = [{"type": "text", "text": prompt}]
+        content_parts = []
 
         if media_type == "application/pdf":
             pdf_bytes = base64.b64decode(image_b64)
@@ -2634,39 +2633,38 @@ def ai_extract():
 
             for img_b64 in pdf_images:
                 content_parts.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64}
                 })
         else:
             content_parts.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{media_type};base64,{image_b64}"}
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": image_b64}
             })
 
+        content_parts.append({"type": "text", "text": prompt})
+
         payload = {
-            "model": GROQ_VISION_MODEL,
+            "model": "claude-sonnet-4-5",
             "max_tokens": 2000,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": content_parts,
-                }
-            ],
+            "messages": [{"role": "user", "content": content_parts}],
         }
 
         result = _http_json_request(
-            "https://api.groq.com/openai/v1/chat/completions",
+            "https://api.anthropic.com/v1/messages",
             method="POST",
             data=payload,
             headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
                 "Content-Type": "application/json",
             },
         )
 
         text = ""
-        for choice in (result.get("choices") or []):
-            text += (choice.get("message") or {}).get("content") or ""
+        for block in (result.get("content") or []):
+            if block.get("type") == "text":
+                text += block.get("text") or ""
 
         if not text:
             text = "Could not extract details."
