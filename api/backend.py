@@ -894,18 +894,20 @@ def enforce_opportunity_sla(conn, rows):
                 updates["presales_due_at"] = presales_due.isoformat().replace("+00:00", "Z")
 
             if workflow_stage == "Sales Review" and now >= assignment_due:
-                updates["workflow_stage"] = "Assigned to Presales"
-                updates["assigned_presales"] = (row.get("assigned_presales") or "").strip() or PRESALES_OWNER
-                updates["presales_assigned_at"] = (
-                    parse_iso_dt(row.get("presales_assigned_at")) or assignment_due
-                ).isoformat().replace("+00:00", "Z")
-                send_presales_assignment_email(
-                    row.get("name") or "",
-                    row.get("id") or "",
-                    updates["assigned_presales"],
-                    presales_due.isoformat().replace("+00:00", "Z"),
-                )
-
+                # Only auto-escalate opps that were explicitly submitted by sales
+                if (row.get("sales_submitted_at") or "").strip():
+                    existing_presales = (row.get("assigned_presales") or "").strip()
+                    updates["workflow_stage"] = "Assigned to Presales"
+                    updates["assigned_presales"] = existing_presales if existing_presales else PRESALES_OWNER
+                    updates["presales_assigned_at"] = (
+                        parse_iso_dt(row.get("presales_assigned_at")) or assignment_due
+                    ).isoformat().replace("+00:00", "Z")
+                    send_presales_assignment_email(
+                        row.get("name") or "",
+                        row.get("id") or "",
+                        updates["assigned_presales"],
+                        presales_due.isoformat().replace("+00:00", "Z"),
+                    )
             has_proposal = bool((row.get("final_pricing_proposal") or "").strip())
             if has_proposal and workflow_stage != "Final Proposal Shared":
                 updates["workflow_stage"] = "Final Proposal Shared"
@@ -1904,11 +1906,14 @@ def upsert_opportunity():
             prev_sales_owner = ((exists or {}).get("sales_owner") or (exists or {}).get("owner") or "").strip().lower()
             deal_type_now = (payload.get("deal_type") or "").strip().lower()
             if deal_type_now in ("hardware", "mixed") or (payload.get("assigned_presales") or "").strip():
-                payload["assigned_salesops"] = SALES_OPS_OWNER
-                payload["oem_pricing_required"] = True
-                payload["salesops_assigned_at"] = payload.get("salesops_assigned_at") or utc_now()
-                payload["salesops_due_at"] = payload.get("salesops_due_at") or (datetime.utcnow() + timedelta(hours=24)).isoformat(timespec="seconds") + "Z"
-
+                sales_submitted_at = (payload.get("sales_submitted_at") or "").strip()
+                if sales_submitted_at and not prev_assigned_salesops:
+                    payload["assigned_salesops"] = SALES_OPS_OWNER
+                    payload["oem_pricing_required"] = True
+                    payload["salesops_assigned_at"] = payload.get("salesops_assigned_at") or utc_now()
+                    payload["salesops_due_at"] = payload.get("salesops_due_at") or (datetime.utcnow() + timedelta(hours=24)).isoformat(timespec="seconds") + "Z"
+                elif prev_assigned_salesops:
+                    payload["oem_pricing_required"] = True
             required_intake_fields = [
                 ("intake_problem_statement", "Problem Statement"),
                 ("intake_why_now", "Why Now (Trigger Event)"),
