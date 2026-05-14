@@ -1317,12 +1317,14 @@ async function runSLAEngine() {
 
    // Auto move Sales -> Presales after 4h
    if ((opp.workflowStage || 'Sales Review') === 'Sales Review' && now >= assignmentDue) {
-    opp.workflowStage = 'Assigned to Presales';
-    opp.assignedPresales = opp.assignedPresales || (isSupervisor ? PRESALES_OWNER : '');
-    opp.presalesAssignedAt = opp.presalesAssignedAt || assignmentDue.toISOString();
-    opp.presalesDueAt = presalesDue.toISOString();
-    opp.modifiedDate = now.toISOString();
-    changed = true;
+    if (opp.salesSubmittedAt) {
+     opp.workflowStage = 'Assigned to Presales';
+     opp.assignedPresales = opp.assignedPresales || PRESALES_OWNER;
+     opp.presalesAssignedAt = opp.presalesAssignedAt || assignmentDue.toISOString();
+     opp.presalesDueAt = presalesDue.toISOString();
+     opp.modifiedDate = now.toISOString();
+     changed = true;
+    }
    }
 
    // SLA enforcement: 72h window for presales response/proposal
