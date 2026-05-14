@@ -523,7 +523,7 @@ def compute_suspect_score(data: dict) -> int:
 
 
 def _is_supervisor(viewer_role: str) -> bool:
-    return (viewer_role or "").strip().lower() in ("supervisor", "admin", "salesops")
+    return (viewer_role or "").strip().lower() in ("supervisor", "admin")
 
 
 def _normalize_email(value: str) -> str:
@@ -1264,7 +1264,7 @@ def bootstrap_data():
                 )
                 payload["activities"] = cur.fetchall()
 
-            if _is_supervisor(viewer_role) or viewer_role == "presales":
+            if _is_supervisor(viewer_role):
                 cur.execute(
                     """
                     SELECT id, name, company, email, phone, source, status, notes, owner, created_at, updated_at
@@ -1516,7 +1516,7 @@ def list_leads():
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if _is_supervisor(viewer_role) or viewer_role == "presales":
+            if _is_supervisor(viewer_role):
                 cur.execute(
                     """
                     SELECT id, name, company, email, phone, source, status, notes, owner, created_at, updated_at
@@ -2601,6 +2601,33 @@ def _pdf_to_base64_images(pdf_bytes: bytes, max_pages: int = 5, dpi: int = 150):
     return images
 
 
+def _coerce_ai_json_text(text: str) -> str:
+    source = (text or "").strip()
+    if not source:
+        return source
+
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", source, re.IGNORECASE)
+    if fenced:
+        candidate = fenced.group(1).strip()
+        try:
+            json.loads(candidate)
+            return candidate
+        except Exception:
+            pass
+
+    start = source.find("{")
+    end = source.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = source[start:end + 1].strip()
+        try:
+            json.loads(candidate)
+            return candidate
+        except Exception:
+            pass
+
+    return source
+
+
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
 
@@ -2622,7 +2649,7 @@ def ai_extract():
         image_b64 = image_b64.split(",", 1)[1]
 
     try:
-        content_parts = []
+        content_parts = [{"type": "text", "text": prompt}]
 
         if media_type == "application/pdf":
             pdf_bytes = base64.b64decode(image_b64)
@@ -2641,8 +2668,6 @@ def ai_extract():
                 "type": "image",
                 "source": {"type": "base64", "media_type": media_type, "data": image_b64}
             })
-
-        content_parts.append({"type": "text", "text": prompt})
 
         payload = {
             "model": "claude-sonnet-4-5",
@@ -2665,6 +2690,8 @@ def ai_extract():
         for block in (result.get("content") or []):
             if block.get("type") == "text":
                 text += block.get("text") or ""
+
+        text = _coerce_ai_json_text(text)
 
         if not text:
             text = "Could not extract details."
