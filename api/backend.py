@@ -1328,11 +1328,11 @@ def bootstrap_data():
                 FROM opportunities
                 ORDER BY updated_at DESC
             """
-            presales_active_stages = ('Assigned to Presales','Presales Overdue','Awaiting Purchase Costing','Costing Returned to Presales','Pricing Returned to Presales')
-            salesops_active_stages = ('Awaiting Sales Ops Pricing','Assigned to Presales','Costing Returned to Presales')
+            presales_active_stages = ['Assigned to Presales','Presales Overdue','Awaiting Purchase Costing','Costing Returned to Presales','Pricing Returned to Presales']
+            salesops_active_stages = ['Awaiting Sales Ops Pricing','Assigned to Presales','Costing Returned to Presales']
 
             if _is_presales(viewer_role):
-                opp_scoped = """
+                query_scoped = """
                     SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
                            assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
                            presales_architecture, presales_questions, boq, purchase_costing,
@@ -1349,9 +1349,9 @@ def bootstrap_data():
                       AND workflow_stage = ANY(%s)
                     ORDER BY updated_at DESC
                 """
-                opp_scoped_params = (viewer_email, list(presales_active_stages))
+                query_scoped_params = (viewer_email, presales_active_stages)
             elif _is_salesops(viewer_role):
-                opp_scoped = """
+                query_scoped = """
                     SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
                            assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
                            presales_architecture, presales_questions, boq, purchase_costing,
@@ -1368,9 +1368,9 @@ def bootstrap_data():
                       AND workflow_stage = ANY(%s)
                     ORDER BY updated_at DESC
                 """
-                opp_scoped_params = (viewer_email, list(salesops_active_stages))
+                query_scoped_params = (viewer_email, salesops_active_stages)
             else:
-                opp_scoped = """
+                query_scoped = """
                     SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
                            assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
                            presales_architecture, presales_questions, boq, purchase_costing,
@@ -1390,6 +1390,25 @@ def bootstrap_data():
                        OR lower(assigned_purchase)=lower(%s)
                     ORDER BY updated_at DESC
                 """
+                query_scoped_params = (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email)
+
+            if _is_supervisor(viewer_role):
+                cur.execute(query_all)
+                rows = cur.fetchall()
+                if enforce_opportunity_sla(conn, rows):
+                    cur.execute(query_all)
+                    rows = cur.fetchall()
+                return jsonify(rows)
+
+            if not viewer_email:
+                return jsonify({"error": "viewer_email is required for non-supervisor access"}), 400
+
+            cur.execute(query_scoped, query_scoped_params)
+            rows = cur.fetchall()
+            if enforce_opportunity_sla(conn, rows):
+                cur.execute(query_scoped, query_scoped_params)
+                rows = cur.fetchall()
+            return jsonify(rows)
                 opp_scoped_params = (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email)
 
             if _is_supervisor(viewer_role):
@@ -1815,26 +1834,70 @@ def list_opportunities():
                     FROM opportunities
                     ORDER BY updated_at DESC
                     """
-            query_scoped = """
-                SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
-                       assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
-                       presales_architecture, presales_questions, boq, purchase_costing,
-                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
-                       purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                       assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
-                       intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
-                       intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
-                       intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
-                       intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
-                       intake_competitors, intake_win_strategy, created_at, updated_at
-                FROM opportunities
-                WHERE lower(owner)=lower(%s)
-                   OR lower(sales_owner)=lower(%s)
-                   OR lower(assigned_presales)=lower(%s)
-                   OR lower(assigned_salesops)=lower(%s)
-                   OR lower(assigned_purchase)=lower(%s)
-                ORDER BY updated_at DESC
-            """
+            presales_active_stages = ['Assigned to Presales','Presales Overdue','Awaiting Purchase Costing','Costing Returned to Presales','Pricing Returned to Presales']
+            salesops_active_stages = ['Awaiting Sales Ops Pricing','Assigned to Presales','Costing Returned to Presales']
+
+            if _is_presales(viewer_role):
+                query_scoped = """
+                    SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
+                           assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
+                           presales_architecture, presales_questions, boq, purchase_costing,
+                           costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
+                           purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
+                           assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
+                           intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
+                           intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
+                           intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
+                           intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
+                           intake_competitors, intake_win_strategy, created_at, updated_at
+                    FROM opportunities
+                    WHERE lower(assigned_presales)=lower(%s)
+                      AND workflow_stage = ANY(%s)
+                    ORDER BY updated_at DESC
+                """
+                query_scoped_params = (viewer_email, presales_active_stages)
+            elif _is_salesops(viewer_role):
+                query_scoped = """
+                    SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
+                           assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
+                           presales_architecture, presales_questions, boq, purchase_costing,
+                           costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
+                           purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
+                           assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
+                           intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
+                           intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
+                           intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
+                           intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
+                           intake_competitors, intake_win_strategy, created_at, updated_at
+                    FROM opportunities
+                    WHERE lower(assigned_salesops)=lower(%s)
+                      AND workflow_stage = ANY(%s)
+                    ORDER BY updated_at DESC
+                """
+                query_scoped_params = (viewer_email, salesops_active_stages)
+            else:
+                query_scoped = """
+                    SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
+                           assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
+                           presales_architecture, presales_questions, boq, purchase_costing,
+                           costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
+                           purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
+                           assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
+                           intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
+                           intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
+                           intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
+                           intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
+                           intake_competitors, intake_win_strategy, created_at, updated_at
+                    FROM opportunities
+                    WHERE lower(owner)=lower(%s)
+                       OR lower(sales_owner)=lower(%s)
+                       OR lower(assigned_presales)=lower(%s)
+                       OR lower(assigned_salesops)=lower(%s)
+                       OR lower(assigned_purchase)=lower(%s)
+                    ORDER BY updated_at DESC
+                """
+                query_scoped_params = (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email)
+
             if _is_supervisor(viewer_role):
                 cur.execute(query_all)
                 rows = cur.fetchall()
@@ -1843,6 +1906,15 @@ def list_opportunities():
                     rows = cur.fetchall()
                 return jsonify(rows)
 
+            if not viewer_email:
+                return jsonify({"error": "viewer_email is required for non-supervisor access"}), 400
+
+            cur.execute(query_scoped, query_scoped_params)
+            rows = cur.fetchall()
+            if enforce_opportunity_sla(conn, rows):
+                cur.execute(query_scoped, query_scoped_params)
+                rows = cur.fetchall()
+            return jsonify(rows)
             if not viewer_email:
                 return jsonify({"error": "viewer_email is required for non-supervisor access"}), 400
 
