@@ -1318,7 +1318,7 @@ async function runSLAEngine() {
    // Auto move Sales -> Presales after 4h
    if ((opp.workflowStage || 'Sales Review') === 'Sales Review' && now >= assignmentDue) {
     opp.workflowStage = 'Assigned to Presales';
-    opp.assignedPresales = opp.assignedPresales || PRESALES_OWNER;
+    opp.assignedPresales = opp.assignedPresales || (isSupervisor ? PRESALES_OWNER : '');
     opp.presalesAssignedAt = opp.presalesAssignedAt || assignmentDue.toISOString();
     opp.presalesDueAt = presalesDue.toISOString();
     opp.modifiedDate = now.toISOString();
@@ -1712,7 +1712,8 @@ function getFilteredData() {
 
   if (role === 'presales') {
    const presalesOpps = state.data.opportunities.filter(o =>
-    normalizeEmail(o.assignedPresales) === normalizeEmail(currentUser)
+    normalizeEmail(o.assignedPresales) === normalizeEmail(currentUser) &&
+    normalizeEmail(o.assignedPresales) !== ''
    );
    baseData = {
     leads: (state.data.leads || []).filter(l => normalizeEmail(l.owner) === normalizeEmail(currentUser)),
@@ -1915,7 +1916,7 @@ function handleOppsCsv(e) {
  createdDate: now,
  modifiedDate: now,
  workflowStage: 'Assigned to Presales',
- assignedPresales: PRESALES_OWNER,
+ assignedPresales: '',
  assignedPurchase: '',
  presalesAssignedAt: now,
  presalesDueAt: addHours(now, 72),
