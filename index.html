@@ -1713,9 +1713,10 @@ function getFilteredData() {
   const myAccountIds = new Set(myAccounts.map(a => String(a.id)));
 
   if (role === 'presales') {
+   const presalesActiveStages = ['Assigned to Presales', 'Presales Overdue', 'Awaiting Purchase Costing', 'Costing Returned to Presales', 'Pricing Returned to Presales'];
    const presalesOpps = state.data.opportunities.filter(o =>
     normalizeEmail(o.assignedPresales) === normalizeEmail(currentUser) &&
-    normalizeEmail(o.assignedPresales) !== ''
+    presalesActiveStages.includes(o.workflowStage || '')
    );
    baseData = {
     leads: (state.data.leads || []).filter(l => normalizeEmail(l.owner) === normalizeEmail(currentUser)),
@@ -1725,8 +1726,10 @@ function getFilteredData() {
     activities: state.data.activities.filter(a => normalizeEmail(a.owner) === normalizeEmail(currentUser))
    };
   } else if (role === 'salesops') {
+   const salesOpsActiveStages = ['Awaiting Sales Ops Pricing', 'Assigned to Presales', 'Costing Returned to Presales'];
    const salesOpsOpps = state.data.opportunities.filter(o =>
-    normalizeEmail(o.assignedSalesOps) === normalizeEmail(currentUser)
+    normalizeEmail(o.assignedSalesOps) === normalizeEmail(currentUser) &&
+    salesOpsActiveStages.includes(o.workflowStage || '')
    );
    baseData = {
     leads: [],
