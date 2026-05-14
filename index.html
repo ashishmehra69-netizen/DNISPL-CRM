@@ -88,7 +88,7 @@
 const SUPERVISOR_EMAIL = 'ashish.mehra@dnispl.com';
 const PASSWORD = 'crm2026'; // Simple password for demo
 const PRESALES_OWNER = 'vinod.v@dnispl.com';
-const PURCHASE_OWNER = 'soumya.m@dnispl.com';
+const PURCHASE_OWNER = 'soumya.m.s@dnispl.com';
 const SALES_OPS_OWNER = 'soumya.m@dnispl.com';
 const FINANCE_APPROVER = 'rakesh.uniyal@dnispl.com';
 const PRESALES_APPROVER = 'vinod.v@dnispl.com';
@@ -680,10 +680,13 @@ async function restoreSessionIfAny() {
  if (isSupervisor) return 'supervisor';
  const email = (currentUser || '').toLowerCase();
  const PRESALES_USERS = ['vinod.v@dnispl.com'];
- const PURCHASE_USERS = ['soumya.m@dnispl.com'];
+ const SALESOPS_USERS = ['soumya.m@dnispl.com'];
+ const PURCHASE_USERS = [];
  if (PRESALES_USERS.includes(email)) return 'presales';
+ if (SALESOPS_USERS.includes(email)) return 'salesops';
  if (PURCHASE_USERS.includes(email)) return 'purchase';
  if (email.includes('presales') || email.includes('pre.sales') || email.includes('solutions')) return 'presales';
+ if (email.includes('salesops') || email.includes('sales ops') || email.includes('pricing')) return 'salesops';
  if (email.includes('purchase') || email.includes('procurement') || email.includes('sourcing')) return 'purchase';
  return 'sales';
 }
@@ -693,8 +696,8 @@ function getViewerRoleForApi() {
  if (isSupervisor) return 'supervisor';
  const role = getUserRole();
  if (role === 'presales') return 'presales';
- if (role === 'purchase') return 'purchase';
  if (role === 'salesops') return 'salesops';
+ if (role === 'purchase') return 'purchase';
  return 'account_manager';
 }
 function normalizeEmail(value) {
@@ -1712,10 +1715,21 @@ function getFilteredData() {
     normalizeEmail(o.assignedPresales) === normalizeEmail(currentUser)
    );
    baseData = {
-    leads: state.data.leads || [],
+    leads: (state.data.leads || []).filter(l => normalizeEmail(l.owner) === normalizeEmail(currentUser)),
     accounts: [],
     contacts: [],
     opportunities: presalesOpps,
+    activities: state.data.activities.filter(a => normalizeEmail(a.owner) === normalizeEmail(currentUser))
+   };
+  } else if (role === 'salesops') {
+   const salesOpsOpps = state.data.opportunities.filter(o =>
+    normalizeEmail(o.assignedSalesOps) === normalizeEmail(currentUser)
+   );
+   baseData = {
+    leads: [],
+    accounts: [],
+    contacts: [],
+    opportunities: salesOpsOpps,
     activities: state.data.activities.filter(a => normalizeEmail(a.owner) === normalizeEmail(currentUser))
    };
   } else if (role === 'purchase') {
