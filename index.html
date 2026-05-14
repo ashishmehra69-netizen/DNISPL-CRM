@@ -3385,7 +3385,7 @@ async function saveOpportunity(e, id) {
   }
  }
  const cd = (data.closureDate || '').trim();
- const payload = { ...data, id: id || undefined, closureDate: cd, closure_date: cd, expectedClosureDate: cd, expected_closure_date: cd };
+ const payload = { ...data, id: id || undefined, closureDate: cd, closure_date: cd, expectedClosureDate: cd, expected_closure_date: cd, viewer_email: currentUser, viewer_role: getViewerRoleForApi() };
 
  try {
   await upsertOpportunityToApi(payload);
