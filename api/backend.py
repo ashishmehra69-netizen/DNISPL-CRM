@@ -525,6 +525,11 @@ def compute_suspect_score(data: dict) -> int:
 def _is_supervisor(viewer_role: str) -> bool:
     return (viewer_role or "").strip().lower() in ("supervisor", "admin")
 
+def _is_presales(viewer_role: str) -> bool:
+    return (viewer_role or "").strip().lower() == "presales"
+
+def _is_salesops(viewer_role: str) -> bool:
+    return (viewer_role or "").strip().lower() == "salesops"
 
 def _normalize_email(value: str) -> str:
     return (value or "").strip().lower()
@@ -1813,6 +1818,29 @@ def upsert_opportunity():
     owner = (data.get("owner") or "").strip()
     if not owner:
         return jsonify({"error": "owner is required"}), 400
+
+    # Scoped write guard: presales and salesops can only edit opps assigned to them
+    _viewer_email_w = _normalize_email(data.get("viewer_email") or "")
+    _viewer_role_w = (data.get("viewer_role") or "account_manager").strip().lower()
+    _opp_id_w = (data.get("id") or "").strip()
+    if _viewer_role_w in ("presales", "salesops") and _viewer_email_w and _opp_id_w:
+        _wconn = get_conn()
+        try:
+            with _wconn.cursor(cursor_factory=RealDictCursor) as _wcur:
+                _wcur.execute(
+                    "SELECT assigned_presales, assigned_salesops FROM opportunities WHERE id=%s",
+                    (_opp_id_w,)
+                )
+                _wrow = _wcur.fetchone()
+            if _wrow:
+                _ap = (_wrow.get("assigned_presales") or "").strip().lower()
+                _aops = (_wrow.get("assigned_salesops") or "").strip().lower()
+                if _viewer_role_w == "presales" and _ap != _viewer_email_w:
+                    return jsonify({"error": "Access denied: this opportunity is not in your presales bucket"}), 403
+                if _viewer_role_w == "salesops" and _aops != _viewer_email_w:
+                    return jsonify({"error": "Access denied: this opportunity is not in your sales ops bucket"}), 403
+        finally:
+            _wconn.close()
 
     payload = {
         "name": (data.get("name") or "").strip(),
