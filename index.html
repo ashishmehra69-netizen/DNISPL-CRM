@@ -1013,7 +1013,7 @@ function calculateICPScore(account) {
  : (role === 'presales'
  ? ['leads', 'opportunities', 'workflow', 'activities', 'reports']
  : (role === 'salesops'
- ? ['opportunities', 'workflow', 'activities']
+ ? ['opportunities', 'workflow', 'activities', 'reports']
  : ['opportunities', 'workflow', 'activities'])));
  if (!tabs.includes(state.activeTab)) state.activeTab = tabs[0];
  document.getElementById('tabs').innerHTML = tabs.map(t => 
@@ -1029,6 +1029,7 @@ function calculateICPScore(account) {
  else if (state.activeTab === 'opportunities') content = renderOpportunities(filtered);
  	else if (state.activeTab === 'activities') content = 		renderActivities(filtered);
  else if (state.activeTab === 'workflow') content = renderWorkflow(filtered);
+ else if (state.activeTab === 'reports') content = renderReports(filtered);
  else if (state.activeTab === 'dashboard') content = renderDashboard(filtered);
  
  document.getElementById('content').innerHTML = content;
@@ -1182,13 +1183,33 @@ function renderAccounts(filtered) {
  `;
 }
  function renderOpportunities(filtered) {
+ const role = getUserRole();
+ const opps = filtered.opportunities || [];
+ const discoveryCount = opps.filter(o => (o.stage || '') === 'Discovery').length;
+ const proposalCount = opps.filter(o => (o.stage || '') === 'Proposal').length;
+ const negotiationCount = opps.filter(o => (o.stage || '') === 'Negotiation').length;
+ const wonCount = opps.filter(o => (o.stage || '') === 'Closed Won').length;
+ const lostCount = opps.filter(o => (o.stage || '') === 'Closed Lost').length;
+ const pendingPresalesCount = opps.filter(o => (o.workflowStage || '') === 'Assigned to Presales').length;
+ const awaitingPurchaseCount = opps.filter(o => (o.workflowStage || '') === 'Awaiting Purchase Costing').length;
+ const awaitingSalesOpsCount = opps.filter(o => (o.workflowStage || '') === 'Awaiting Sales Ops Pricing').length;
  return `
  <div class="card">
- <h2>💰 Opportunities (${filtered.opportunities.length})</h2>
+ <h2>💰 Opportunities (${opps.length})</h2>
  <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
+ <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:16px">
+   <span class="tag">📋 All (${opps.length})</span>
+   <span class="tag">🔎 Discovery (${discoveryCount})</span>
+   <span class="tag">📝 Proposal (${proposalCount})</span>
+   <span class="tag">🤝 Negotiation (${negotiationCount})</span>
+   <span class="tag">🏆 Closed Won (${wonCount})</span>
+   <span class="tag">❌ Closed Lost (${lostCount})</span>
+   ${role === 'presales' ? `<span class="tag">⏳ Pending with Presales (${pendingPresalesCount})</span>` : ''}
+   ${role === 'salesops' ? `<span class="tag">⏳ Awaiting Pricing (${awaitingPurchaseCount + awaitingSalesOpsCount})</span>` : ''}
+ </div>
  </div>
  <div class="grid">
- ${filtered.opportunities.map(o => {
+ ${opps.map(o => {
  const winProb = calculateWinProb(o);
  return `
  <div class="item-card" onclick="editOpportunity('${o.id}')">
@@ -1215,7 +1236,7 @@ function renderAccounts(filtered) {
  </div>
  `;
  }).join('')}
- ${filtered.opportunities.length === 0 ? '<div class="card">No opportunities yet. Click + to add one!</div>' : ''}
+ ${opps.length === 0 ? '<div class="card">No opportunities yet. Click + to add one!</div>' : ''}
  </div>
  `;
 }
@@ -1418,6 +1439,106 @@ function renderDashboard(filtered) {
  ` : ''}
  `;
  }
+
+
+function renderReports(filtered) {
+ const role = getUserRole();
+ const me = (currentUser || '').toLowerCase();
+ const allOpps = state.data.opportunities || [];
+ const allActs = state.data.activities || [];
+ const allLeads = state.data.leads || [];
+
+ const roleOpps = allOpps.filter(o => {
+   const assignedPresales = (o.assignedPresales || '').toLowerCase();
+   const assignedPurchase = (o.assignedPurchase || '').toLowerCase();
+   const assignedSalesOps = (o.assignedSalesOps || '').toLowerCase();
+   if (role === 'presales') return assignedPresales === me;
+   if (role === 'salesops') return assignedSalesOps === me || assignedPurchase === me;
+   return false;
+ });
+
+ const activePresales = roleOpps.filter(o => (o.workflowStage || '') === 'Assigned to Presales');
+ const activeSalesOps = roleOpps.filter(o => ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'].includes(o.workflowStage || ''));
+ const costingReturned = roleOpps.filter(o => (o.workflowStage || '') === 'Costing Returned');
+ const finalProposalShared = roleOpps.filter(o => (o.workflowStage || '') === 'Final Proposal Shared');
+ const overduePresales = roleOpps.filter(o => isOverdue(o.presalesDueAt));
+ const overdueSalesOps = roleOpps.filter(o => isOverdue(o.purchaseDueAt));
+ const ownActivities = allActs.filter(a => (a.owner || '').toLowerCase() === me);
+ const ownLeads = allLeads.filter(l => (l.owner || '').toLowerCase() === me);
+
+ const tatHours = roleOpps.map(o => {
+   if (role === 'presales') {
+     const start = o.presalesAssignedAt ? new Date(o.presalesAssignedAt) : null;
+     const end = o.purchaseAssignedAt ? new Date(o.purchaseAssignedAt) : (o.finalProposalAt ? new Date(o.finalProposalAt) : null);
+     if (start && end && !isNaN(start) && !isNaN(end)) return (end - start) / 36e5;
+   }
+   if (role === 'salesops') {
+     const start = o.purchaseAssignedAt ? new Date(o.purchaseAssignedAt) : null;
+     const end = o.costingReturnedAt ? new Date(o.costingReturnedAt) : null;
+     if (start && end && !isNaN(start) && !isNaN(end)) return (end - start) / 36e5;
+   }
+   return null;
+ }).filter(v => v !== null);
+
+ const avgTat = tatHours.length ? (tatHours.reduce((a, b) => a + b, 0) / tatHours.length).toFixed(1) : 'NA';
+ const totalValue = roleOpps.reduce((sum, o) => sum + (o.value || 0), 0);
+
+ if (role === 'presales') {
+   return `
+   <div class="card">
+   <h2>📈 Presales KRA Report</h2>
+   <div style="opacity:0.8; margin-top:8px">Owner: ${currentUser}</div>
+   </div>
+   <div class="grid">
+     <div class="metric"><div>Total Assigned</div><div class="metric-value">${roleOpps.length}</div></div>
+     <div class="metric"><div>Active Bin</div><div class="metric-value">${activePresales.length}</div></div>
+     <div class="metric"><div>Final Proposal Shared</div><div class="metric-value">${finalProposalShared.length}</div></div>
+     <div class="metric"><div>Overdue</div><div class="metric-value">${overduePresales.length}</div></div>
+     <div class="metric"><div>Avg TAT (hrs)</div><div class="metric-value">${avgTat}</div></div>
+     <div class="metric"><div>Activities Logged</div><div class="metric-value">${ownActivities.length}</div></div>
+   </div>
+   <div class="card">
+   <h3>KRA Snapshot</h3>
+   <div style="line-height:1.8">
+     <div>1. Presales queue currently pending: <b>${activePresales.length}</b></div>
+     <div>2. Final proposals delivered: <b>${finalProposalShared.length}</b></div>
+     <div>3. Overdue presales items: <b>${overduePresales.length}</b></div>
+     <div>4. Average turnaround time: <b>${avgTat === 'NA' ? 'NA' : avgTat + ' hrs'}</b></div>
+     <div>5. Leads owned by Vinod: <b>${ownLeads.length}</b></div>
+   </div>
+   </div>
+   `;
+ }
+
+ if (role === 'salesops') {
+   return `
+   <div class="card">
+   <h2>📈 Sales Ops KRA Report</h2>
+   <div style="opacity:0.8; margin-top:8px">Owner: ${currentUser}</div>
+   </div>
+   <div class="grid">
+     <div class="metric"><div>Total Assigned</div><div class="metric-value">${roleOpps.length}</div></div>
+     <div class="metric"><div>Active Pricing Queue</div><div class="metric-value">${activeSalesOps.length}</div></div>
+     <div class="metric"><div>Costing Returned</div><div class="metric-value">${costingReturned.length}</div></div>
+     <div class="metric"><div>Overdue</div><div class="metric-value">${overdueSalesOps.length}</div></div>
+     <div class="metric"><div>Avg Pricing TAT (hrs)</div><div class="metric-value">${avgTat}</div></div>
+     <div class="metric"><div>Queue Value</div><div class="metric-value">₹${(totalValue / 100000).toFixed(1)}L</div></div>
+   </div>
+   <div class="card">
+   <h3>KRA Snapshot</h3>
+   <div style="line-height:1.8">
+     <div>1. Pricing requests currently pending: <b>${activeSalesOps.length}</b></div>
+     <div>2. Pricing returned to presales: <b>${costingReturned.length}</b></div>
+     <div>3. Overdue pricing items: <b>${overdueSalesOps.length}</b></div>
+     <div>4. Average pricing turnaround time: <b>${avgTat === 'NA' ? 'NA' : avgTat + ' hrs'}</b></div>
+     <div>5. Total value of handled opportunities: <b>₹${(totalValue / 100000).toFixed(1)}L</b></div>
+   </div>
+   </div>
+   `;
+ }
+
+ return `<div class="card"><h2>Reports</h2><div>No role-based report available.</div></div>`;
+}
 
 function exportMonthlyPipeline(month) {
  const m = month || prompt('Enter month (YYYY-MM):', new Date().toISOString().slice(0,7));
