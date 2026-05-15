@@ -845,6 +845,19 @@ function seedAccountsFromMap() {
  seedAccountsFromMap();
  saveData();
  
+
+
+ try {
+ const remoteActivities = await fetchActivitiesFromApi();
+ state.data.activities = remoteActivities;
+ } catch (err) {
+ console.warn('Backend activities unavailable, using local activities only', err);
+ }
+
+ document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
+ render();
+ }
+
 function calculateWinProb(opp) {
  // Base probability from stage
  const stageProb = {
@@ -939,17 +952,6 @@ function calculateICPScore(account) {
  
  return Math.min(score, 60);
 }
-
- try {
- const remoteActivities = await fetchActivitiesFromApi();
- state.data.activities = remoteActivities;
- } catch (err) {
- console.warn('Backend activities unavailable, using local activities only', err);
- }
-
- document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
- render();
- }
 
  function saveData() {
  localStorage.setItem('crmData', JSON.stringify(state.data));
