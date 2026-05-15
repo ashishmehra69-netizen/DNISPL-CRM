@@ -1,4 +1,4 @@
-      import csv
+import csv
 import fitz
 import json
 import base64
