@@ -1,9 +1,9 @@
 import csv
-import fitz
 import json
 import base64
 import hashlib
 import hmac
+import importlib.util
 import urllib.parse
 import urllib.request
 import os
@@ -13,6 +13,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from io import StringIO
+from pathlib import Path
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 import psycopg2
@@ -41,7 +42,6 @@ DATABASE_URL = (
     or os.environ.get("SUPABASE_DATABASE_URL")
 )
 PRESALES_OWNER = os.environ.get("PRESALES_OWNER", "vinod.v@dnispl.com")
-SALES_OPS_OWNER = os.environ.get("SALES_OPS_OWNER", "soumya.m@dnispl.com")
 SUPERVISOR_EMAIL = os.environ.get("SUPERVISOR_EMAIL", "ashish.mehra@dnispl.com").strip().lower()
 ESCALATION_EMAILS = [
     e.strip().lower()
@@ -82,6 +82,24 @@ _db_init_done = False
 _db_init_lock = threading.Lock()
 _write_limits = {}
 _write_limits_lock = threading.Lock()
+_aop_module = None
+
+
+def _load_aop_module():
+    global _aop_module
+    if _aop_module is not None:
+        return _aop_module
+    current_path = Path(__file__).resolve()
+    aop_path = current_path.parents[1] / 'aop' / 'backend.py'
+    if aop_path == current_path or not aop_path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location('dnispl_aop_backend', aop_path)
+    if not spec or not spec.loader:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _aop_module = module
+    return module
 
 
 @app.after_request
@@ -100,7 +118,7 @@ def get_conn():
                 DATABASE_URL,
                 sslmode="require",
                 connect_timeout=3,
-                options="-c statement_timeout=30000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=10000",
+                options="-c statement_timeout=8000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=10000",
                 application_name="dnispl-crm",
                 keepalives=1,
                 keepalives_idle=30,
@@ -301,15 +319,13 @@ def init_db() -> None:
                     account_id TEXT,
                     value NUMERIC DEFAULT 0,
                     stage TEXT,
-                    deal_type TEXT,
                     owner TEXT,
                     sales_owner TEXT,
                     workflow_stage TEXT,
                     assigned_presales TEXT,
-                    assigned_salesops TEXT,
                     assigned_purchase TEXT,
+                    assigned_salesops TEXT,
                     sales_comments TEXT,
-                    sales_ops_comments TEXT,
                     requirements TEXT,
                     presales_architecture TEXT,
                     presales_questions TEXT,
@@ -319,8 +335,6 @@ def init_db() -> None:
                     final_pricing_proposal TEXT,
                     presales_assigned_at TEXT,
                     presales_due_at TEXT,
-                    salesops_assigned_at TEXT,
-                    salesops_due_at TEXT,
                     purchase_assigned_at TEXT,
                     purchase_due_at TEXT,
                     costing_returned_at TEXT,
@@ -328,7 +342,6 @@ def init_db() -> None:
                     assignment_due_at TEXT,
                     sales_submitted_at TEXT,
                     presales_escalated_at TEXT,
-                    oem_pricing_required BOOLEAN DEFAULT FALSE,
                     intake_problem_statement TEXT,
                     intake_why_now TEXT,
                     intake_business_impact TEXT,
@@ -350,13 +363,8 @@ def init_db() -> None:
                 );
                 """
             )
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS presales_escalated_at TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS deal_type TEXT;")
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS assigned_salesops TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS sales_ops_comments TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS salesops_assigned_at TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS salesops_due_at TEXT;")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS oem_pricing_required BOOLEAN DEFAULT FALSE;")
+            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS presales_escalated_at TEXT;")
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_problem_statement TEXT;")
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_why_now TEXT;")
             cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS intake_business_impact TEXT;")
@@ -404,6 +412,60 @@ def init_db() -> None:
             )
             cur.execute(
                 """
+                CREATE TABLE IF NOT EXISTS purchase_orders (
+                    id TEXT PRIMARY KEY,
+                    po_number TEXT,
+                    po_type TEXT,
+                    stage TEXT,
+                    opportunity_id TEXT,
+                    account_id TEXT,
+                    account_name TEXT,
+                    vendor_name TEXT,
+                    vendor_po_number TEXT,
+                    oem TEXT,
+                    deal_registration_no TEXT,
+                    description TEXT,
+                    value NUMERIC DEFAULT 0,
+                    vendor_value NUMERIC DEFAULT 0,
+                    payment_terms_customer TEXT,
+                    payment_terms_vendor TEXT,
+                    approval_level TEXT,
+                    presales_approved_by TEXT,
+                    presales_approved_at TEXT,
+                    finance_approved_by TEXT,
+                    finance_approved_at TEXT,
+                    implementation_approved_by TEXT,
+                    implementation_approved_at TEXT,
+                    ceo_approved_by TEXT,
+                    ceo_approved_at TEXT,
+                    expected_delivery TEXT,
+                    actual_delivery TEXT,
+                    grn_number TEXT,
+                    grn_date TEXT,
+                    invoice_number TEXT,
+                    invoice_date TEXT,
+                    notes TEXT,
+                    site_address TEXT,
+                    is_site_work BOOLEAN DEFAULT FALSE,
+                    site_completion_date TEXT,
+                    scanned_po_data TEXT,
+                    scanned_po_image TEXT,
+                    owner TEXT,
+                    created_by TEXT,
+                    requestor_email TEXT,
+                    sales_owner TEXT,
+                    account_manager_email TEXT,
+                    presales_approver TEXT,
+                    finance_approver TEXT,
+                    implementation_approver TEXT,
+                    ceo_approver TEXT,
+                    created_at TIMESTAMPTZ DEFAULT now(),
+                    updated_at TIMESTAMPTZ DEFAULT now()
+                );
+                """
+            )
+            cur.execute(
+                """
                 CREATE TABLE IF NOT EXISTS user_passwords (
                     email TEXT PRIMARY KEY,
                     password TEXT,
@@ -411,16 +473,6 @@ def init_db() -> None:
                 );
                 """
             )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS user_salary (
-                    email TEXT PRIMARY KEY,
-                    salary_data JSONB DEFAULT '{}'::jsonb,
-                    updated_at TIMESTAMPTZ DEFAULT now()
-                );
-                """
-            )
-            
             # Performance indexes for concurrent access patterns.
             cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_manager_id ON accounts(account_manager_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_activities_owner ON activities(lower(owner));")
@@ -431,16 +483,16 @@ def init_db() -> None:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_owner ON opportunities(lower(owner));")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_sales_owner ON opportunities(lower(sales_owner));")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_assigned_presales ON opportunities(lower(assigned_presales));")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_assigned_salesops ON opportunities(lower(assigned_salesops));")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_assigned_purchase ON opportunities(lower(assigned_purchase));")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_assigned_salesops ON opportunities(lower(assigned_salesops));")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_opps_account_id ON opportunities(account_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_aop_plans_fy ON aop_plans(fy_year);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_aop_actuals_fy ON aop_actuals(fy_year);")
-            # Create Ayushi and Mandeep if not exist
-            cur.execute("""INSERT INTO users (email, name, role, created_at) VALUES ('ayushi.v@dnispl.com','Ayushi V','account_manager',now()) ON CONFLICT (email) DO NOTHING;""")
-            cur.execute("""INSERT INTO users (email, name, role, created_at) VALUES ('mandeep.kaur@dnispl.com','Mandeep Kaur','account_manager',now()) ON CONFLICT (email) DO NOTHING;""")
-            cur.execute("""INSERT INTO user_passwords (email, password) VALUES ('ayushi.v@dnispl.com','crm2026') ON CONFLICT (email) DO NOTHING;""")
-            cur.execute("""INSERT INTO user_passwords (email, password) VALUES ('mandeep.kaur@dnispl.com','crm2026') ON CONFLICT (email) DO NOTHING;""")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_po_account_id ON purchase_orders(account_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_po_stage ON purchase_orders(stage);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_po_owner ON purchase_orders(lower(owner));")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_po_requestor ON purchase_orders(lower(requestor_email));")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_po_sales_owner ON purchase_orders(lower(sales_owner));")
         conn.commit()
     finally:
         conn.close()
@@ -466,7 +518,7 @@ def _json_exception_handler(exc):
 
 @app.before_request
 def _ensure_init_once():
-    pass  # Schema already initialized
+    ensure_db_initialized()
 
 
 def _client_ip() -> str:
@@ -578,7 +630,7 @@ def _http_json_request(url: str, method: str = "GET", data=None, headers=None):
         req.add_header(k, v)
     if data is not None and "Content-Type" not in {k.title(): v for k, v in (headers or {}).items()}:
         req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with urllib.request.urlopen(req, timeout=25) as resp:
         raw = resp.read().decode("utf-8")
         return json.loads(raw) if raw else {}
 
@@ -836,38 +888,6 @@ def send_opportunity_assignment_email(opportunity_name: str, opp_id: str, presal
         "Please review requirements and submit solution/proposal within SLA."
     )
     send_email_smtp([presales_target], subject, body, cc_emails=cc_list)
-
-
-def send_salesops_assignment_email(
-    opportunity_name: str,
-    opp_id: str,
-    salesops_email: str,
-    sales_email: str = "",
-    presales_email: str = "",
-    deal_type: str = "",
-    due_iso: str = "",
-    account_manager_email: str = "",
-) -> None:
-    target = (salesops_email or "").strip().lower()
-    if "@" not in target:
-        return
-    cc_list = []
-    for e in [SUPERVISOR_EMAIL, sales_email, presales_email, account_manager_email]:
-        e = (e or "").strip().lower()
-        if e and "@" in e and e != target and e not in cc_list:
-            cc_list.append(e)
-    subject = f"[CRM] Sales Ops Pricing Request: {opportunity_name or opp_id}"
-    body = (
-        f"Opportunity: {opportunity_name or ''}\n"
-        f"Opportunity ID: {opp_id}\n"
-        f"Sales Owner: {sales_email or 'NA'}\n"
-        f"Assigned Sales Ops: {target}\n"
-        f"Assigned Presales: {presales_email or 'NA'}\n"
-        f"Deal Type: {deal_type or 'NA'}\n"
-        f"Pricing Due At: {due_iso or 'NA'}\n\n"
-        "Please coordinate with OEM / distributor and update pricing support in CRM."
-    )
-    send_email_smtp([target], subject, body, cc_emails=cc_list)
 def enforce_opportunity_sla(conn, rows):
     now = datetime.now(timezone.utc)
     changed = False
@@ -909,7 +929,7 @@ def enforce_opportunity_sla(conn, rows):
                 ).isoformat().replace("+00:00", "Z")
             elif (
                 not has_proposal
-                and workflow_stage in ("Assigned to Presales", "Awaiting Sales Ops Pricing", "Pricing Returned to Presales")
+                and workflow_stage in ("Assigned to Presales", "Awaiting Purchase Costing", "Costing Returned")
                 and now > presales_due
                 and not (row.get("presales_escalated_at") or "").strip()
             ):
@@ -1144,7 +1164,7 @@ def list_accounts():
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if _is_supervisor(viewer_role):
+            if viewer_role in ("supervisor", "admin"):
                 cur.execute(
                     """
                     SELECT a.id, a.account_name, a.created_at, a.updated_at,
@@ -1193,6 +1213,7 @@ def list_accounts():
 def bootstrap_data():
     viewer_email = (request.args.get("viewer_email") or "").strip()
     viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
+
     payload = {
         "accounts": [],
         "activities": [],
@@ -1200,12 +1221,7 @@ def bootstrap_data():
         "contacts": [],
         "opportunities": [],
     }
-    _cache_key = f"bootstrap:{viewer_email}:{viewer_role}"
-    _now = time.time()
-    with _write_limits_lock:
-        _cached = _write_limits.get(_cache_key)
-        if _cached and _now - _cached[0] < 10:
-            return jsonify(_cached[1])
+
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -1224,9 +1240,7 @@ def bootstrap_data():
                 )
                 payload["accounts"] = cur.fetchall()
             elif viewer_email:
-                cur.execute("SELECT id FROM users WHERE lower(email)=lower(%s)", (viewer_email,))
-                manager = cur.fetchone()
-                if manager:
+                if viewer_role in ('presales', 'salesops', 'purchase'):
                     cur.execute(
                         """
                         SELECT a.id, a.account_name, a.created_at, a.updated_at,
@@ -1236,12 +1250,29 @@ def bootstrap_data():
                                u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
                         FROM accounts a
                         LEFT JOIN users u ON u.id = a.account_manager_id
-                        WHERE a.account_manager_id = %s
                         ORDER BY a.account_name
-                        """,
-                        (int(manager["id"]),),
+                        """
                     )
                     payload["accounts"] = cur.fetchall()
+                else:
+                    cur.execute("SELECT id FROM users WHERE lower(email)=lower(%s)", (viewer_email,))
+                    manager = cur.fetchone()
+                    if manager:
+                        cur.execute(
+                            """
+                            SELECT a.id, a.account_name, a.created_at, a.updated_at,
+                                   a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode,
+                                   a.suspect_q1, a.suspect_q2, a.suspect_q3, a.suspect_q4, a.suspect_q5,
+                                   a.suspect_q6, a.suspect_q7, a.suspect_q8, a.suspect_q9, a.suspect_q10, a.suspect_score,
+                                   u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
+                            FROM accounts a
+                            LEFT JOIN users u ON u.id = a.account_manager_id
+                            WHERE a.account_manager_id = %s
+                            ORDER BY a.account_name
+                            """,
+                            (int(manager["id"]),),
+                        )
+                        payload["accounts"] = cur.fetchall()
 
             if _is_supervisor(viewer_role):
                 cur.execute(
@@ -1307,12 +1338,12 @@ def bootstrap_data():
                 payload["contacts"] = cur.fetchall()
 
             opp_all = """
-                SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
-                       assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
+                SELECT id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
+                       assigned_presales, assigned_purchase, assigned_salesops, sales_comments, requirements,
                        presales_architecture, presales_questions, boq, purchase_costing,
-                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
+                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
                        purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                       assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
+                       assignment_due_at, sales_submitted_at, presales_escalated_at,
                        intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
                        intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
                        intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
@@ -1321,13 +1352,13 @@ def bootstrap_data():
                 FROM opportunities
                 ORDER BY updated_at DESC
             """
-            opp_scoped = """
-                SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
-                       assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
+            opp_sales_scoped = """
+                SELECT id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
+                       assigned_presales, assigned_purchase, assigned_salesops, sales_comments, requirements,
                        presales_architecture, presales_questions, boq, purchase_costing,
-                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
+                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
                        purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                       assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
+                       assignment_due_at, sales_submitted_at, presales_escalated_at,
                        intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
                        intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
                        intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
@@ -1336,9 +1367,40 @@ def bootstrap_data():
                 FROM opportunities
                 WHERE lower(owner)=lower(%s)
                    OR lower(sales_owner)=lower(%s)
-                   OR lower(assigned_presales)=lower(%s)
-                   OR lower(assigned_salesops)=lower(%s)
-                   OR lower(assigned_purchase)=lower(%s)
+                ORDER BY updated_at DESC
+            """
+            opp_presales_scoped = """
+                SELECT id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
+                       assigned_presales, assigned_purchase, assigned_salesops, sales_comments, requirements,
+                       presales_architecture, presales_questions, boq, purchase_costing,
+                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
+                       purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
+                       assignment_due_at, sales_submitted_at, presales_escalated_at,
+                       intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
+                       intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
+                       intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
+                       intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
+                       intake_competitors, intake_win_strategy, created_at, updated_at
+                FROM opportunities
+                WHERE lower(assigned_presales)=lower(%s)
+                  AND lower(coalesce(workflow_stage,'Sales Review')) IN ('assigned to presales', 'costing returned', 'pricing returned to presales', 'presales overdue')
+                ORDER BY updated_at DESC
+            """
+            opp_salesops_scoped = """
+                SELECT id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
+                       assigned_presales, assigned_purchase, assigned_salesops, sales_comments, requirements,
+                       presales_architecture, presales_questions, boq, purchase_costing,
+                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
+                       purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
+                       assignment_due_at, sales_submitted_at, presales_escalated_at,
+                       intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
+                       intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
+                       intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
+                       intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
+                       intake_competitors, intake_win_strategy, created_at, updated_at
+                FROM opportunities
+                WHERE (lower(assigned_salesops)=lower(%s) OR lower(assigned_purchase)=lower(%s))
+                  AND lower(coalesce(workflow_stage,'Sales Review')) IN ('awaiting purchase costing', 'awaiting sales ops pricing')
                 ORDER BY updated_at DESC
             """
 
@@ -1350,16 +1412,18 @@ def bootstrap_data():
                     rows = cur.fetchall()
                 payload["opportunities"] = rows
             elif viewer_email:
-                cur.execute(opp_scoped, (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email))
+                if viewer_role == "presales":
+                    cur.execute(opp_presales_scoped, (viewer_email,))
+                elif viewer_role in ("salesops", "purchase"):
+                    cur.execute(opp_salesops_scoped, (viewer_email, viewer_email))
+                else:
+                    cur.execute(opp_sales_scoped, (viewer_email, viewer_email))
                 rows = cur.fetchall()
                 if enforce_opportunity_sla(conn, rows):
-                    cur.execute(opp_scoped, (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email))
+                    cur.execute(opp_scoped, (viewer_email, viewer_email, viewer_email, viewer_email))
                     rows = cur.fetchall()
                 payload["opportunities"] = rows
-        with _write_limits_lock:
-            _write_limits[f"bootstrap:{viewer_email}:{viewer_role}"] = (time.time(), payload)        
         return jsonify(payload)
-        
     except Exception as exc:
         return jsonify({"error": f"bootstrap failed: {exc}", **payload}), 200
     finally:
@@ -1481,7 +1545,7 @@ def list_activities():
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if _is_supervisor(viewer_role):
+            if viewer_role in ("supervisor", "admin"):
                 cur.execute(
                     """
                     SELECT id, type, subject, notes, date, owner, account_id, account_name, created_at, updated_at
@@ -1751,12 +1815,12 @@ def list_opportunities():
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             query_all = """
-                    SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
-                           assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
+                    SELECT id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
+                           assigned_presales, assigned_purchase, assigned_salesops, sales_comments, requirements,
                            presales_architecture, presales_questions, boq, purchase_costing,
-                           costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
+                           costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
                            purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                           assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
+                           assignment_due_at, sales_submitted_at, presales_escalated_at,
                            intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
                            intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
                            intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
@@ -1765,13 +1829,13 @@ def list_opportunities():
                     FROM opportunities
                     ORDER BY updated_at DESC
                     """
-            query_scoped = """
-                SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
-                       assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
+            query_sales = """
+                SELECT id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
+                       assigned_presales, assigned_purchase, assigned_salesops, sales_comments, requirements,
                        presales_architecture, presales_questions, boq, purchase_costing,
-                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
+                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
                        purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                       assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
+                       assignment_due_at, sales_submitted_at, presales_escalated_at,
                        intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
                        intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
                        intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
@@ -1780,11 +1844,42 @@ def list_opportunities():
                 FROM opportunities
                 WHERE lower(owner)=lower(%s)
                    OR lower(sales_owner)=lower(%s)
-                   OR lower(assigned_presales)=lower(%s)
-                   OR lower(assigned_salesops)=lower(%s)
-                   OR lower(assigned_purchase)=lower(%s)
                 ORDER BY updated_at DESC
-            """
+                """
+            query_presales = """
+                SELECT id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
+                       assigned_presales, assigned_purchase, assigned_salesops, sales_comments, requirements,
+                       presales_architecture, presales_questions, boq, purchase_costing,
+                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
+                       purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
+                       assignment_due_at, sales_submitted_at, presales_escalated_at,
+                       intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
+                       intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
+                       intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
+                       intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
+                       intake_competitors, intake_win_strategy, created_at, updated_at
+                FROM opportunities
+                WHERE lower(assigned_presales)=lower(%s)
+                  AND lower(coalesce(workflow_stage,'Sales Review')) IN ('assigned to presales', 'costing returned', 'pricing returned to presales', 'presales overdue')
+                ORDER BY updated_at DESC
+                """
+            query_salesops = """
+                SELECT id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
+                       assigned_presales, assigned_purchase, assigned_salesops, sales_comments, requirements,
+                       presales_architecture, presales_questions, boq, purchase_costing,
+                       costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
+                       purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
+                       assignment_due_at, sales_submitted_at, presales_escalated_at,
+                       intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
+                       intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
+                       intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
+                       intake_pain_points, intake_compliance_requirements, intake_integration_requirements,
+                       intake_competitors, intake_win_strategy, created_at, updated_at
+                FROM opportunities
+                WHERE (lower(assigned_salesops)=lower(%s) OR lower(assigned_purchase)=lower(%s))
+                  AND lower(coalesce(workflow_stage,'Sales Review')) IN ('awaiting purchase costing', 'awaiting sales ops pricing')
+                ORDER BY updated_at DESC
+                """
             if _is_supervisor(viewer_role):
                 cur.execute(query_all)
                 rows = cur.fetchall()
@@ -1796,10 +1891,20 @@ def list_opportunities():
             if not viewer_email:
                 return jsonify({"error": "viewer_email is required for non-supervisor access"}), 400
 
-            cur.execute(query_scoped, (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email))
+            if viewer_role == 'presales':
+                cur.execute(query_presales, (viewer_email,))
+            elif viewer_role in ('salesops', 'purchase'):
+                cur.execute(query_salesops, (viewer_email, viewer_email))
+            else:
+                cur.execute(query_sales, (viewer_email, viewer_email))
             rows = cur.fetchall()
             if enforce_opportunity_sla(conn, rows):
-                cur.execute(query_scoped, (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email))
+                if viewer_role == 'presales':
+                    cur.execute(query_presales, (viewer_email,))
+                elif viewer_role in ('salesops', 'purchase'):
+                    cur.execute(query_salesops, (viewer_email, viewer_email))
+                else:
+                    cur.execute(query_sales, (viewer_email, viewer_email))
                 rows = cur.fetchall()
             return jsonify(rows)
     finally:
@@ -1819,15 +1924,13 @@ def upsert_opportunity():
         "account_id": (data.get("account_id") or data.get("accountId") or "").strip(),
         "value": float(data.get("value") or 0),
         "stage": (data.get("stage") or "").strip(),
-        "deal_type": (data.get("deal_type") or data.get("dealType") or "").strip(),
         "owner": owner,
         "sales_owner": (data.get("sales_owner") or data.get("salesOwner") or owner).strip(),
         "workflow_stage": (data.get("workflow_stage") or data.get("workflowStage") or "").strip(),
         "assigned_presales": (data.get("assigned_presales") or data.get("assignedPresales") or "").strip(),
-        "assigned_salesops": (data.get("assigned_salesops") or data.get("assignedSalesOps") or "").strip(),
         "assigned_purchase": (data.get("assigned_purchase") or data.get("assignedPurchase") or "").strip(),
+        "assigned_salesops": (data.get("assigned_salesops") or data.get("assignedSalesOps") or data.get("assignedPurchase") or data.get("assigned_purchase") or "").strip(),
         "sales_comments": (data.get("sales_comments") or data.get("salesComments") or "").strip(),
-        "sales_ops_comments": (data.get("sales_ops_comments") or data.get("salesOpsComments") or "").strip(),
         "requirements": (data.get("requirements") or "").strip(),
         "presales_architecture": (data.get("presales_architecture") or data.get("presalesArchitecture") or "").strip(),
         "presales_questions": (data.get("presales_questions") or data.get("presalesQuestions") or "").strip(),
@@ -1837,8 +1940,6 @@ def upsert_opportunity():
         "final_pricing_proposal": (data.get("final_pricing_proposal") or data.get("finalPricingProposal") or "").strip(),
         "presales_assigned_at": (data.get("presales_assigned_at") or data.get("presalesAssignedAt") or "").strip(),
         "presales_due_at": (data.get("presales_due_at") or data.get("presalesDueAt") or "").strip(),
-        "salesops_assigned_at": (data.get("salesops_assigned_at") or data.get("salesOpsAssignedAt") or "").strip(),
-        "salesops_due_at": (data.get("salesops_due_at") or data.get("salesOpsDueAt") or "").strip(),
         "purchase_assigned_at": (data.get("purchase_assigned_at") or data.get("purchaseAssignedAt") or "").strip(),
         "purchase_due_at": (data.get("purchase_due_at") or data.get("purchaseDueAt") or "").strip(),
         "costing_returned_at": (data.get("costing_returned_at") or data.get("costingReturnedAt") or "").strip(),
@@ -1846,7 +1947,6 @@ def upsert_opportunity():
         "assignment_due_at": (data.get("assignment_due_at") or data.get("assignmentDueAt") or "").strip(),
         "sales_submitted_at": (data.get("sales_submitted_at") or data.get("salesSubmittedAt") or "").strip(),
         "presales_escalated_at": (data.get("presales_escalated_at") or data.get("presalesEscalatedAt") or "").strip(),
-        "oem_pricing_required": str(data.get("oem_pricing_required") or data.get("oemPricingRequired") or "").strip().lower() in ("1", "true", "yes", "y"),
         "intake_problem_statement": (data.get("intake_problem_statement") or data.get("intakeProblemStatement") or "").strip(),
         "intake_why_now": (data.get("intake_why_now") or data.get("intakeWhyNow") or "").strip(),
         "intake_business_impact": (data.get("intake_business_impact") or data.get("intakeBusinessImpact") or "").strip(),
@@ -1865,46 +1965,36 @@ def upsert_opportunity():
         "intake_win_strategy": (data.get("intake_win_strategy") or data.get("intakeWinStrategy") or "").strip(),
     }
 
+    required_intake_fields = [
+        ("intake_problem_statement", "Problem Statement"),
+        ("intake_why_now", "Why Now (Trigger Event)"),
+        ("intake_business_impact", "Business Impact"),
+        ("intake_current_state", "Current State Summary"),
+        ("intake_budget_range", "Budget Range"),
+        ("intake_decision_timeline", "Decision Timeline"),
+    ]
+    missing_intake = [label for key, label in required_intake_fields if not payload.get(key)]
+    if missing_intake:
+        return jsonify({"error": "Mandatory presales intake fields missing", "missing_fields": missing_intake}), 400
+
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, assigned_presales, assigned_salesops, workflow_stage, sales_owner, owner FROM opportunities WHERE id=%s", (opp_id,))
+            cur.execute("SELECT id, assigned_presales, workflow_stage, sales_owner, owner FROM opportunities WHERE id=%s", (opp_id,))
             exists = cur.fetchone()
             prev_assigned_presales = ((exists or {}).get("assigned_presales") or "").strip().lower()
-            prev_assigned_salesops = ((exists or {}).get("assigned_salesops") or "").strip().lower()
             prev_workflow_stage = ((exists or {}).get("workflow_stage") or "").strip()
             prev_sales_owner = ((exists or {}).get("sales_owner") or (exists or {}).get("owner") or "").strip().lower()
-            deal_type_now = (payload.get("deal_type") or "").strip().lower()
-            if deal_type_now in ("hardware", "mixed") or (payload.get("assigned_presales") or "").strip():
-                payload["assigned_salesops"] = SALES_OPS_OWNER
-                payload["oem_pricing_required"] = True
-                payload["salesops_assigned_at"] = payload.get("salesops_assigned_at") or utc_now()
-                payload["salesops_due_at"] = payload.get("salesops_due_at") or (datetime.utcnow() + timedelta(hours=24)).isoformat(timespec="seconds") + "Z"
-
-            required_intake_fields = [
-                ("intake_problem_statement", "Problem Statement"),
-                ("intake_why_now", "Why Now (Trigger Event)"),
-                ("intake_business_impact", "Business Impact"),
-                ("intake_current_state", "Current State Summary"),
-                ("intake_budget_range", "Budget Range"),
-                ("intake_decision_timeline", "Decision Timeline"),
-            ]
-            workflow_now = (payload.get("workflow_stage") or "").strip()
-            requires_intake = (not exists) or workflow_now == "Assigned to Presales"
-            missing_intake = [label for key, label in required_intake_fields if not payload.get(key)]
-            if requires_intake and missing_intake:
-                return jsonify({"error": "Mandatory presales intake fields missing", "missing_fields": missing_intake}), 400
-
             if exists:
                 cur.execute(
                     """
                     UPDATE opportunities
-                    SET name=%s, account_id=%s, value=%s, stage=%s, deal_type=%s, owner=%s, sales_owner=%s, workflow_stage=%s,
-                        assigned_presales=%s, assigned_salesops=%s, assigned_purchase=%s, sales_comments=%s, sales_ops_comments=%s, requirements=%s,
+                    SET name=%s, account_id=%s, value=%s, stage=%s, owner=%s, sales_owner=%s, workflow_stage=%s,
+                        assigned_presales=%s, assigned_purchase=%s, assigned_salesops=%s, sales_comments=%s, requirements=%s,
                         presales_architecture=%s, presales_questions=%s, boq=%s, purchase_costing=%s,
-                        costing_tat=%s, final_pricing_proposal=%s, presales_assigned_at=%s, presales_due_at=%s, salesops_assigned_at=%s, salesops_due_at=%s,
+                        costing_tat=%s, final_pricing_proposal=%s, presales_assigned_at=%s, presales_due_at=%s,
                         purchase_assigned_at=%s, purchase_due_at=%s, costing_returned_at=%s, final_proposal_at=%s,
-                        assignment_due_at=%s, sales_submitted_at=%s, presales_escalated_at=%s, oem_pricing_required=%s,
+                        assignment_due_at=%s, sales_submitted_at=%s, presales_escalated_at=%s,
                         intake_problem_statement=%s, intake_why_now=%s, intake_business_impact=%s, intake_current_state=%s,
                         intake_budget_range=%s, intake_decision_timeline=%s, intake_risk_if_not_solved=%s,
                         intake_key_stakeholders=%s, intake_in_scope=%s, intake_out_of_scope=%s, intake_current_environment=%s,
@@ -1913,14 +2003,14 @@ def upsert_opportunity():
                     WHERE id=%s
                     """,
                     (
-                        payload["name"], payload["account_id"], payload["value"], payload["stage"], payload["deal_type"], payload["owner"],
-                        payload["sales_owner"], payload["workflow_stage"], payload["assigned_presales"], payload["assigned_salesops"],
-                        payload["assigned_purchase"], payload["sales_comments"], payload["sales_ops_comments"], payload["requirements"],
+                        payload["name"], payload["account_id"], payload["value"], payload["stage"], payload["owner"],
+                        payload["sales_owner"], payload["workflow_stage"], payload["assigned_presales"],
+                        payload["assigned_purchase"], payload["assigned_salesops"], payload["sales_comments"], payload["requirements"],
                         payload["presales_architecture"], payload["presales_questions"], payload["boq"],
                         payload["purchase_costing"], payload["costing_tat"], payload["final_pricing_proposal"],
-                        payload["presales_assigned_at"], payload["presales_due_at"], payload["salesops_assigned_at"], payload["salesops_due_at"], payload["purchase_assigned_at"],
+                        payload["presales_assigned_at"], payload["presales_due_at"], payload["purchase_assigned_at"],
                         payload["purchase_due_at"], payload["costing_returned_at"], payload["final_proposal_at"],
-                        payload["assignment_due_at"], payload["sales_submitted_at"], payload["presales_escalated_at"], payload["oem_pricing_required"],
+                        payload["assignment_due_at"], payload["sales_submitted_at"], payload["presales_escalated_at"],
                         payload["intake_problem_statement"], payload["intake_why_now"], payload["intake_business_impact"], payload["intake_current_state"],
                         payload["intake_budget_range"], payload["intake_decision_timeline"], payload["intake_risk_if_not_solved"],
                         payload["intake_key_stakeholders"], payload["intake_in_scope"], payload["intake_out_of_scope"], payload["intake_current_environment"],
@@ -1933,12 +2023,12 @@ def upsert_opportunity():
                 cur.execute(
                     """
                     INSERT INTO opportunities (
-                        id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
-                        assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
+                        id, name, account_id, value, stage, owner, sales_owner, workflow_stage,
+                        assigned_presales, assigned_purchase, assigned_salesops, sales_comments, requirements,
                         presales_architecture, presales_questions, boq, purchase_costing,
-                        costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at, salesops_assigned_at, salesops_due_at,
+                        costing_tat, final_pricing_proposal, presales_assigned_at, presales_due_at,
                         purchase_assigned_at, purchase_due_at, costing_returned_at, final_proposal_at,
-                        assignment_due_at, sales_submitted_at, presales_escalated_at, oem_pricing_required,
+                        assignment_due_at, sales_submitted_at, presales_escalated_at,
                         intake_problem_statement, intake_why_now, intake_business_impact, intake_current_state,
                         intake_budget_range, intake_decision_timeline, intake_risk_if_not_solved,
                         intake_key_stakeholders, intake_in_scope, intake_out_of_scope, intake_current_environment,
@@ -1946,24 +2036,23 @@ def upsert_opportunity():
                         intake_competitors, intake_win_strategy, created_at, updated_at
                     )
                     VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, now(), now()
+                        %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, now(), now()
                     )
                     """,
                     (
-                        opp_id, payload["name"], payload["account_id"], payload["value"], payload["stage"], payload["deal_type"], payload["owner"],
-                        payload["sales_owner"], payload["workflow_stage"], payload["assigned_presales"], payload["assigned_salesops"],
-                        payload["assigned_purchase"], payload["sales_comments"], payload["sales_ops_comments"], payload["requirements"],
+                        opp_id, payload["name"], payload["account_id"], payload["value"], payload["stage"], payload["owner"],
+                        payload["sales_owner"], payload["workflow_stage"], payload["assigned_presales"],
+                        payload["assigned_purchase"], payload["assigned_salesops"], payload["sales_comments"], payload["requirements"],
                         payload["presales_architecture"], payload["presales_questions"], payload["boq"],
                         payload["purchase_costing"], payload["costing_tat"], payload["final_pricing_proposal"],
-                        payload["presales_assigned_at"], payload["presales_due_at"], payload["salesops_assigned_at"], payload["salesops_due_at"], payload["purchase_assigned_at"],
+                        payload["presales_assigned_at"], payload["presales_due_at"], payload["purchase_assigned_at"],
                         payload["purchase_due_at"], payload["costing_returned_at"], payload["final_proposal_at"],
-                        payload["assignment_due_at"], payload["sales_submitted_at"], payload["presales_escalated_at"], payload["oem_pricing_required"],
+                        payload["assignment_due_at"], payload["sales_submitted_at"], payload["presales_escalated_at"],
                         payload["intake_problem_statement"], payload["intake_why_now"], payload["intake_business_impact"], payload["intake_current_state"],
                         payload["intake_budget_range"], payload["intake_decision_timeline"], payload["intake_risk_if_not_solved"], payload["intake_key_stakeholders"],
                         payload["intake_in_scope"], payload["intake_out_of_scope"], payload["intake_current_environment"], payload["intake_pain_points"],
@@ -1974,7 +2063,6 @@ def upsert_opportunity():
         conn.commit()
 
         current_assigned = (payload.get("assigned_presales") or "").strip().lower()
-        current_salesops = (payload.get("assigned_salesops") or "").strip().lower()
         workflow_now = (payload.get("workflow_stage") or "").strip()
         sales_now = (payload.get("sales_owner") or payload.get("owner") or "").strip().lower()
 
@@ -2024,50 +2112,6 @@ def upsert_opportunity():
                 due_iso,
                 account_manager_email,
             )
-            if current_salesops:
-                send_salesops_assignment_email(
-                    payload.get("name") or "",
-                    opp_id,
-                    current_salesops,
-                    sales_now,
-                    current_assigned,
-                    payload.get("deal_type") or "",
-                    (payload.get("salesops_due_at") or "").strip(),
-                    account_manager_email,
-                )
-        elif current_salesops and (
-            current_salesops != prev_assigned_salesops
-            or status == "created"
-            or str(payload.get("oem_pricing_required") or "").lower() in ("true", "1")
-        ):
-            account_manager_email = ""
-            acc_id = (payload.get("account_id") or "").strip()
-            if acc_id:
-                try:
-                    with conn.cursor(cursor_factory=RealDictCursor) as cur_am:
-                        cur_am.execute(
-                            """
-                            SELECT u.email FROM accounts a
-                            LEFT JOIN users u ON u.id = a.account_manager_id
-                            WHERE CAST(a.id AS TEXT) = %s
-                            """,
-                            (acc_id,),
-                        )
-                        am_row = cur_am.fetchone()
-                        if am_row:
-                            account_manager_email = (am_row.get("email") or "").strip().lower()
-                except Exception as e:
-                    print(f"[CRM] Could not fetch account manager for sales ops CC: {e}")
-            send_salesops_assignment_email(
-                payload.get("name") or "",
-                opp_id,
-                current_salesops,
-                sales_now,
-                current_assigned,
-                payload.get("deal_type") or "",
-                (payload.get("salesops_due_at") or "").strip(),
-                account_manager_email,
-            )
         return jsonify({"status": status, "id": opp_id})
     finally:
         conn.close()
@@ -2080,7 +2124,7 @@ def delete_opportunity(opp_id: str):
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, owner, sales_owner, assigned_salesops FROM opportunities WHERE id=%s", (opp_id,))
+            cur.execute("SELECT id, owner, sales_owner FROM opportunities WHERE id=%s", (opp_id,))
             row = cur.fetchone()
             if not row:
                 return jsonify({"error": "opportunity not found"}), 404
@@ -2090,7 +2134,6 @@ def delete_opportunity(opp_id: str):
                 allowed = {
                     (row.get("owner") or "").lower(),
                     (row.get("sales_owner") or "").lower(),
-                    (row.get("assigned_salesops") or "").lower(),
                 }
                 if viewer_email.lower() not in allowed:
                     return jsonify({"error": "not allowed"}), 403
@@ -2262,52 +2305,42 @@ def list_aop_plans():
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            base_cols = """p.account_id, p.account_name, p.account_manager, p.fy_year,
-                p.current_revenue, p.target_growth, p.updated_by, p.updated_at,
-                p.apr_hardware, p.apr_software, p.apr_managed_services,
-                p.may_hardware, p.may_software, p.may_managed_services,
-                p.jun_hardware, p.jun_software, p.jun_managed_services,
-                p.jul_hardware, p.jul_software, p.jul_managed_services,
-                p.aug_hardware, p.aug_software, p.aug_managed_services,
-                p.sep_hardware, p.sep_software, p.sep_managed_services,
-                p.oct_hardware, p.oct_software, p.oct_managed_services,
-                p.nov_hardware, p.nov_software, p.nov_managed_services,
-                p.dec_hardware, p.dec_software, p.dec_managed_services,
-                p.jan_hardware, p.jan_software, p.jan_managed_services,
-                p.feb_hardware, p.feb_software, p.feb_managed_services,
-                p.mar_hardware, p.mar_software, p.mar_managed_services"""
             if _is_supervisor(viewer_role):
-                cur.execute(f"SELECT {base_cols} FROM aop_plans p WHERE p.fy_year=%s", (fy_year,))
+                cur.execute(
+                    "SELECT account_id, fy_year, plan_data, owner, updated_at FROM aop_plans WHERE fy_year=%s",
+                    (fy_year,),
+                )
             else:
                 if not viewer_email:
                     return jsonify([])
-                cur.execute(f"SELECT {base_cols} FROM aop_plans p WHERE p.fy_year=%s AND lower(p.account_manager)=lower(%s)", (fy_year, viewer_email))
+                cur.execute(
+                    """
+                    SELECT p.account_id, p.fy_year, p.plan_data, p.owner, p.updated_at
+                    FROM aop_plans p
+                    JOIN accounts a ON CAST(a.id AS TEXT) = p.account_id
+                    JOIN users u ON u.id = a.account_manager_id
+                    WHERE p.fy_year=%s AND lower(u.email)=lower(%s)
+                    """,
+                    (fy_year, viewer_email),
+                )
             rows = cur.fetchall()
-            month_map = {"apr":"april","may":"may","jun":"june","jul":"july","aug":"august","sep":"september","oct":"october","nov":"november","dec":"december","jan":"january","feb":"february","mar":"march"}
             out = []
             for r in rows:
-                win = float(r.get("target_growth") or 0)
-                months = {}
-                for px, mname in month_map.items():
-                    raw = float(r.get(f"{px}_hardware") or 0) + float(r.get(f"{px}_software") or 0) + float(r.get(f"{px}_managed_services") or 0)
-                    months[mname] = round(raw * win * 100, 4)  # convert Cr to Lakhs
-                row_out = {
+                item = {
                     "account_id": r.get("account_id"),
-                    "account_name": r.get("account_name"),
-                    "owner": r.get("account_manager"),
                     "fy_year": r.get("fy_year"),
-                    "win_pct": win,
-                    "aop_cr": float(r.get("current_revenue") or 0),
+                    "owner": r.get("owner"),
                     "updated_at": str(r.get("updated_at") or ""),
-                    "months": months,
                 }
-                # Add flat fields in format the frontend expects: april_hardware, april_software etc.
-                for px, mname in month_map.items():
-                    raw = float(r.get(f"{px}_hardware") or 0) * win
-                    row_out[f"{mname}_hardware"] = round(float(r.get(f"{px}_hardware") or 0) * win * 100, 4)
-                    row_out[f"{mname}_software"] = round(float(r.get(f"{px}_software") or 0) * win * 100, 4)
-                    row_out[f"{mname}_managed_services"] = round(float(r.get(f"{px}_managed_services") or 0) * win * 100, 4)
-                out.append(row_out)
+                pd = r.get("plan_data") or {}
+                if isinstance(pd, str):
+                    try:
+                        pd = json.loads(pd)
+                    except Exception:
+                        pd = {}
+                if isinstance(pd, dict):
+                    item.update(pd)
+                out.append(item)
             return jsonify(out)
     except Exception as exc:
         return jsonify([])
@@ -2585,27 +2618,330 @@ def send_mom_mail_endpoint():
     finally:
         conn.close()
 
-def _pdf_to_base64_images(pdf_bytes: bytes, max_pages: int = 5, dpi: int = 150):
-    images = []
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+
+def _po_stage_recipients(po: dict):
+    stage = (po.get("stage") or "").strip()
+    to_emails = []
+    cc_emails = []
+
+    def add_to(value):
+        e = _normalize_email(value)
+        if e and e not in to_emails:
+            to_emails.append(e)
+
+    def add_cc(value):
+        e = _normalize_email(value)
+        if e and e not in to_emails and e not in cc_emails:
+            cc_emails.append(e)
+
+    if stage == 'Pending Presales+Finance Approval':
+        add_to(po.get('presales_approver') or 'vinod.v@dnispl.com')
+        add_to(po.get('finance_approver') or 'rakesh.uniyal@dnispl.com')
+    elif stage == 'Both Approved - Pending Implementation':
+        add_to(po.get('implementation_approver') or 'pokhraj.yadav@dnispl.com')
+    elif stage == 'Pending CEO Approval':
+        add_to(po.get('ceo_approver') or SUPERVISOR_EMAIL)
+    else:
+        add_to(po.get('requestor_email') or po.get('owner'))
+
+    add_cc(po.get('requestor_email') or po.get('created_by') or po.get('owner'))
+    add_cc(po.get('sales_owner'))
+    add_cc(po.get('account_manager_email'))
+    add_cc(SUPERVISOR_EMAIL)
+    return to_emails, cc_emails
+
+
+def _po_notification_subject(po: dict, event_name: str) -> str:
+    po_number = po.get('po_number') or po.get('poNumber') or 'PO'
+    account_name = po.get('account_name') or po.get('accountName') or 'Account'
+    return f"[CRM PO] {event_name}: {po_number} | {account_name}"
+
+
+def _po_notification_body(po: dict, event_name: str) -> str:
+    return (
+        f"Event: {event_name}\n"
+        f"PO Number: {po.get('po_number') or po.get('poNumber') or ''}\n"
+        f"Account: {po.get('account_name') or po.get('accountName') or ''}\n"
+        f"Opportunity ID: {po.get('opportunity_id') or po.get('opportunityId') or ''}\n"
+        f"Stage: {po.get('stage') or ''}\n"
+        f"Customer PO Value: {po.get('value') or 0}\n"
+        f"Vendor Cost: {po.get('vendor_value') or po.get('vendorValue') or 0}\n"
+        f"Requestor: {po.get('requestor_email') or po.get('created_by') or po.get('owner') or ''}\n"
+        f"Sales Owner: {po.get('sales_owner') or ''}\n"
+        f"Account Manager: {po.get('account_manager_email') or ''}\n"
+        f"Presales Approver: {po.get('presales_approver') or 'vinod.v@dnispl.com'}\n"
+        f"Finance Approver: {po.get('finance_approver') or 'rakesh.uniyal@dnispl.com'}\n"
+        f"Implementation Approver: {po.get('implementation_approver') or 'pokhraj.yadav@dnispl.com'}\n"
+        f"CEO Approver: {po.get('ceo_approver') or SUPERVISOR_EMAIL}\n\n"
+        f"Notes: {po.get('notes') or ''}\n"
+    )
+
+
+@app.route('/api/purchase-orders', methods=['GET'])
+def list_purchase_orders():
+    viewer_email = _normalize_email(request.args.get('viewer_email') or '')
+    viewer_role = (request.args.get('viewer_role') or 'account_manager').strip().lower()
+    conn = get_conn()
     try:
-        page_count = min(len(doc), max_pages)
-        for i in range(page_count):
-            page = doc[i]
-            pix = page.get_pixmap(dpi=dpi, alpha=False)
-            img_bytes = pix.tobytes("jpeg")
-            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-            images.append(img_b64)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if _is_supervisor(viewer_role):
+                cur.execute("SELECT * FROM purchase_orders ORDER BY updated_at DESC, created_at DESC")
+            else:
+                if not viewer_email:
+                    return jsonify([])
+                cur.execute(
+                    """
+                    SELECT * FROM purchase_orders
+                    WHERE lower(COALESCE(owner,''))=lower(%s)
+                       OR lower(COALESCE(created_by,''))=lower(%s)
+                       OR lower(COALESCE(requestor_email,''))=lower(%s)
+                       OR lower(COALESCE(sales_owner,''))=lower(%s)
+                       OR lower(COALESCE(account_manager_email,''))=lower(%s)
+                       OR (stage='Pending Presales+Finance Approval' AND (lower(COALESCE(presales_approver,''))=lower(%s) OR lower(COALESCE(finance_approver,''))=lower(%s)))
+                       OR (stage='Both Approved - Pending Implementation' AND lower(COALESCE(implementation_approver,''))=lower(%s))
+                       OR (stage='Pending CEO Approval' AND lower(COALESCE(ceo_approver,''))=lower(%s))
+                    ORDER BY updated_at DESC, created_at DESC
+                    """,
+                    (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email, viewer_email, viewer_email, viewer_email, viewer_email),
+                )
+            return jsonify(cur.fetchall())
     finally:
-        doc.close()
-    return images
+        conn.close()
+
+
+@app.route('/api/purchase-orders', methods=['POST'])
+def upsert_purchase_order():
+    data = request.get_json(silent=True) or {}
+    po_id = str(data.get('id') or '').strip()
+    if not po_id:
+        return jsonify({'error': 'id required'}), 400
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO purchase_orders (
+                    id, po_number, po_type, stage, opportunity_id, account_id, account_name,
+                    vendor_name, vendor_po_number, oem, deal_registration_no, description,
+                    value, vendor_value, payment_terms_customer, payment_terms_vendor,
+                    approval_level, presales_approved_by, presales_approved_at,
+                    finance_approved_by, finance_approved_at, implementation_approved_by,
+                    implementation_approved_at, ceo_approved_by, ceo_approved_at,
+                    expected_delivery, actual_delivery, grn_number, grn_date,
+                    invoice_number, invoice_date, notes, site_address, is_site_work,
+                    site_completion_date, scanned_po_data, scanned_po_image, owner,
+                    created_by, requestor_email, sales_owner, account_manager_email,
+                    presales_approver, finance_approver, implementation_approver, ceo_approver,
+                    created_at, updated_at
+                ) VALUES (
+                    %s,%s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,
+                    %s,%s,%s,
+                    %s,%s,%s,
+                    %s,%s,%s,
+                    %s,%s,%s,%s,
+                    %s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,
+                    %s,%s,%s,%s,
+                    %s,%s,%s,%s,
+                    COALESCE(%s::timestamptz, now()), now()
+                )
+                ON CONFLICT (id) DO UPDATE SET
+                    po_number=EXCLUDED.po_number,
+                    po_type=EXCLUDED.po_type,
+                    stage=EXCLUDED.stage,
+                    opportunity_id=EXCLUDED.opportunity_id,
+                    account_id=EXCLUDED.account_id,
+                    account_name=EXCLUDED.account_name,
+                    vendor_name=EXCLUDED.vendor_name,
+                    vendor_po_number=EXCLUDED.vendor_po_number,
+                    oem=EXCLUDED.oem,
+                    deal_registration_no=EXCLUDED.deal_registration_no,
+                    description=EXCLUDED.description,
+                    value=EXCLUDED.value,
+                    vendor_value=EXCLUDED.vendor_value,
+                    payment_terms_customer=EXCLUDED.payment_terms_customer,
+                    payment_terms_vendor=EXCLUDED.payment_terms_vendor,
+                    approval_level=EXCLUDED.approval_level,
+                    presales_approved_by=EXCLUDED.presales_approved_by,
+                    presales_approved_at=EXCLUDED.presales_approved_at,
+                    finance_approved_by=EXCLUDED.finance_approved_by,
+                    finance_approved_at=EXCLUDED.finance_approved_at,
+                    implementation_approved_by=EXCLUDED.implementation_approved_by,
+                    implementation_approved_at=EXCLUDED.implementation_approved_at,
+                    ceo_approved_by=EXCLUDED.ceo_approved_by,
+                    ceo_approved_at=EXCLUDED.ceo_approved_at,
+                    expected_delivery=EXCLUDED.expected_delivery,
+                    actual_delivery=EXCLUDED.actual_delivery,
+                    grn_number=EXCLUDED.grn_number,
+                    grn_date=EXCLUDED.grn_date,
+                    invoice_number=EXCLUDED.invoice_number,
+                    invoice_date=EXCLUDED.invoice_date,
+                    notes=EXCLUDED.notes,
+                    site_address=EXCLUDED.site_address,
+                    is_site_work=EXCLUDED.is_site_work,
+                    site_completion_date=EXCLUDED.site_completion_date,
+                    scanned_po_data=EXCLUDED.scanned_po_data,
+                    scanned_po_image=EXCLUDED.scanned_po_image,
+                    owner=EXCLUDED.owner,
+                    created_by=EXCLUDED.created_by,
+                    requestor_email=EXCLUDED.requestor_email,
+                    sales_owner=EXCLUDED.sales_owner,
+                    account_manager_email=EXCLUDED.account_manager_email,
+                    presales_approver=EXCLUDED.presales_approver,
+                    finance_approver=EXCLUDED.finance_approver,
+                    implementation_approver=EXCLUDED.implementation_approver,
+                    ceo_approver=EXCLUDED.ceo_approver,
+                    updated_at=now()
+                """,
+                (
+                    po_id,
+                    data.get('poNumber') or data.get('po_number') or '',
+                    data.get('poType') or data.get('po_type') or '',
+                    data.get('stage') or 'Draft',
+                    data.get('opportunityId') or data.get('opportunity_id') or '',
+                    data.get('accountId') or data.get('account_id') or '',
+                    data.get('accountName') or data.get('account_name') or '',
+                    data.get('vendorName') or data.get('vendor_name') or '',
+                    data.get('vendorPONumber') or data.get('vendor_po_number') or '',
+                    data.get('oem') or '',
+                    data.get('dealRegistrationNo') or data.get('deal_registration_no') or '',
+                    data.get('description') or '',
+                    data.get('value') or 0,
+                    data.get('vendorValue') or data.get('vendor_value') or 0,
+                    data.get('paymentTermsCustomer') or data.get('payment_terms_customer') or '',
+                    data.get('paymentTermsVendor') or data.get('payment_terms_vendor') or '',
+                    data.get('approvalLevel') or data.get('approval_level') or '',
+                    data.get('presalesApprovedBy') or data.get('presales_approved_by') or '',
+                    data.get('presalesApprovedAt') or data.get('presales_approved_at') or '',
+                    data.get('financeApprovedBy') or data.get('finance_approved_by') or '',
+                    data.get('financeApprovedAt') or data.get('finance_approved_at') or '',
+                    data.get('implementationApprovedBy') or data.get('implementation_approved_by') or '',
+                    data.get('implementationApprovedAt') or data.get('implementation_approved_at') or '',
+                    data.get('ceoApprovedBy') or data.get('ceo_approved_by') or '',
+                    data.get('ceoApprovedAt') or data.get('ceo_approved_at') or '',
+                    data.get('expectedDelivery') or data.get('expected_delivery') or '',
+                    data.get('actualDelivery') or data.get('actual_delivery') or '',
+                    data.get('grnNumber') or data.get('grn_number') or '',
+                    data.get('grnDate') or data.get('grn_date') or '',
+                    data.get('invoiceNumber') or data.get('invoice_number') or '',
+                    data.get('invoiceDate') or data.get('invoice_date') or '',
+                    data.get('notes') or '',
+                    data.get('siteAddress') or data.get('site_address') or '',
+                    bool(data.get('isSiteWork') if data.get('isSiteWork') is not None else data.get('is_site_work')),
+                    data.get('siteCompletionDate') or data.get('site_completion_date') or '',
+                    data.get('scannedPOData') or data.get('scanned_po_data') or '',
+                    data.get('scannedPOImage') or data.get('scanned_po_image') or '',
+                    _normalize_email(data.get('owner') or ''),
+                    _normalize_email(data.get('createdBy') or data.get('created_by') or ''),
+                    _normalize_email(data.get('requestorEmail') or data.get('requestor_email') or ''),
+                    _normalize_email(data.get('salesOwner') or data.get('sales_owner') or ''),
+                    _normalize_email(data.get('accountManagerEmail') or data.get('account_manager_email') or ''),
+                    _normalize_email(data.get('presalesApprover') or data.get('presales_approver') or 'vinod.v@dnispl.com'),
+                    _normalize_email(data.get('financeApprover') or data.get('finance_approver') or 'rakesh.uniyal@dnispl.com'),
+                    _normalize_email(data.get('implementationApprover') or data.get('implementation_approver') or 'pokhraj.yadav@dnispl.com'),
+                    _normalize_email(data.get('ceoApprover') or data.get('ceo_approver') or SUPERVISOR_EMAIL),
+                    data.get('createdDate') or data.get('created_at') or None,
+                ),
+            )
+        conn.commit()
+        return jsonify({'status': 'ok', 'id': po_id})
+    finally:
+        conn.close()
+
+
+@app.route('/api/purchase-orders/<po_id>', methods=['DELETE'])
+def delete_purchase_order(po_id: str):
+    viewer_email = _normalize_email(request.args.get('viewer_email') or '')
+    viewer_role = (request.args.get('viewer_role') or 'account_manager').strip().lower()
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, owner, created_by, requestor_email FROM purchase_orders WHERE id=%s", (po_id,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({'error': 'purchase order not found'}), 404
+            allowed = _is_supervisor(viewer_role) or viewer_email in {
+                _normalize_email(row.get('owner') or ''),
+                _normalize_email(row.get('created_by') or ''),
+                _normalize_email(row.get('requestor_email') or ''),
+            }
+            if not allowed:
+                return jsonify({'error': 'not allowed'}), 403
+            cur.execute("DELETE FROM purchase_orders WHERE id=%s", (po_id,))
+        conn.commit()
+        return jsonify({'status': 'deleted', 'id': po_id})
+    finally:
+        conn.close()
+
+
+@app.route('/api/purchase-orders/notify', methods=['POST'])
+def notify_purchase_order():
+    data = request.get_json(silent=True) or {}
+    po = data.get('purchase_order') or data.get('po') or {}
+    event_name = (data.get('event') or 'PO Update').strip() or 'PO Update'
+    to_emails, cc_emails = _po_stage_recipients(po)
+    if not to_emails and not cc_emails:
+        return jsonify({'status': 'skipped', 'reason': 'no recipients'})
+    subject = _po_notification_subject(po, event_name)
+    body = _po_notification_body(po, event_name)
+    sent = send_email_smtp(to_emails, subject, body, cc_emails=cc_emails)
+    return jsonify({'status': 'sent' if sent else 'not_sent', 'to': to_emails, 'cc': cc_emails, 'subject': subject})
+
+
+@app.route('/api/ai/extract-po', methods=['POST'])
+def extract_po_with_ai():
+    data = request.get_json(silent=True) or {}
+    image_b64 = str(data.get('image_base64') or '').strip()
+    mime_type = str(data.get('mime_type') or 'image/jpeg').strip() or 'image/jpeg'
+    api_key = (os.environ.get('ANTHROPIC_API_KEY') or '').strip()
+    if not image_b64:
+        return jsonify({'error': 'image_base64 required'}), 400
+    if not api_key:
+        return jsonify({'error': 'ANTHROPIC_API_KEY not configured'}), 503
+    payload = {
+        'model': 'claude-sonnet-4-20250514',
+        'max_tokens': 2000,
+        'messages': [{
+            'role': 'user',
+            'content': [
+                {
+                    'type': 'image',
+                    'source': {'type': 'base64', 'media_type': mime_type, 'data': image_b64}
+                },
+                {
+                    'type': 'text',
+                    'text': 'Extract from this Purchase Order document: PO Number, PO Date, Customer Name, Total Value (in INR), Payment Terms, Delivery Address, Scope of Work, OEM/Brand, Vendor/Distributor, line items, and any risk observations. Return a clean structured summary with clear section headers.'
+                }
+            ]
+        }]
+    }
+    req = urllib.request.Request(
+        'https://api.anthropic.com/v1/messages',
+        data=json.dumps(payload).encode('utf-8'),
+        headers={
+            'Content-Type': 'application/json',
+            'x-api-key': api_key,
+            'anthropic-version': '2023-06-01',
+        },
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            raw = resp.read().decode('utf-8')
+        parsed = json.loads(raw)
+        text = (((parsed.get('content') or [{}])[0]).get('text') or '').strip()
+        text = _coerce_ai_json_text(text)
+        return jsonify({'text': text, 'raw': parsed})
+    except Exception as exc:
+        return jsonify({'error': f'po extraction failed: {exc}'}), 500
 
 
 def _coerce_ai_json_text(text: str) -> str:
-    source = (text or "").strip()
+    source = (text or '').strip()
     if not source:
         return source
-
     fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", source, re.IGNORECASE)
     if fenced:
         candidate = fenced.group(1).strip()
@@ -2614,9 +2950,8 @@ def _coerce_ai_json_text(text: str) -> str:
             return candidate
         except Exception:
             pass
-
-    start = source.find("{")
-    end = source.rfind("}")
+    start = source.find('{')
+    end = source.rfind('}')
     if start != -1 and end != -1 and end > start:
         candidate = source[start:end + 1].strip()
         try:
@@ -2624,717 +2959,70 @@ def _coerce_ai_json_text(text: str) -> str:
             return candidate
         except Exception:
             pass
-
     return source
 
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+def _call_standalone_aop(fn_name: str):
+    module = _load_aop_module()
+    if not module:
+        return jsonify({'error': 'standalone aop module not found'}), 500
+    return getattr(module, fn_name)()
 
 
-@app.route("/api/ai-extract", methods=["POST"])
-def ai_extract():
-    """Proxy AI extraction requests to Anthropic Claude so the API key stays server-side."""
-    if not ANTHROPIC_API_KEY:
-        return jsonify({"error": "AI extraction not configured (ANTHROPIC_API_KEY missing)"}), 503
-
-    data = request.get_json(silent=True) or {}
-    prompt = (data.get("prompt") or "").strip()
-    image_b64 = (data.get("image_b64") or "").strip()
-    media_type = (data.get("media_type") or "image/jpeg").strip()
-
-    if not image_b64 or not prompt:
-        return jsonify({"error": "image_b64 and prompt are required"}), 400
-
-    if "," in image_b64:
-        image_b64 = image_b64.split(",", 1)[1]
-
-    try:
-        content_parts = [{"type": "text", "text": prompt}]
-
-        if media_type == "application/pdf":
-            pdf_bytes = base64.b64decode(image_b64)
-            pdf_images = _pdf_to_base64_images(pdf_bytes, max_pages=5, dpi=150)
-
-            if not pdf_images:
-                return jsonify({"error": "Could not read PDF pages"}), 400
-
-            for img_b64 in pdf_images:
-                content_parts.append({
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64}
-                })
-        else:
-            content_parts.append({
-                "type": "image",
-                "source": {"type": "base64", "media_type": media_type, "data": image_b64}
-            })
-
-        payload = {
-            "model": "claude-sonnet-4-5",
-            "max_tokens": 2000,
-            "messages": [{"role": "user", "content": content_parts}],
-        }
-
-        result = _http_json_request(
-            "https://api.anthropic.com/v1/messages",
-            method="POST",
-            data=payload,
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json",
-            },
-        )
-
-        text = ""
-        for block in (result.get("content") or []):
-            if block.get("type") == "text":
-                text += block.get("text") or ""
-
-        text = _coerce_ai_json_text(text)
-
-        if not text:
-            text = "Could not extract details."
-
-        return jsonify({"text": text})
-
-    except Exception as exc:
-        return jsonify({"error": f"AI extraction failed: {exc}"}), 500
+@app.route('/api/aop/import-sales-xlsx', methods=['POST'])
+def import_sales_aop_xlsx_route():
+    return _call_standalone_aop('import_sales_aop_xlsx')
 
 
-@app.route("/api/po-notify", methods=["POST"])
-def po_notify():
-    """Send approval request or approval notification emails for POs via SMTP."""
-    data = request.get_json(silent=True) or {}
-    event = (data.get("event") or "").strip()   # "submitted" | "approved" | "ceo_approved"
-    po_number = (data.get("po_number") or "Draft PO").strip()
-    po_id = (data.get("po_id") or "").strip()
-    account_name = (data.get("account_name") or "").strip()
-    stage = (data.get("stage") or "").strip()
-    creator_email = _normalize_email(data.get("creator_email") or "")
-    approved_by = _normalize_email(data.get("approved_by") or "")
-    value = float(data.get("value") or 0)
-
-    def _val():
-        return f"₹{value/100000:.1f}L" if value >= 100000 else f"₹{int(value):,}"
-
-    if event == "submitted":
-        # Notify presales + finance + supervisor
-        to = [
-            "vinod.v@dnispl.com",        # presales approver
-            "rakesh.uniyal@dnispl.com",  # finance approver
-        ]
-        cc = [SUPERVISOR_EMAIL]
-        if creator_email and creator_email not in to and creator_email not in cc:
-            cc.append(creator_email)
-        subject = f"[PO Approval Required] {po_number} | {account_name} | {_val()}"
-        body = (
-            f"A Purchase Order has been submitted for approval.\n\n"
-            f"PO Number  : {po_number}\n"
-            f"Account    : {account_name}\n"
-            f"Value      : {_val()}\n"
-            f"Current Stage: {stage}\n"
-            f"Created By : {creator_email}\n\n"
-            f"Action Required: Please log in to CRM and approve / reject this PO.\n"
-            f"Both Presales and Finance approvals are needed in parallel before it moves forward."
-        )
-        send_email_smtp(to, subject, body, cc_emails=cc)
-
-    elif event == "approved":
-        # Notify creator + supervisor about the approval step
-        to = [e for e in [creator_email, SUPERVISOR_EMAIL] if e and "@" in e]
-        subject = f"[PO Approved] {po_number} — {stage}"
-        body = (
-            f"Purchase Order stage update:\n\n"
-            f"PO Number  : {po_number}\n"
-            f"Account    : {account_name}\n"
-            f"Value      : {_val()}\n"
-            f"New Stage  : {stage}\n"
-            f"Approved By: {approved_by}\n\n"
-        )
-        # Notify next approver
-        if stage == "Both Approved - Pending Implementation":
-            to.append("pokhraj.yadav@dnispl.com")
-            body += "Action Required: Implementation approval needed from pokhraj.yadav@dnispl.com."
-        elif stage == "Pending CEO Approval":
-            to.append("ashish.mehra@dnispl.com")
-            body += "Action Required: P&L / CEO approval needed from ashish.mehra@dnispl.com."
-        send_email_smtp(list(dict.fromkeys(to)), subject, body)
-
-    elif event == "ceo_approved":
-        to = [e for e in [creator_email, SUPERVISOR_EMAIL, "vinod.v@dnispl.com", "rakesh.uniyal@dnispl.com"] if e and "@" in e]
-        subject = f"[PO Fully Approved] {po_number} — Ready to Issue"
-        body = (
-            f"Purchase Order has been fully approved and is ready to issue to vendor.\n\n"
-            f"PO Number  : {po_number}\n"
-            f"Account    : {account_name}\n"
-            f"Value      : {_val()}\n"
-            f"Approved By (CEO): {approved_by}\n"
-        )
-        send_email_smtp(list(dict.fromkeys(to)), subject, body)
-
-    else:
-        return jsonify({"error": f"unknown event: {event}"}), 400
-
-    return jsonify({"status": "ok", "event": event})
+@app.route('/api/kra/users', methods=['GET'])
+def kra_users_route():
+    return _call_standalone_aop('kra_users')
 
 
-
-# AOP raw data (win_pct applied at query time)
-AOP_RAW_DATA = [
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Vishal Pipes Limited", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Uflex", "win_pct": 0.25, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.35, "september": 0.35, "october": 0.35, "november": 1.04, "december": 0.47, "january": 0.47, "february": 0.47, "march": 1.4}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "TECHBOOKS INTERNATIONAL (Aptara)", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "SIMPA ENERGY INDIA PVT LTD", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "SANSPAREILS GREENLANDS (SG)", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "SANGAM INDIA LTD", "win_pct": 0.25, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.35, "september": 0.35, "october": 0.35, "november": 1.04, "december": 0.47, "january": 0.47, "february": 0.47, "march": 1.4}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Rose IT Solutions", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "AGNISYS TECHNOLOGY Private Limited", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "RMSI PRIVATE LTD", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "R SYSTEMS", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "PPAP Automotive Ltd", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "PHYSICS WALLAH PVT LTD", "win_pct": 0.25, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.35, "september": 0.35, "october": 0.35, "november": 1.04, "december": 0.47, "january": 0.47, "february": 0.47, "march": 1.4}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "PGS (PEPO GLOBAL SOURCING)", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Metro Hospitals & Heart Inst.", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Manav Rachna Institutions", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "MAGICBRICKS.COM (Times Internet)", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "LOGIX GROUP", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "KRIBHCO", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "JIL Information Technology (Jaypee)", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "JAIPRAKASH POWER VENTURES", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "INTERARCH BUILDING PRODUCTS", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "INOX WIND LTD", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "INDIA GLYCOLS LTD", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Honda Cars India Ltd", "win_pct": 0.25, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.35, "september": 0.35, "october": 0.35, "november": 1.04, "december": 0.47, "january": 0.47, "february": 0.47, "march": 1.4}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "HAVELLS INDIA LIMITED", "win_pct": 0.25, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.35, "september": 0.35, "october": 0.35, "november": 1.04, "december": 0.47, "january": 0.47, "february": 0.47, "march": 1.4}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Dharampal Satyapal Limited", "win_pct": 0.25, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.35, "september": 0.35, "october": 0.35, "november": 1.04, "december": 0.47, "january": 0.47, "february": 0.47, "march": 1.4}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "CTA APPARELS", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "BROOKFIELD INDIA OFFICE PARKS", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "BIBA APPARELS", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "MITHILA PLYWOOD Private Limited", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "JAKSON ENGINEERS LIMITED", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Sinch India", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Somany Ceramics", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Rx-Logix", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "UNICLOUD LABS PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "GUJARAT FLUOROCHEMICALS LIMITED", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Jagran Prakashan Limited", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "INNOVATIVE VIEW INDIA PVT LTD", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "VECTUS INDUSTRIES LIMITED", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "ONEXTEL TECHNOLOGIES / TELSPIEL COMMUNICATIONS", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "SHARDA UNIVERSITY", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Addverbb", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "YoekiSoft Pvt Ltd", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Magic Software Pvt Ltd(Magic Edtech)", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "ESRI INDIA TECHNOLOGIES PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.17, "september": 0.17, "october": 0.17, "november": 0.52, "december": 0.23, "january": 0.23, "february": 0.23, "march": 0.7}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "INDIAN ENERGY EXCHANGE LIMITED", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "QRG Enterprises", "win_pct": 0.25, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.35, "september": 0.35, "october": 0.35, "november": 1.04, "december": 0.47, "january": 0.47, "february": 0.47, "march": 1.4}},
-  {"am_email": "om.prakash@dnispl.com", "account_name": "Go2Cloud Solutions Pvt Ltd", "win_pct": 0.25, "aop_cr": 0.5, "months_raw": {"april": 0.03, "may": 0.03, "june": 0.03, "july": 0.08, "august": 0.04, "september": 0.04, "october": 0.04, "november": 0.13, "december": 0.06, "january": 0.06, "february": 0.06, "march": 0.18}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Phoenix Contact (I) Pvt Ltd", "win_pct": 0.18, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Akums Drugs and Pharmaceuticals Ltd", "win_pct": 0.19, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "LUMAX INDUSTRIES LIMITED", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "GREENLAM INDUSTRIES LIMITED", "win_pct": 0.1, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Ashiana Housing", "win_pct": 0.1, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Poly Medicure Limited", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "SANT NIRANKARI MISSON", "win_pct": 0.15, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "STONEX INDIA PRIVATE LIMITED", "win_pct": 0.12, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.025, "september": 0.025, "october": 0.025, "november": 0.075, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Hindustan Power", "win_pct": 0.15, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "SATYA MICROCAPITAL LIMITED", "win_pct": 0.2, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Rockwell Automation", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "AWFIS SPACE SOLUTIONS PRIVATE LIMITED", "win_pct": 0.15, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.025, "september": 0.025, "october": 0.025, "november": 0.075, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Bikanervala Foods Private Limited", "win_pct": 0.2, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Save Financial Services Pvt Ltd", "win_pct": 0.12, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "HUNCH CIRCLE PRIVATE LIMITED", "win_pct": 0.15, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "FENA PRIVATE LIMITED", "win_pct": 0.15, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "INFOMERICS VALUATION AND RATING PRIVATE LIMITED", "win_pct": 0.15, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.025, "september": 0.025, "october": 0.025, "november": 0.075, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "ANAND Group", "win_pct": 0.18, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "orient Bell", "win_pct": 0.1, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "Trinity Touch Pvt Ltd", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "KAPOOR WATCH COMPANY PRIVATE LTD", "win_pct": 0.1, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.025, "september": 0.025, "october": 0.025, "november": 0.075, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "DARK MATTER TECHNOLOGIES INDIA PRIVATE Limited", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "PHOENIX FAMILY OFFICE ADVISERS PVT LTD", "win_pct": 0.1, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "INGENUITY BUSINESS SERVICES PVT LTD", "win_pct": 0.12, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "IDVB RECYCLING PRIVATE LTD", "win_pct": 0.35, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "CEASEFIRE INDUSTRIES PVT LTD", "win_pct": 0.15, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "PATH ORG", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "ZEACLOUD SERVICES PRIVATE LTD", "win_pct": 0.15, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.025, "september": 0.025, "october": 0.025, "november": 0.075, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "ORIENTAL STRUCTURAL ENGINEERS PVT LTD", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "HEALTHQUAD CAPITAL ADVISORS PRIVATE LTD", "win_pct": 0.15, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "ADRIANNA PAPELL KD INDIA PRIVATE LTD", "win_pct": 0.18, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "CHRYS CAPITAL", "win_pct": 0.15, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "SPRIX MANABIE EDUCATION PRIVATE LTD", "win_pct": 0.1, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "HASKONINGDHV CONSULTING PRIVATE LTD", "win_pct": 0.12, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "AGARWAL PACKERS AND MOVERS LTD", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "THE CHILDREN S INVESTMENT FUND FOUNDATION", "win_pct": 0.15, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "FJR INDIA PRIVATE Limited", "win_pct": 0.15, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "ALTF COWORKING", "win_pct": 0.15, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0208, "september": 0.0208, "october": 0.0208, "november": 0.0625, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "EAII ADVISORS PRIVATE LTD", "win_pct": 0.15, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "DELHI STATE COOPERATIVE BANK LTD", "win_pct": 0.18, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "ANUSHA TECHNOVISION PVT LTD", "win_pct": 0.15, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "WHALE CLOUD TECHNOLOGY INDIA PVT LTD", "win_pct": 0.15, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "KHD HUMBOLDT WEDAG INDIA PVT LTD", "win_pct": 0.12, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "DEVANSH AJUKESHAN AND WELFEYAR SOSAITY", "win_pct": 0.05, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "HPPL HINDUSTAN POWER PROJECTS PRIVATE Limited", "win_pct": 0.15, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "AREA27 Private Limited", "win_pct": 0.1, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "ORIFLAME INDIA PRIVATE LTD", "win_pct": 0.1, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "MANSUKH SECURITIES AND FINANCE Limited", "win_pct": 0.15, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0083, "september": 0.0083, "october": 0.0083, "november": 0.025, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "KOCHHAR AND COMPANY", "win_pct": 0.15, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "navneet.k@dnispl.com", "account_name": "OGI SOFTWARE PRIVATE Limited", "win_pct": 0.12, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0167, "september": 0.0167, "october": 0.0167, "november": 0.05, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Airtel", "win_pct": 0.7, "aop_cr": 20.0, "months_raw": {"april": 1.0, "may": 1.0, "june": 1.0, "july": 3.0, "august": 1.666, "september": 1.666, "october": 1.666, "november": 4.998, "december": 2.334, "january": 2.334, "february": 2.334, "march": 7.002}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Airtel Payment Bank", "win_pct": 0.8, "aop_cr": 3.0, "months_raw": {"april": 0.15, "may": 0.15, "june": 0.15, "july": 0.45, "august": 0.2499, "september": 0.2499, "october": 0.2499, "november": 0.7497, "december": 0.3501, "january": 0.3501, "february": 0.3501, "march": 1.0503}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Altius", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Anonet", "win_pct": 0.8, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Crest", "win_pct": 0.6, "aop_cr": 7.0, "months_raw": {"april": 0.35, "may": 0.35, "june": 0.35, "july": 1.05, "august": 0.5831, "september": 0.5831, "october": 0.5831, "november": 1.7493, "december": 0.8169, "january": 0.8169, "february": 0.8169, "march": 2.4507}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Ctrl S", "win_pct": 0.5, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Den", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Exitel", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Hathway", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Huges", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "NTT", "win_pct": 0.4, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Nxtra by Airtel", "win_pct": 0.6, "aop_cr": 5.0, "months_raw": {"april": 0.25, "may": 0.25, "june": 0.25, "july": 0.75, "august": 0.4165, "september": 0.4165, "october": 0.4165, "november": 1.2495, "december": 0.5835, "january": 0.5835, "february": 0.5835, "march": 1.7505}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Sify", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Tata", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Tikona", "win_pct": 0.1, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "soumya.m@dnispl.com", "account_name": "Yotta", "win_pct": 0.5, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Delhivery", "win_pct": 0.75, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0867, "september": 0.0867, "october": 0.0867, "november": 0.2601, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Cinepolis", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Luminous Power", "win_pct": 0.75, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0867, "september": 0.0867, "october": 0.0867, "november": 0.2601, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Medanta The Medicity", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "CENTRIENT PHARMACEUTICALS INDIA PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Infogain India Private Limited", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "SMARTWORLD DEVELOPERS PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "OAKNORTH GLOBAL PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "G4S SECURITY SYSTEMS (INDIA) PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "XEBIA IT ARCHITECTS INDIA PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "SKH Metals", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "YATRA ONLINE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "SANDHAR TECHNOLOGIES LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Jaquar group", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "BLUE TOKAI(Muhavra Enterprises Pvt Ltd)", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "VLCC", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "UNICHARM INDIA PVT LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Innovative Facility/AIHP", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Smart Works", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "EasyRewardz Software Services Pvt Ltd", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "ANADRONE SYSTEMS PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Bharat Seats Ltd", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Krishna Maruti", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Park Plus", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "JUNIPER GREEN ENERGY PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "AdGlobal360 India Pvt Ltd", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Green panel Industries Ltd", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "BLUPINE ENERGY PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Xceedance", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "CE SERVICED INDIA PVT LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "INTECH ORGANICS LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "TRIDENT HILL PVT LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "MAHARASHTRA SEAMLESS LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "KRISUMI CORPORATION PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "CTAP SYSTEMS", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "ROOP AUTOMOTIVES LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "ANAQUA INDIA LLP", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "JAE INDIA PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "SONI AUTO & ALLIED INDUSTRIES Limited", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "IDP EDUCATION INDIA PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "FLUID3 INFOTECH PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "ELECTRO RENT INDIA PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "SANKYU INDIA LOGISTICS &ENGINEERING", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "UNIQUS CONSULTECH INC", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "PRECISION PYRAMID PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "XEBIA IT ARCHITECTS INDIA PRIVATE LIMITED", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "SHIMODA TRADING INDIA PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "XP INDIA", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "NISSHINBO COMPREHENSIVE PRECISION MACHINING GURGAON PRIVATE LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "NEXXBASE MARKETING Private Limited", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "ORBIS FINANCIAL CORPORATION LTD", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "PENTAX MEDICAL INDIA Private Limited", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Univo Education", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Barista", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Brookfield Properties", "win_pct": 0.5, "aop_cr": 4.0, "months_raw": {"april": 0.175, "may": 0.175, "june": 0.175, "july": 0.525, "august": 0.3034, "september": 0.3034, "october": 0.3034, "november": 0.9103, "december": 0.4084, "january": 0.4084, "february": 0.4084, "march": 1.2253}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Azure Power", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Gentari", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "aakriti.v@dnispl.com", "account_name": "Appinventiv", "win_pct": 0.25, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "L M PUBLIC SCHOOL", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "LOCON SOLUTIONS PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "IDEMITSU FINE COMPOSITES INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.5, "months_raw": {"april": 0.025, "may": 0.025, "june": 0.025, "july": 0.075, "august": 0.0433, "september": 0.0433, "october": 0.0433, "november": 0.13, "december": 0.0583, "january": 0.0583, "february": 0.0583, "march": 0.175}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "JATO DYNAMICS", "win_pct": 0.5, "aop_cr": 0.4, "months_raw": {"april": 0.02, "may": 0.02, "june": 0.02, "july": 0.06, "august": 0.0347, "september": 0.0347, "october": 0.0347, "november": 0.104, "december": 0.0467, "january": 0.0467, "february": 0.0467, "march": 0.14}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ROOTSTRONG TECHNOLOGIES PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "CALLAWAY GOLF Private Limited", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "EYE Q VISION", "win_pct": 0.5, "aop_cr": 0.7, "months_raw": {"april": 0.035, "may": 0.035, "june": 0.035, "july": 0.105, "august": 0.0607, "september": 0.0607, "october": 0.0607, "november": 0.1821, "december": 0.0817, "january": 0.0817, "february": 0.0817, "march": 0.2451}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "MGF SOURCING", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "INDORAMA SYNTHETICS I Limited", "win_pct": 0.5, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0867, "september": 0.0867, "october": 0.0867, "november": 0.2601, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "NETWORK BULLSTUDY Private Limited", "win_pct": 0.5, "aop_cr": 0.4, "months_raw": {"april": 0.02, "may": 0.02, "june": 0.02, "july": 0.06, "august": 0.0347, "september": 0.0347, "october": 0.0347, "november": 0.104, "december": 0.0467, "january": 0.0467, "february": 0.0467, "march": 0.14}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "NAVIGA GLOBAL", "win_pct": 0.5, "aop_cr": 0.4, "months_raw": {"april": 0.02, "may": 0.02, "june": 0.02, "july": 0.06, "august": 0.0347, "september": 0.0347, "october": 0.0347, "november": 0.104, "december": 0.0467, "january": 0.0467, "february": 0.0467, "march": 0.14}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SYAC INNOVATIONS PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.4, "months_raw": {"april": 0.02, "may": 0.02, "june": 0.02, "july": 0.06, "august": 0.0347, "september": 0.0347, "october": 0.0347, "november": 0.104, "december": 0.0467, "january": 0.0467, "february": 0.0467, "march": 0.14}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "IDP EDUCATION INDIA Private Limited", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ISON XPERIENCES INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "MACE PROJECT & COST MANAGEMENT Private Limited", "win_pct": 0.5, "aop_cr": 0.85, "months_raw": {"april": 0.0425, "may": 0.0425, "june": 0.0425, "july": 0.1275, "august": 0.0737, "september": 0.0737, "october": 0.0737, "november": 0.2211, "december": 0.0992, "january": 0.0992, "february": 0.0992, "march": 0.2976}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "TRAVEL CORPORATION OF INDIA", "win_pct": 0.5, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0867, "september": 0.0867, "october": 0.0867, "november": 0.2601, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ALP AEROFLEX INDIA Private Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ROADSTAR TRUCKING", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "UCHIYAMA INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ASTI INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "CRS GLOBAL SERVICES PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "VYGON INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SSDN TECHNOLOGIES Private Limited", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SUEZ ENVIRONMENT INDIA Limited", "win_pct": 0.5, "aop_cr": 1.5, "months_raw": {"april": 0.075, "may": 0.075, "june": 0.075, "july": 0.225, "august": 0.13, "september": 0.13, "october": 0.13, "november": 0.3901, "december": 0.175, "january": 0.175, "february": 0.175, "march": 0.5252}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SCA TECHNOLOGIES INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "LEX IP CARE LLP", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "MASTERS UNION SCHOOL OF BUSINESS", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "OLUMPUS CORPORATION", "win_pct": 0.5, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0867, "september": 0.0867, "october": 0.0867, "november": 0.2601, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "Ireo", "win_pct": 0.5, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0867, "september": 0.0867, "october": 0.0867, "november": 0.2601, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "Wizfair", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "Paap Automotive", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "Polymedicure", "win_pct": 0.5, "aop_cr": 0.5, "months_raw": {"april": 0.025, "may": 0.025, "june": 0.025, "july": 0.075, "august": 0.0433, "september": 0.0433, "october": 0.0433, "november": 0.13, "december": 0.0583, "january": 0.0583, "february": 0.0583, "march": 0.175}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "Aye Finance", "win_pct": 0.5, "aop_cr": 0.5, "months_raw": {"april": 0.025, "may": 0.025, "june": 0.025, "july": 0.075, "august": 0.0433, "september": 0.0433, "october": 0.0433, "november": 0.13, "december": 0.0583, "january": 0.0583, "february": 0.0583, "march": 0.175}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "HBA CPAS AND CONSULTANTS", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "MRS BECTOR'S FOOD SPECIALTIES Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SISTEMA SHYAM TELESERVICES Limited", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ILOG SOLUTIONS INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "MINISTRY OF MINES", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "CLARION INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "BENGAL AEROTROPOLIS PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SML LABEL", "win_pct": 0.5, "aop_cr": 0.5, "months_raw": {"april": 0.025, "may": 0.025, "june": 0.025, "july": 0.075, "august": 0.0433, "september": 0.0433, "october": 0.0433, "november": 0.13, "december": 0.0583, "january": 0.0583, "february": 0.0583, "march": 0.175}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "PINKERTON INDIA", "win_pct": 0.5, "aop_cr": 0.5, "months_raw": {"april": 0.025, "may": 0.025, "june": 0.025, "july": 0.075, "august": 0.0433, "september": 0.0433, "october": 0.0433, "november": 0.13, "december": 0.0583, "january": 0.0583, "february": 0.0583, "march": 0.175}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "BALBIX INDIA Private Limited", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SEAMLESS INFOTECH PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SAFFRON NETWORKS Private Limited", "win_pct": 0.5, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.015, "august": 0.0087, "september": 0.0087, "october": 0.0087, "november": 0.026, "december": 0.0117, "january": 0.0117, "february": 0.0117, "march": 0.035}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SANKYU INDIA LOGISTICS & ENGINEERING PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SAGACIOUS RESEARCH Private Limited", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ZABIN INDIA PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "PACE STOCK BROKING SERVICES Private Limited", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "SAVANNAHSEEDSPrivate Limited", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "CAPARO MARUTI Limited", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "AUSTRALIA INDIA INSTITUTE PRIVATE Limited", "win_pct": 0.5, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.03, "august": 0.0173, "september": 0.0173, "october": 0.0173, "november": 0.052, "december": 0.0233, "january": 0.0233, "february": 0.0233, "march": 0.07}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "ADGLOBAL360 INDIA PVT LTD", "win_pct": 0.5, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.045, "august": 0.026, "september": 0.026, "october": 0.026, "november": 0.078, "december": 0.035, "january": 0.035, "february": 0.035, "march": 0.105}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "DYNATA", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "yash.k@dnispl.com", "account_name": "INDIAN NATIONAL ACADEMY OF ENGINEERING", "win_pct": 0.5, "aop_cr": 0.25, "months_raw": {"april": 0.0125, "may": 0.0125, "june": 0.0125, "july": 0.0375, "august": 0.0217, "september": 0.0217, "october": 0.0217, "november": 0.065, "december": 0.0292, "january": 0.0292, "february": 0.0292, "march": 0.0875}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Caparo Maruti", "win_pct": 0.3, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Hellmann Worldwide Logistics", "win_pct": 0.28, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "JumpCloud", "win_pct": 0.38, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "JB Jewels and Metals", "win_pct": 0.4, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Voice Communication Delhi", "win_pct": 0.35, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "SEB Administrative Services", "win_pct": 0.38, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Ministry of Steel", "win_pct": 0.2, "aop_cr": 0.35, "months_raw": {"april": 0.0175, "may": 0.0175, "june": 0.0175, "july": 0.0292, "august": 0.0292, "september": 0.0292, "october": 0.0408, "november": 0.0408, "december": 0.0408, "january": 0.0292, "february": 0.0292, "march": 0.0292}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Telecraft E Solutions", "win_pct": 0.38, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "CIMMYT", "win_pct": 0.35, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Energia Systems", "win_pct": 0.38, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Eglo India Production", "win_pct": 0.36, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Astrantia Real Estate", "win_pct": 0.38, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Asia Pragati Capfin", "win_pct": 0.35, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Damcosoft", "win_pct": 0.4, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "SMK Petrochemicals", "win_pct": 0.32, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Shri Guru Ram Dass Ed. Society", "win_pct": 0.32, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "FIBS Logistics", "win_pct": 0.38, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Kailash Healthcare", "win_pct": 0.25, "aop_cr": 0.35, "months_raw": {"april": 0.0175, "may": 0.0175, "june": 0.0175, "july": 0.0292, "august": 0.0292, "september": 0.0292, "october": 0.0408, "november": 0.0408, "december": 0.0408, "january": 0.0292, "february": 0.0292, "march": 0.0292}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Jupiter Aluminium Industries", "win_pct": 0.36, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Veolia Water India", "win_pct": 0.22, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Aamor Inox", "win_pct": 0.36, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Remfry & Sagar", "win_pct": 0.4, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Envirocare Infrasolutions", "win_pct": 0.38, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Neurolytica Consulting", "win_pct": 0.4, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Brys Hotels", "win_pct": 0.35, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "FICCI", "win_pct": 0.28, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Hughes Communications India", "win_pct": 0.22, "aop_cr": 0.4, "months_raw": {"april": 0.02, "may": 0.02, "june": 0.02, "july": 0.0333, "august": 0.0333, "september": 0.0333, "october": 0.0467, "november": 0.0467, "december": 0.0467, "january": 0.0333, "february": 0.0333, "march": 0.0333}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "DEE Development Engineers", "win_pct": 0.35, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Yatra Online", "win_pct": 0.25, "aop_cr": 0.35, "months_raw": {"april": 0.0175, "may": 0.0175, "june": 0.0175, "july": 0.0292, "august": 0.0292, "september": 0.0292, "october": 0.0408, "november": 0.0408, "december": 0.0408, "january": 0.0292, "february": 0.0292, "march": 0.0292}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "MMTC", "win_pct": 0.18, "aop_cr": 0.0, "months_raw": {"april": 0.0, "may": 0.0, "june": 0.0, "july": 0.0, "august": 0.0, "september": 0.0, "october": 0.0, "november": 0.0, "december": 0.0, "january": 0.0, "february": 0.0, "march": 0.0}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "OLX India", "win_pct": 0.25, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Medanta The Medicity", "win_pct": 0.28, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Dhanuka Agritech", "win_pct": 0.3, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "E4E / Savista Global", "win_pct": 0.25, "aop_cr": 0.0, "months_raw": {"april": 0.0, "may": 0.0, "june": 0.0, "july": 0.0, "august": 0.0, "september": 0.0, "october": 0.0, "november": 0.0, "december": 0.0, "january": 0.0, "february": 0.0, "march": 0.0}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Urban Company", "win_pct": 0.25, "aop_cr": 0.0, "months_raw": {"april": 0.0, "may": 0.0, "june": 0.0, "july": 0.0, "august": 0.0, "september": 0.0, "october": 0.0, "november": 0.0, "december": 0.0, "january": 0.0, "february": 0.0, "march": 0.0}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "CP Wholesale India", "win_pct": 0.25, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "AWFIS", "win_pct": 0.28, "aop_cr": 0.35, "months_raw": {"april": 0.0175, "may": 0.0175, "june": 0.0175, "july": 0.0292, "august": 0.0292, "september": 0.0292, "october": 0.0408, "november": 0.0408, "december": 0.0408, "january": 0.0292, "february": 0.0292, "march": 0.0292}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "BharatPe", "win_pct": 0.25, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Varun Group", "win_pct": 0.22, "aop_cr": 0.4, "months_raw": {"april": 0.02, "may": 0.02, "june": 0.02, "july": 0.0333, "august": 0.0333, "september": 0.0333, "october": 0.0467, "november": 0.0467, "december": 0.0467, "january": 0.0333, "february": 0.0333, "march": 0.0333}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Delhi Waste Management", "win_pct": 0.25, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Cashify", "win_pct": 0.3, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "SGT University", "win_pct": 0.28, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Louis Dreyfus Commodities", "win_pct": 0.25, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Qualfon Technology Support", "win_pct": 0.25, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Caparo Group India", "win_pct": 0.22, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Estee Advisors", "win_pct": 0.38, "aop_cr": 10.0, "months_raw": {"april": 0.5, "may": 0.5, "june": 0.5, "july": 0.833, "august": 0.833, "september": 0.833, "october": 1.167, "november": 1.167, "december": 1.167, "january": 0.833, "february": 0.833, "march": 0.833}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Brookfield India Office Parks", "win_pct": 0.25, "aop_cr": 0.3, "months_raw": {"april": 0.015, "may": 0.015, "june": 0.015, "july": 0.025, "august": 0.025, "september": 0.025, "october": 0.035, "november": 0.035, "december": 0.035, "january": 0.025, "february": 0.025, "march": 0.025}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Flender Drives", "win_pct": 0.35, "aop_cr": 0.1, "months_raw": {"april": 0.005, "may": 0.005, "june": 0.005, "july": 0.0083, "august": 0.0083, "september": 0.0083, "october": 0.0117, "november": 0.0117, "december": 0.0117, "january": 0.0083, "february": 0.0083, "march": 0.0083}},
-  {"am_email": "stephen.h@dnispl.com", "account_name": "Relaxo Footwears", "win_pct": 0.25, "aop_cr": 0.2, "months_raw": {"april": 0.01, "may": 0.01, "june": 0.01, "july": 0.0167, "august": 0.0167, "september": 0.0167, "october": 0.0233, "november": 0.0233, "december": 0.0233, "january": 0.0167, "february": 0.0167, "march": 0.0167}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "ANANT RAJ LIMITED", "win_pct": 0.25, "aop_cr": 2.0, "months_raw": {"april": 0.1, "may": 0.1, "june": 0.1, "july": 0.3, "august": 0.1666, "september": 0.1666, "october": 0.1666, "november": 0.4998, "december": 0.2334, "january": 0.2334, "february": 0.2334, "march": 0.7002}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "DEGANIA MEDICAL DEVICES", "win_pct": 0.25, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "Denso International India", "win_pct": 0.35, "aop_cr": 4.0, "months_raw": {"april": 0.2, "may": 0.2, "june": 0.2, "july": 0.6, "august": 0.3332, "september": 0.3332, "october": 0.3332, "november": 0.9996, "december": 0.4668, "january": 0.4668, "february": 0.4668, "march": 1.4004}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "DSY Creations", "win_pct": 0.25, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "HL Mando Anand", "win_pct": 0.3, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "Joyson Anand Abhishek Safety", "win_pct": 0.2, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "MUNJAL KIRIU INDUSTRIES", "win_pct": 0.25, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}},
-  {"am_email": "vikrant.tolumbia@dnispl.com", "account_name": "Ambrane India Pvt Ltd", "win_pct": 0.6, "aop_cr": 1.0, "months_raw": {"april": 0.05, "may": 0.05, "june": 0.05, "july": 0.15, "august": 0.0833, "september": 0.0833, "october": 0.0833, "november": 0.2499, "december": 0.1167, "january": 0.1167, "february": 0.1167, "march": 0.3501}}
-]
-
-# ---------------------------------------------------------------------------
-# SALARY API
-# ---------------------------------------------------------------------------
-@app.route("/api/salary", methods=["GET"])
-def get_salary():
-    viewer_email = _normalize_email(request.args.get("viewer_email") or "")
-    if not viewer_email:
-        return jsonify({})
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT salary_data FROM user_salary WHERE lower(email)=lower(%s)", (viewer_email,))
-            row = cur.fetchone()
-            if row:
-                d = row.get("salary_data") or {}
-                if isinstance(d, str):
-                    try: d = json.loads(d)
-                    except: d = {}
-                return jsonify(d)
-            return jsonify({})
-    finally:
-        conn.close()
-
-@app.route("/api/salary", methods=["POST"])
-def save_salary():
-    data = request.get_json(silent=True) or {}
-    viewer_email = _normalize_email(data.get("viewer_email") or "")
-    if not viewer_email:
-        return jsonify({"error": "viewer_email required"}), 400
-    salary_data = {k: v for k, v in data.items() if k not in {"viewer_email", "viewer_role"}}
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO user_salary (email, salary_data, updated_at) VALUES (%s, %s::jsonb, now()) ON CONFLICT (email) DO UPDATE SET salary_data=EXCLUDED.salary_data, updated_at=now()",
-                (viewer_email, json.dumps(salary_data))
-            )
-        conn.commit()
-        return jsonify({"status": "ok"})
-    finally:
-        conn.close()
+@app.route('/api/aop/import-audit', methods=['GET'])
+def aop_import_audit_route():
+    return _call_standalone_aop('aop_import_audit')
 
 
-# ---------------------------------------------------------------------------
-# REPORTS TEAM
-# ---------------------------------------------------------------------------
-@app.route("/api/reports/team", methods=["GET"])
-def reports_team():
-    viewer_role = (request.args.get("viewer_role") or "").strip().lower()
-    if not _is_supervisor(viewer_role):
-        return jsonify({"error": "supervisor only"}), 403
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, email, name, role FROM users WHERE role IN ('account_manager','presales') ORDER BY name")
-            return jsonify(cur.fetchall())
-    finally:
-        conn.close()
+@app.route('/api/kra/config', methods=['GET'])
+def get_kra_config_route():
+    return _call_standalone_aop('get_kra_config')
 
 
-# ---------------------------------------------------------------------------
-# KRA REPORT
-# ---------------------------------------------------------------------------
-@app.route("/api/reports/kra", methods=["GET"])
-def kra_report():
-    viewer_email = _normalize_email(request.args.get("viewer_email") or "")
-    viewer_role  = (request.args.get("viewer_role") or "account_manager").strip().lower()
-    target_email = _normalize_email(request.args.get("target_email") or viewer_email)
-    fy_year      = (request.args.get("fy_year") or "2025-26").strip()
-    quarter      = (request.args.get("quarter") or "Q1").strip().upper()
-
-    if not _is_supervisor(viewer_role) and viewer_email != target_email:
-        return jsonify({"error": "not authorized"}), 403
-
-    qmonths = {"Q1":["april","may","june"],"Q2":["july","august","september"],"Q3":["october","november","december"],"Q4":["january","february","march"]}
-    q_frac  = {"Q1":0.15,"Q2":0.25,"Q3":0.35,"Q4":0.25}
-    months  = qmonths.get(quarter, ["april","may","june"])
-    frac    = q_frac.get(quarter, 0.15)
-
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-
-            # PRESALES KRA
-            if viewer_role == "presales" or "vinod" in target_email:
-                cur.execute("""SELECT COUNT(*) AS total,
-                    COUNT(CASE WHEN lower(workflow_stage) IN ('won','closed won') THEN 1 END) AS won,
-                    COUNT(CASE WHEN final_pricing_proposal IS NOT NULL AND final_pricing_proposal<>'' THEN 1 END) AS proposals,
-                    COALESCE(SUM(value),0) AS pipeline
-                    FROM opportunities WHERE lower(assigned_presales)=lower(%s)""", (target_email,))
-                r = cur.fetchone() or {}
-                proposals = int(r.get("proposals") or 0)
-                won_opps  = int(r.get("won") or 0)
-                pipeline  = float(r.get("pipeline") or 0) / 10000000
-                win_rate  = round(won_opps/proposals*100,1) if proposals > 0 else 0
-                cur.execute("SELECT COUNT(*) AS c FROM opportunities WHERE lower(assigned_presales)=lower(%s) AND presales_architecture IS NOT NULL AND presales_architecture<>''", (target_email,))
-                pocs = int((cur.fetchone() or {}).get("c") or 0)
-                return jsonify({"role":"presales","target_email":target_email,"quarter":quarter,"fy_year":fy_year,
-                    "kras":[
-                        {"id":"win_rate","name":"Proposal & RFP Win Rate","weight":30,"target":">=75% win rate","actual_label":f"{win_rate}% ({won_opps} won / {proposals} submitted)","actual_value":win_rate,"target_value":75,"unit":"%","achievement_pct":min(round(win_rate/75*100,1) if proposals else 0,150)},
-                        {"id":"solution_design","name":"Solution Design & Technical Accuracy","weight":25,"target":"<2 revision cycles; >=90% BOQ accuracy","actual_label":f"{pocs} architectures submitted","actual_value":pocs,"target_value":None,"unit":"count","achievement_pct":None,"manual":True},
-                        {"id":"pipeline","name":"Revenue Pipeline Contribution","weight":10,"target":">=12 POCs/demos per quarter","actual_label":f"{pocs} POCs; Pipeline Rs{pipeline:.1f}Cr","actual_value":pocs,"target_value":12,"unit":"POCs","achievement_pct":min(round(pocs/12*100,1),150)},
-                        {"id":"expertise","name":"Product & Technology Expertise","weight":10,"target":">=3 certs/year; 40hrs training/year","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
-                        {"id":"collaboration","name":"Cross-functional Collaboration","weight":15,"target":"Stakeholder feedback; quarterly review","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
-                        {"id":"innovation","name":"Innovation & Thought Leadership","weight":10,"target":"COE lab setup; case studies","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
-                    ]})
-
-            # ACCOUNT MANAGER KRA
-            cur.execute("SELECT COALESCE(SUM(value),0) AS won FROM opportunities WHERE lower(owner)=lower(%s) AND lower(workflow_stage) IN ('won','closed won')", (target_email,))
-            won_cr = float((cur.fetchone() or {}).get("won") or 0) / 10000000
-
-            # Build quarter sum from flat columns, multiply by win_pct (stored in target_growth)
-            q_month_map = {"Q1":["apr","may","jun"],"Q2":["jul","aug","sep"],"Q3":["oct","nov","dec"],"Q4":["jan","feb","mar"]}
-            q_prefixes = q_month_map.get(quarter, ["apr","may","jun"])
-            month_sum_expr = " + ".join([f"COALESCE(p.{px}_hardware,0)+COALESCE(p.{px}_software,0)+COALESCE(p.{px}_managed_services,0)" for px in q_prefixes])
-            cur.execute(f"""
-                SELECT COALESCE(SUM(({month_sum_expr}) * COALESCE(p.target_growth, 1)), 0) AS q_target
-                FROM aop_plans p
-                WHERE p.fy_year=%s AND lower(p.account_manager)=lower(%s)
-            """, (fy_year, target_email))
-            q_target = round(float((cur.fetchone() or {}).get("q_target") or 0), 4)
-            rev_ach   = min(round(won_cr/q_target*100,1) if q_target > 0 else 0, 150)
-
-            cur.execute("SELECT COUNT(DISTINCT a.id) AS total FROM accounts a JOIN users u ON u.id=a.account_manager_id WHERE lower(u.email)=lower(%s)", (target_email,))
-            total_accts = int((cur.fetchone() or {}).get("total") or 0)
-            cur.execute("SELECT COUNT(DISTINCT c.account_id) AS covered FROM contacts c JOIN accounts a ON CAST(a.id AS TEXT)=c.account_id JOIN users u ON u.id=a.account_manager_id WHERE lower(u.email)=lower(%s)", (target_email,))
-            covered_accts = int((cur.fetchone() or {}).get("covered") or 0)
-            cov_pct = round(covered_accts/total_accts*100,1) if total_accts > 0 else 0
-
-            cur.execute("SELECT COUNT(DISTINCT o.account_id) AS c FROM opportunities o JOIN accounts a ON CAST(a.id AS TEXT)=o.account_id JOIN users u ON u.id=a.account_manager_id WHERE lower(u.email)=lower(%s) AND lower(o.workflow_stage) IN ('won','closed won')", (target_email,))
-            new_act = int((cur.fetchone() or {}).get("c") or 0)
-            new_act_ach = min(round(new_act/6*100,1), 150)
-
-            cur.execute("SELECT COALESCE(SUM(value),0) AS pipe FROM opportunities WHERE lower(owner)=lower(%s) AND lower(workflow_stage) NOT IN ('won','closed won','lost','closed lost')", (target_email,))
-            pipe_cr     = float((cur.fetchone() or {}).get("pipe") or 0) / 10000000
-            pipe_target = q_target * 3
-            pipe_ach    = min(round(pipe_cr/pipe_target*100,1) if pipe_target > 0 else 0, 150)
-
-            cur.execute("SELECT COUNT(*) AS c FROM opportunities WHERE lower(owner)=lower(%s) AND value>=10000000", (target_email,))
-            qual     = int((cur.fetchone() or {}).get("c") or 0)
-            qual_ach = min(round(qual/9*100,1), 150)
-
-            return jsonify({"role":"account_manager","target_email":target_email,"quarter":quarter,"fy_year":fy_year,
-                "q_target_cr":round(q_target,2),"won_value_cr":round(won_cr,2),
-                "kras":[
-                    {"id":"revenue","name":"Revenue & Sales Target Achievement","weight":25,"target":f"Rs{q_target:.2f}Cr ({quarter})","actual_label":f"Rs{won_cr:.2f}Cr won","actual_value":won_cr,"target_value":q_target,"unit":"Cr","achievement_pct":rev_ach},
-                    {"id":"account_coverage","name":"Account Coverage","weight":40,"target":"100% accounts with contacts in CRM","actual_label":f"{covered_accts}/{total_accts} accounts ({cov_pct}%)","actual_value":cov_pct,"target_value":100,"unit":"%","achievement_pct":min(cov_pct,150)},
-                    {"id":"new_account","name":"New Account Activation","weight":20,"target":"6 new accounts with approved PO","actual_label":f"{new_act} accounts with PO","actual_value":new_act,"target_value":6,"unit":"accounts","achievement_pct":new_act_ach},
-                    {"id":"pipeline","name":"Pipeline & Opportunity Management","weight":10,"target":f"3x quota (Rs{pipe_target:.1f}Cr)","actual_label":f"Rs{pipe_cr:.2f}Cr pipeline","actual_value":pipe_cr,"target_value":pipe_target,"unit":"Cr","achievement_pct":pipe_ach},
-                    {"id":"qual_opps","name":"Qualified Opportunity Creation","weight":5,"target":"Min 3 opps/month >=Rs1Cr","actual_label":f"{qual} qualified opps","actual_value":qual,"target_value":9,"unit":"opps","achievement_pct":qual_ach},
-                ]})
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
-    finally:
-        conn.close()
+@app.route('/api/kra/scorecard', methods=['GET'])
+def kra_scorecard_route():
+    return _call_standalone_aop('kra_scorecard')
 
 
-# ---------------------------------------------------------------------------
-# INCENTIVE REPORT
-# ---------------------------------------------------------------------------
-@app.route("/api/reports/incentive", methods=["GET"])
-def incentive_report():
-    viewer_email = _normalize_email(request.args.get("viewer_email") or "")
-    viewer_role  = (request.args.get("viewer_role") or "account_manager").strip().lower()
-    target_email = _normalize_email(request.args.get("target_email") or viewer_email)
-    quarter      = (request.args.get("quarter") or "Q1").strip().upper()
-    if not _is_supervisor(viewer_role) and viewer_email != target_email:
-        return jsonify({"error": "not authorized"}), 403
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT salary_data FROM user_salary WHERE lower(email)=lower(%s)", (target_email,))
-            row = cur.fetchone()
-            sal = {}
-            if row:
-                d = row.get("salary_data") or {}
-                if isinstance(d, str):
-                    try: d = json.loads(d)
-                    except: d = {}
-                sal = d
-        fixed = float(sal.get("fixed_annual_lakhs") or 0)
-        var   = float(sal.get("variable_annual_lakhs") or 0)
-        qfrac = {"Q1":0.15,"Q2":0.25,"Q3":0.35,"Q4":0.25}.get(quarter, 0.15)
-        q_var = round(var * qfrac, 2)
-        slabs = [
-            {"label":"Below Threshold","min":0,"max":84.99,"payout_pct":0},
-            {"label":"Threshold","min":85,"max":99.99,"payout_pct":70},
-            {"label":"On Target","min":100,"max":109.99,"payout_pct":100},
-            {"label":"Stretch","min":110,"max":119.99,"payout_pct":120},
-            {"label":"Accelerator","min":120,"max":999,"payout_pct":150},
-        ]
-        return jsonify({"target_email":target_email,"quarter":quarter,"fixed_annual_lakhs":fixed,
-            "variable_annual_lakhs":var,"quarterly_variable_lakhs":q_var,
-            "salary_configured":bool(sal),"slabs":slabs})
-    finally:
-        conn.close()
+@app.route('/api/kra/leaderboard', methods=['GET'])
+def kra_leaderboard_route():
+    return _call_standalone_aop('kra_leaderboard')
 
 
-# ---------------------------------------------------------------------------
-# AOP BULK IMPORT
-# ---------------------------------------------------------------------------
-@app.route("/api/aop/bulk-import", methods=["POST"])
-def aop_bulk_import():
-    data = request.get_json(silent=True) or {}
-    viewer_role = (data.get("viewer_role") or "").strip().lower()
-    if not _is_supervisor(viewer_role):
-        return jsonify({"error": "supervisor only"}), 403
-    rows = data.get("rows") or []
-    if not rows:
-        rows = AOP_RAW_DATA
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            ok = skipped = 0
-            month_map = {
-                "april":"apr","may":"may","june":"jun","july":"jul","august":"aug","september":"sep",
-                "october":"oct","november":"nov","december":"dec","january":"jan","february":"feb","march":"mar"
-            }
-            for row in rows:
-                account_name = (row.get("account_name") or "").strip()
-                am_email     = (row.get("am_email") or "").strip().lower()
-                win_pct      = float(row.get("win_pct") or 0)
-                aop_cr       = float(row.get("aop_cr") or 0)
-                months_raw   = row.get("months_raw") or {}
-                if not account_name or not am_email:
-                    skipped += 1; continue
+@app.route('/api/kra/report.csv', methods=['GET'])
+def kra_report_csv_route():
+    return _call_standalone_aop('kra_report_csv')
 
-                # Find account
-                cur.execute("SELECT id FROM accounts WHERE lower(account_name)=lower(%s) LIMIT 1", (account_name,))
-                acc = cur.fetchone()
-                if not acc:
-                    skipped += 1; continue
 
-                account_id = str(acc["id"])
-                # Build flat column values — distribute AOP evenly across HW/SW/SV (100%/0%/0% default since we only have total)
-                # Store total in hardware column, win_pct in target_growth
-                col_vals = {}
-                for mname, prefix in month_map.items():
-                    raw = float(months_raw.get(mname) or 0)
-                    col_vals[f"{prefix}_hardware"] = round(raw, 6)
-                    col_vals[f"{prefix}_software"] = 0.0
-                    col_vals[f"{prefix}_managed_services"] = 0.0
+@app.route('/api/presales/learning', methods=['POST'])
+def add_presales_learning_route():
+    return _call_standalone_aop('add_presales_learning')
 
-                cols = ", ".join(col_vals.keys())
-                placeholders = ", ".join(["%s"] * len(col_vals))
-                update_set = ", ".join([f"{k}=EXCLUDED.{k}" for k in col_vals.keys()])
-                if not col_vals:
-                    skipped += 1
-                    continue
-                cur.execute(f"""
-                    INSERT INTO aop_plans (account_id, account_name, account_manager, fy_year,
-                        current_revenue, target_growth, updated_by, created_at, updated_at, {cols})
-                    VALUES (%s, %s, %s, '2025-26', %s, %s, %s, now(), now(), {placeholders})
-                    ON CONFLICT (account_id, fy_year) DO UPDATE SET
-                        account_manager=EXCLUDED.account_manager,
-                        current_revenue=EXCLUDED.current_revenue,
-                        target_growth=EXCLUDED.target_growth,
-                        updated_by=EXCLUDED.updated_by,
-                        updated_at=now(), {update_set}
-                """, (account_id, account_name, am_email, aop_cr, win_pct, am_email, *col_vals.values()))
-                ok += 1
-        conn.commit()
-        return jsonify({"status":"ok","imported":ok,"skipped":skipped})
-    except Exception as exc:
-        return jsonify({"error":str(exc)}), 500
-    finally:
-        conn.close()
+
+@app.route('/api/presales/feedback', methods=['POST'])
+def add_presales_feedback_route():
+    return _call_standalone_aop('add_presales_feedback')
+
+
+@app.route('/api/presales/innovation', methods=['POST'])
+def add_presales_innovation_route():
+    return _call_standalone_aop('add_presales_innovation')
+
+
+@app.route('/api/kra/manual-metric', methods=['POST'])
+def upsert_manual_metric_route():
+    return _call_standalone_aop('upsert_manual_metric')
+
 
 if __name__ == "__main__":
     init_db()
