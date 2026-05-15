@@ -4,6 +4,7 @@ import json
 import base64
 import hashlib
 import hmac
+import re
 import urllib.parse
 import urllib.request
 import os
@@ -1805,7 +1806,10 @@ def list_opportunities():
     finally:
         conn.close()
 
-
+def clean_ts(value):
+    v = (value or "").strip()
+    return v or None
+    
 @app.route("/api/opportunities", methods=["POST"])
 def upsert_opportunity():
     data = request.get_json(silent=True) or {}
@@ -1835,18 +1839,15 @@ def upsert_opportunity():
         "purchase_costing": (data.get("purchase_costing") or data.get("purchaseCosting") or "").strip(),
         "costing_tat": (data.get("costing_tat") or data.get("costingTat") or "").strip(),
         "final_pricing_proposal": (data.get("final_pricing_proposal") or data.get("finalPricingProposal") or "").strip(),
-        "presales_assigned_at": (data.get("presales_assigned_at") or data.get("presalesAssignedAt") or "").strip(),
-        "presales_due_at": (data.get("presales_due_at") or data.get("presalesDueAt") or "").strip(),
-        "salesops_assigned_at": (data.get("salesops_assigned_at") or data.get("salesOpsAssignedAt") or "").strip(),
-        "salesops_due_at": (data.get("salesops_due_at") or data.get("salesOpsDueAt") or "").strip(),
-        "purchase_assigned_at": (data.get("purchase_assigned_at") or data.get("purchaseAssignedAt") or "").strip(),
-        "purchase_due_at": (data.get("purchase_due_at") or data.get("purchaseDueAt") or "").strip(),
-        "costing_returned_at": (data.get("costing_returned_at") or data.get("costingReturnedAt") or "").strip(),
-        "final_proposal_at": (data.get("final_proposal_at") or data.get("finalProposalAt") or "").strip(),
-        "assignment_due_at": (data.get("assignment_due_at") or data.get("assignmentDueAt") or "").strip(),
-        "sales_submitted_at": (data.get("sales_submitted_at") or data.get("salesSubmittedAt") or "").strip(),
-        "presales_escalated_at": (data.get("presales_escalated_at") or data.get("presalesEscalatedAt") or "").strip(),
-        "oem_pricing_required": str(data.get("oem_pricing_required") or data.get("oemPricingRequired") or "").strip().lower() in ("1", "true", "yes", "y"),
+        "presales_assigned_at": clean_ts(data.get("presales_assigned_at") or data.get("presalesAssignedAt")),
+        "presales_due_at": clean_ts(data.get("presales_due_at") or data.get("presalesDueAt")),
+        "purchase_assigned_at": clean_ts(data.get("purchase_assigned_at") or data.get("purchaseAssignedAt")),
+        "purchase_due_at": clean_ts(data.get("purchase_due_at") or data.get("purchaseDueAt")),
+        "costing_returned_at": clean_ts(data.get("costing_returned_at") or data.get("costingReturnedAt")),
+        "final_proposal_at": clean_ts(data.get("final_proposal_at") or data.get("finalProposalAt")),
+        "assignment_due_at": clean_ts(data.get("assignment_due_at") or data.get("assignmentDueAt")),
+        "sales_submitted_at": clean_ts(data.get("sales_submitted_at") or data.get("salesSubmittedAt")),
+        "presales_escalated_at": clean_ts(data.get("presales_escalated_at") or data.get("presalesEscalatedAt")),        "oem_pricing_required": str(data.get("oem_pricing_required") or data.get("oemPricingRequired") or "").strip().lower() in ("1", "true", "yes", "y"),
         "intake_problem_statement": (data.get("intake_problem_statement") or data.get("intakeProblemStatement") or "").strip(),
         "intake_why_now": (data.get("intake_why_now") or data.get("intakeWhyNow") or "").strip(),
         "intake_business_impact": (data.get("intake_business_impact") or data.get("intakeBusinessImpact") or "").strip(),
