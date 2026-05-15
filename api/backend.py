@@ -1325,8 +1325,8 @@ def bootstrap_data():
             salesops_active_stages = ['Awaiting Sales Ops Pricing','Assigned to Presales','Costing Returned to Presales']
 
             if _is_presales(viewer_role):
-                # FIX: removed AND workflow_stage = ANY(%s) — presales sees ALL opps assigned to them regardless of stage
-                opp_scoped = """
+                # FIX: no stage filter — presales sees ALL opps assigned to them in any stage
+                query_scoped = """
                     SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
                            assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
                            presales_architecture, presales_questions, boq, purchase_costing,
@@ -1344,7 +1344,8 @@ def bootstrap_data():
                        OR lower(sales_owner)=lower(%s)
                     ORDER BY updated_at DESC
                 """
-                opp_scoped_params = (viewer_email, viewer_email, viewer_email)
+                query_scoped_params = (viewer_email, viewer_email, viewer_email)
+            
             elif _is_salesops(viewer_role):
                 opp_scoped = """
                     SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
