@@ -1325,6 +1325,7 @@ def bootstrap_data():
             salesops_active_stages = ['Awaiting Sales Ops Pricing','Assigned to Presales','Costing Returned to Presales']
 
             if _is_presales(viewer_role):
+                # FIX: removed AND workflow_stage = ANY(%s) — presales sees ALL opps assigned to them regardless of stage
                 opp_scoped = """
                     SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
                            assigned_presales, assigned_salesops, assigned_purchase, sales_comments, sales_ops_comments, requirements,
@@ -1339,10 +1340,11 @@ def bootstrap_data():
                            intake_competitors, intake_win_strategy, created_at, updated_at
                     FROM opportunities
                     WHERE lower(assigned_presales)=lower(%s)
-                      AND workflow_stage = ANY(%s)
+                       OR lower(owner)=lower(%s)
+                       OR lower(sales_owner)=lower(%s)
                     ORDER BY updated_at DESC
                 """
-                opp_scoped_params = (viewer_email, presales_active_stages)
+                opp_scoped_params = (viewer_email, viewer_email, viewer_email)
             elif _is_salesops(viewer_role):
                 opp_scoped = """
                     SELECT id, name, account_id, value, stage, deal_type, owner, sales_owner, workflow_stage,
@@ -1400,9 +1402,8 @@ def bootstrap_data():
                     rows = cur.fetchall()
                 payload["opportunities"] = rows
         with _write_limits_lock:
-            _write_limits[f"bootstrap:{viewer_email}:{viewer_role}"] = (time.time(), payload)        
-        return jsonify(payload)
-        
+            _write_limits[f"bootstrap:{viewer_email}:{viewer_role}"] = (time.time(), payload)
+        return jsonify(payload)        
     except Exception as exc:
         return jsonify({"error": f"bootstrap failed: {exc}", **payload}), 200
     finally:
