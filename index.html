@@ -318,12 +318,11 @@ const SALESOPS_KRA_MASTER = [
 ];
 
 const SALES_KRA_MASTER = [
- { code:'S1', kpi_name:'Pipeline Creation', weight:'25%', target_benchmark:'Healthy discovery and proposal pipeline creation every quarter', actual_key:'sales_pipeline_created' },
- { code:'S2', kpi_name:'Stage Progression', weight:'20%', target_benchmark:'Movement from discovery to proposal/negotiation without aging', actual_key:'sales_stage_progression' },
- { code:'S3', kpi_name:'Revenue Closure', weight:'25%', target_benchmark:'Closed won value against target', actual_key:'sales_won_value' },
- { code:'S4', kpi_name:'Forecast Hygiene', weight:'10%', target_benchmark:'CRM updates and stage accuracy kept current', actual_key:'sales_forecast_hygiene' },
- { code:'S5', kpi_name:'Activity Discipline', weight:'10%', target_benchmark:'Consistent meeting / call / follow-up logging', actual_key:'sales_activity_discipline' },
- { code:'S6', kpi_name:'Lead Conversion', weight:'10%', target_benchmark:'Owned leads progressed into active opportunities', actual_key:'sales_lead_conversion' }
+ { code:'S1', kpi_name:'Revenue (HW+SW+SV)', weight:'20%', target_benchmark:'Actual billed revenue vs quarterly AOP target', actual_key:'sales_revenue' },
+ { code:'S2', kpi_name:'Account Coverage', weight:'40%', target_benchmark:'100% accounts covered with 3 key contacts in CRM', actual_key:'sales_account_coverage' },
+ { code:'S3', kpi_name:'New Account Activation', weight:'20%', target_benchmark:'6 accounts with at least 1 confirmed PO in the quarter', actual_key:'sales_new_account_activation' },
+ { code:'S4', kpi_name:'Pipeline Coverage', weight:'10%', target_benchmark:'Qualified pipeline >= 3x quarterly revenue target', actual_key:'sales_pipeline_coverage' },
+ { code:'S5', kpi_name:'Deal Mix Compliance', weight:'10%', target_benchmark:'HW share <= 80% of billed revenue', actual_key:'sales_deal_mix' }
 ];
 
 const SALES_HEAD_KRA_MASTER = [
@@ -1510,8 +1509,10 @@ function renderReports(filtered) {
  const allActs = state.data.activities || [];
  const allLeads = state.data.leads || [];
  const allAccounts = state.data.accounts || [];
- const me = (currentUser || '').toLowerCase();
-
+ const normalize = v => (v || '').toLowerCase();
+ const pct = (num, den) => den ? Math.round((num / den) * 100) : 0;
+ const toNumber = weight => parseFloat(String(weight).replace('%','')) || 0;
+ const inL = value => `₹${((value || 0) / 100000).toFixed(1)}L`;
  const calcAvgHours = (items, startKey, endKey) => {
    const vals = items.map(o => {
      const s = o[startKey] ? new Date(o[startKey]) : null;
@@ -1522,10 +1523,18 @@ function renderReports(filtered) {
    return vals.length ? (vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(1) : 'NA';
  };
 
- const pct = (num, den) => den ? Math.round((num / den) * 100) : 0;
- const inL = value => `₹${((value || 0) / 100000).toFixed(1)}L`;
- const normalize = v => (v || '').toLowerCase();
- const toNumber = weight => parseFloat(String(weight).replace('%','')) || 0;
+ const SALES_Q1_PLAN = {
+   fixedSalaryL: 10,
+   annualVariableL: 2,
+   quarterlyVariableL: 0.30,
+   monthlyVariableL: 0.10,
+   q1RevenueTargetL: 30,
+   q1NewAccountsTarget: 6,
+   accountCoverageTargetPct: 100,
+   pipelineCoverageMultiplier: 3,
+   dealMixTargetHwPct: 80,
+   thresholdPct: 85
+ };
 
  const classifyUserRole = (email) => {
    const e = normalize(email);
@@ -1538,9 +1547,7 @@ function renderReports(filtered) {
 
  const reportUsers = (() => {
    const users = new Set();
-   allOpps.forEach(o => {
-     [o.owner, o.salesOwner, o.assignedPresales, o.assignedSalesOps, o.assignedPurchase].forEach(v => v && users.add(v));
-   });
+   allOpps.forEach(o => [o.owner, o.salesOwner, o.assignedPresales, o.assignedSalesOps, o.assignedPurchase].forEach(v => v && users.add(v)));
    allAccounts.forEach(a => [a.accountManager, a.owner].forEach(v => v && users.add(v)));
    allLeads.forEach(l => l.owner && users.add(l.owner));
    users.add(SUPERVISOR_EMAIL);
@@ -1576,6 +1583,30 @@ function renderReports(filtered) {
  const salesOpsActive = userOpps.filter(o => ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'].includes(o.workflowStage || ''));
  const salesOpsReturned = userOpps.filter(o => (o.workflowStage || '') === 'Costing Returned');
 
+ const revenueWonL = wonOpps.reduce((s,o)=>s+(o.value||0),0) / 100000;
+ const accountCoverageActualPct = allAccounts.length ? pct(allAccounts.filter(a => normalize(a.accountManager || a.owner) === selected).filter(a => {
+   const contacts = state.data.contacts.filter(c => String(c.accountId || '') === String(a.id || ''));
+   const roles = new Set(contacts.map(c => c.roleType));
+   return roles.has('MAS') && roles.has('TE') && (roles.has('EU') || roles.has('Coach'));
+ }).length, Math.max(allAccounts.filter(a => normalize(a.accountManager || a.owner) === selected).length, 1)) : 0;
+ const newAccountActivationActual = wonOpps.filter(o => {
+   const accountId = String(o.accountId || '');
+   const accountWonCount = wonOpps.filter(x => String(x.accountId || '') === accountId).length;
+   return accountId && accountWonCount >= 1;
+ }).map(o => String(o.accountId || '')).filter((v, i, arr) => arr.indexOf(v) === i).length;
+ const pipelineValueL = openOpps.reduce((s,o)=>s+(o.value||0),0) / 100000;
+ const pipelineCoverageActualPct = SALES_Q1_PLAN.q1RevenueTargetL > 0 ? Math.round((pipelineValueL / (SALES_Q1_PLAN.q1RevenueTargetL * SALES_Q1_PLAN.pipelineCoverageMultiplier)) * 100) : 0;
+ const hwRevenueL = wonOpps.filter(o => /hardware|laptop|desktop|printer|cctv|server|storage|switch|firewall/i.test(`${o.name || ''} ${o.requirements || ''}`)).reduce((s,o)=>s+(o.value||0),0) / 100000;
+ const hwMixPct = revenueWonL > 0 ? Math.round((hwRevenueL / revenueWonL) * 100) : 0;
+
+ const salesAchievementByKra = {
+   revenue: SALES_Q1_PLAN.q1RevenueTargetL > 0 ? Math.round((revenueWonL / SALES_Q1_PLAN.q1RevenueTargetL) * 100) : 0,
+   coverage: accountCoverageActualPct,
+   activation: SALES_Q1_PLAN.q1NewAccountsTarget > 0 ? Math.round((newAccountActivationActual / SALES_Q1_PLAN.q1NewAccountsTarget) * 100) : 0,
+   pipeline: pipelineCoverageActualPct,
+   dealmix: revenueWonL === 0 ? 100 : (hwMixPct <= SALES_Q1_PLAN.dealMixTargetHwPct ? 100 : Math.max(0, 100 - ((hwMixPct - SALES_Q1_PLAN.dealMixTargetHwPct) * 5)))
+ };
+
  const actualMap = {
    presales_final_proposals: `Final proposals shared: ${userOpps.filter(o => (o.workflowStage || '') === 'Final Proposal Shared').length}`,
    presales_accuracy_placeholder: `Revisions: ${userOpps.reduce((s,o)=>s+(o.revisionCount||0),0)} | Avg BOQ accuracy: ${userOpps.length ? (userOpps.reduce((s,o)=>s+(o.boqAccuracy||0),0)/userOpps.length).toFixed(1) : 0}%`,
@@ -1589,13 +1620,12 @@ function renderReports(filtered) {
    salesops_activities: `Activities logged: ${userActs.length}`,
    salesops_overdue: `Overdue pricing items: ${userOpps.filter(o => isOverdue(o.purchaseDueAt)).length}`,
    salesops_registration_placeholder: 'Deal registration / rebate tracking module pending capture',
-   sales_pipeline_created: `Open pipeline: ${openOpps.length} | Value: ${inL(openOpps.reduce((s,o)=>s+(o.value||0),0))}`,
-   sales_stage_progression: `Proposal+Negotiation opportunities: ${proposalOpps.length + negotiationOpps.length}`,
-   sales_won_value: `Closed won value: ${inL(wonOpps.reduce((s,o)=>s+(o.value||0),0))}`,
-   sales_forecast_hygiene: `Discovery/Proposal/Negotiation mix: ${discoveryOpps.length}/${proposalOpps.length}/${negotiationOpps.length}`,
-   sales_activity_discipline: `Activities logged: ${userActs.length}`,
-   sales_lead_conversion: `Owned leads: ${userLeads.length}`,
-   saleshead_team_pipeline: `Team open pipeline: ${openOpps.length} | Value: ${inL(openOpps.reduce((s,o)=>s+(o.value||0),0))}`,
+   sales_revenue: `Won revenue: ${inL(wonOpps.reduce((s,o)=>s+(o.value||0),0))} vs target ₹${SALES_Q1_PLAN.q1RevenueTargetL.toFixed(1)}L (${salesAchievementByKra.revenue}%)`,
+   sales_account_coverage: `Accounts with MAS/TE/EU-Coach coverage: ${accountCoverageActualPct}%`,
+   sales_new_account_activation: `New accounts activated: ${newAccountActivationActual}/${SALES_Q1_PLAN.q1NewAccountsTarget} (${salesAchievementByKra.activation}%)`,
+   sales_pipeline_coverage: `Pipeline coverage: ${pipelineValueL.toFixed(1)}L vs required ${(SALES_Q1_PLAN.q1RevenueTargetL * SALES_Q1_PLAN.pipelineCoverageMultiplier).toFixed(1)}L (${salesAchievementByKra.pipeline}%)`,
+   sales_deal_mix: `HW share of won revenue: ${hwMixPct}% (target <= ${SALES_Q1_PLAN.dealMixTargetHwPct}%)`,
+   saleshead_team_pipeline: `Team open pipeline: ${inL(openOpps.reduce((s,o)=>s+(o.value||0),0))}`,
    saleshead_team_conversion: `Team win rate: ${pct(wonOpps.length, userOpps.length)}%`,
    saleshead_team_won: `Team won value: ${inL(wonOpps.reduce((s,o)=>s+(o.value||0),0))}`,
    saleshead_crm_governance: `Activities captured: ${allActs.length}`,
@@ -1628,12 +1658,11 @@ function renderReports(filtered) {
      50
    ],
    sales: [
-     pct(openOpps.length, 20),
-     pct(proposalOpps.length + negotiationOpps.length, Math.max(openOpps.length, 1)),
-     pct(wonOpps.reduce((s,o)=>s+(o.value||0),0), 50000000),
-     75,
-     Math.min(100, userActs.length * 8),
-     Math.min(100, userLeads.length * 10)
+     salesAchievementByKra.revenue,
+     salesAchievementByKra.coverage,
+     salesAchievementByKra.activation,
+     salesAchievementByKra.pipeline,
+     salesAchievementByKra.dealmix
    ],
    sales_head: [
      pct(openOpps.length, 50),
@@ -1648,8 +1677,18 @@ function renderReports(filtered) {
  const master = masters[selectedRole] || SALES_KRA_MASTER;
  const scores = scoreByRole[selectedRole] || [];
  const weightedScore = master.reduce((sum, row, i) => sum + ((scores[i] || 0) * toNumber(row.weight) / 100), 0);
- const incentiveCaps = { presales: 20000, salesops: 15000, sales: 30000, sales_head: 50000 };
- const incentive = Math.round((weightedScore / 100) * (incentiveCaps[selectedRole] || 20000));
+
+ const salesSlab = achievement => {
+   if (achievement < 85) return { label: 'Below Threshold', payoutPct: 0, payoutL: 0.00, rationale: 'No payout — threshold not met. Fixed salary protected.' };
+   if (achievement < 100) return { label: 'Threshold', payoutPct: 70, payoutL: 0.21, rationale: '70% of quarterly variable paid.' };
+   if (achievement < 110) return { label: 'On Target', payoutPct: 100, payoutL: 0.30, rationale: 'Full quarterly variable payout.' };
+   if (achievement < 120) return { label: 'Stretch', payoutPct: 120, payoutL: 0.36, rationale: 'Overachievement bonus on quarterly variable.' };
+   return { label: 'Accelerator', payoutPct: 150, payoutL: 0.45, rationale: 'Star performer accelerator. No cap.' };
+ };
+
+ const rolePayout = selectedRole === 'sales'
+   ? salesSlab(weightedScore)
+   : null;
 
  const summaryCardsByRole = {
    presales: [
@@ -1669,12 +1708,12 @@ function renderReports(filtered) {
      `<div class="metric"><div>Queue Value</div><div class="metric-value">${inL(userOpps.reduce((s,o)=>s+(o.value||0),0))}</div></div>`
    ],
    sales: [
-     `<div class="metric"><div>Open Pipeline</div><div class="metric-value">${openOpps.length}</div></div>`,
-     `<div class="metric"><div>Proposal Stage</div><div class="metric-value">${proposalOpps.length}</div></div>`,
-     `<div class="metric"><div>Negotiation Stage</div><div class="metric-value">${negotiationOpps.length}</div></div>`,
-     `<div class="metric"><div>Closed Won</div><div class="metric-value">${wonOpps.length}</div></div>`,
-     `<div class="metric"><div>Won Value</div><div class="metric-value">${inL(wonOpps.reduce((s,o)=>s+(o.value||0),0))}</div></div>`,
-     `<div class="metric"><div>Lead Base</div><div class="metric-value">${userLeads.length}</div></div>`
+     `<div class="metric"><div>Weighted Achievement</div><div class="metric-value">${weightedScore.toFixed(1)}%</div></div>`,
+     `<div class="metric"><div>Won Revenue</div><div class="metric-value">${inL(wonOpps.reduce((s,o)=>s+(o.value||0),0))}</div></div>`,
+     `<div class="metric"><div>Account Coverage</div><div class="metric-value">${accountCoverageActualPct}%</div></div>`,
+     `<div class="metric"><div>New Accounts</div><div class="metric-value">${newAccountActivationActual}</div></div>`,
+     `<div class="metric"><div>Pipeline Coverage</div><div class="metric-value">${pipelineCoverageActualPct}%</div></div>`,
+     `<div class="metric"><div>Deal Mix</div><div class="metric-value">${hwMixPct}% HW</div></div>`
    ],
    sales_head: [
      `<div class="metric"><div>Team Opportunities</div><div class="metric-value">${userOpps.length}</div></div>`,
@@ -1728,12 +1767,30 @@ function renderReports(filtered) {
          </tbody>
        </table>
      </div>
-   </div>
-   <div class="grid">
-     <div class="metric"><div>Total KRA Score</div><div class="metric-value">${weightedScore.toFixed(1)}</div></div>
-     <div class="metric"><div>Indicative Incentive</div><div class="metric-value">₹${incentive.toLocaleString('en-IN')}</div></div>
-     <div class="metric"><div>Role</div><div class="metric-value">${selectedRole.replace('_',' ').toUpperCase()}</div></div>
    </div>`;
+
+ const payoutSection = selectedRole === 'sales' ? `
+   <div class="card">
+     <h3>💸 Sales Incentive Calculator (Q1 26-27)</h3>
+     <div style="overflow:auto; margin-top:12px; font-size:0.92em;">
+       <table style="width:100%; border-collapse:collapse;">
+         <tbody>
+           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Fixed Salary</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">₹${SALES_Q1_PLAN.fixedSalaryL.toFixed(2)}L</td></tr>
+           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Annual Variable</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">₹${SALES_Q1_PLAN.annualVariableL.toFixed(2)}L</td></tr>
+           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Quarterly Variable (Q1)</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">₹${SALES_Q1_PLAN.quarterlyVariableL.toFixed(2)}L</td></tr>
+           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Weighted Achievement</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">${weightedScore.toFixed(1)}%</td></tr>
+           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Payout Slab</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">${rolePayout.label}</td></tr>
+           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Payout % of Quarterly Variable</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">${rolePayout.payoutPct}%</td></tr>
+           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Payout Q1</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">₹${rolePayout.payoutL.toFixed(2)}L</td></tr>
+           <tr><td style="padding:10px;">Remarks</td><td style="padding:10px;">${rolePayout.rationale}</td></tr>
+         </tbody>
+       </table>
+     </div>
+   </div>` : (selectedRole === 'presales' ? '' : `
+   <div class="card">
+     <h3>💸 Incentive Status</h3>
+     <div style="opacity:0.85; margin-top:10px;">Formal incentive scheme not configured here yet for ${selectedRole.replace('_',' ')}. KRA visibility only.</div>
+   </div>`);
 
  const selector = isSupervisor ? `
    <div class="card">
@@ -1745,11 +1802,11 @@ function renderReports(filtered) {
            ${reportUsers.map(u => `<option value="${u}" ${u === selectedUser ? 'selected' : ''}>${u} (${classifyUserRole(u).replace('_',' ')})</option>`).join('')}
          </select>
        </div>
-       <div class="metric" style="min-width:220px;"><div>Indicative Incentive</div><div class="metric-value">₹${incentive.toLocaleString('en-IN')}</div></div>
+       <div class="metric" style="min-width:240px;"><div>Selected Role</div><div class="metric-value">${selectedRole.replace('_',' ').toUpperCase()}</div></div>
      </div>
    </div>` : '';
 
- return `${selector}${renderTable(titleByRole[selectedRole] || '📈 KRA Report', selectedUser, summaryCardsByRole[selectedRole] || summaryCardsByRole.sales, master)}`;
+ return `${selector}${renderTable(titleByRole[selectedRole] || '📈 KRA Report', selectedUser, summaryCardsByRole[selectedRole] || summaryCardsByRole.sales, master)}${payoutSection}`;
 }
 function exportMonthlyPipeline(month) {
  const m = month || prompt('Enter month (YYYY-MM):', new Date().toISOString().slice(0,7));
