@@ -323,6 +323,7 @@ const SALESOPS_KRA_MASTER = [
  let isSupervisor = false;
  let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] } };
  let activityFilter = { mode: 'today', from: '', to: '' };
+ let oppStageFilter = 'All';
 
  function getUserRole() {
  if (isSupervisor) return 'supervisor';
@@ -1014,8 +1015,8 @@ function calculateICPScore(account) {
  const salesOpsStages = new Set(['awaiting purchase costing', 'awaiting sales ops pricing']);
  // Vinod should only see the current presales bin, which matches the Pending with Presales count.
  if (role === 'presales') return assignedPresales === me && workflowStage === 'assigned to presales';
- // Soumya should only see active pricing-stage opportunities assigned to sales ops/purchase.
- if (role === 'salesops') return (assignedSalesOps === me || assignedPurchase === me) && salesOpsStages.has(workflowStage);
+ // Soumya is the single pricing owner, so his bin is the active pricing queue itself.
+ if (role === 'salesops') return salesOpsStages.has(workflowStage);
  if (role === 'purchase') return assignedPurchase === me && salesOpsStages.has(workflowStage);
  if (oppOwner === me) return true;
  if (myAccountIds.has(o.accountId)) return true;
@@ -1037,7 +1038,7 @@ function calculateICPScore(account) {
  function render() {
  const role = getUserRole();
  const tabs = isSupervisor
- ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'dashboard']
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'reports', 'dashboard']
  : (role === 'sales'
  ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities']
  : (role === 'presales'
@@ -1223,23 +1224,36 @@ function renderAccounts(filtered) {
  const pendingPresalesCount = opps.filter(o => (o.workflowStage || '') === 'Assigned to Presales').length;
  const awaitingPurchaseCount = opps.filter(o => (o.workflowStage || '') === 'Awaiting Purchase Costing').length;
  const awaitingSalesOpsCount = opps.filter(o => (o.workflowStage || '') === 'Awaiting Sales Ops Pricing').length;
+ const awaitingPricingCount = awaitingPurchaseCount + awaitingSalesOpsCount;
+ const filteredOpps = opps.filter(o => {
+   if (oppStageFilter === 'All') return true;
+   if (oppStageFilter === 'Discovery') return (o.stage || '') === 'Discovery';
+   if (oppStageFilter === 'Proposal') return (o.stage || '') === 'Proposal';
+   if (oppStageFilter === 'Negotiation') return (o.stage || '') === 'Negotiation';
+   if (oppStageFilter === 'Closed Won') return (o.stage || '') === 'Closed Won';
+   if (oppStageFilter === 'Closed Lost') return (o.stage || '') === 'Closed Lost';
+   if (oppStageFilter === 'Pending with Presales') return (o.workflowStage || '') === 'Assigned to Presales';
+   if (oppStageFilter === 'Awaiting Pricing') return ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'].includes(o.workflowStage || '');
+   return true;
+ });
+ const pill = (icon, label, count) => `<button type="button" class="tag" style="cursor:pointer; border:${oppStageFilter === label ? '2px solid #fff' : 'none'}" onclick="setOppStageFilter('${label}')">${icon} ${label} (${count})</button>`;
  return `
  <div class="card">
- <h2>💰 Opportunities (${opps.length})</h2>
+ <h2>💰 Opportunities (${filteredOpps.length})</h2>
  <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
  <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:16px">
-   <span class="tag">📋 All (${opps.length})</span>
-   <span class="tag">🔎 Discovery (${discoveryCount})</span>
-   <span class="tag">📝 Proposal (${proposalCount})</span>
-   <span class="tag">🤝 Negotiation (${negotiationCount})</span>
-   <span class="tag">🏆 Closed Won (${wonCount})</span>
-   <span class="tag">❌ Closed Lost (${lostCount})</span>
-   ${['presales','supervisor'].includes(role) ? `<span class="tag">⏳ Pending with Presales (${pendingPresalesCount})</span>` : ''}
-   ${['salesops','supervisor'].includes(role) ? `<span class="tag">⏳ Awaiting Pricing (${awaitingPurchaseCount + awaitingSalesOpsCount})</span>` : ''}
+   ${pill('📋', 'All', opps.length)}
+   ${pill('🔎', 'Discovery', discoveryCount)}
+   ${pill('📝', 'Proposal', proposalCount)}
+   ${pill('🤝', 'Negotiation', negotiationCount)}
+   ${pill('🏆', 'Closed Won', wonCount)}
+   ${pill('❌', 'Closed Lost', lostCount)}
+   ${['presales','supervisor'].includes(role) ? pill('⏳', 'Pending with Presales', pendingPresalesCount) : ''}
+   ${['salesops','supervisor'].includes(role) ? pill('⏳', 'Awaiting Pricing', awaitingPricingCount) : ''}
  </div>
  </div>
  <div class="grid">
- ${opps.map(o => {
+ ${filteredOpps.map(o => {
  const winProb = calculateWinProb(o);
  return `
  <div class="item-card" onclick="editOpportunity('${o.id}')">
@@ -1258,7 +1272,7 @@ function renderAccounts(filtered) {
  <div style="font-size:0.85em; opacity:0.85; margin-top:10px">
  Sales: ${o.salesOwner || o.owner || 'NA'}<br>
  Presales: ${o.assignedPresales || 'Unassigned'}<br>
- Purchase: ${o.assignedPurchase || 'Unassigned'}
+ Purchase: ${o.assignedPurchase || o.assignedSalesOps || 'Unassigned'}
  </div>
  <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
  📅 Created: ${fmtDate(o.createdDate)}<br>🕒 Updated: ${fmtDate(o.modifiedDate)}
@@ -1266,7 +1280,7 @@ function renderAccounts(filtered) {
  </div>
  `;
  }).join('')}
- ${opps.length === 0 ? '<div class="card">No opportunities yet. Click + to add one!</div>' : ''}
+ ${filteredOpps.length === 0 ? '<div class="card">No opportunities in this bucket.</div>' : ''}
  </div>
  `;
 }
@@ -1607,6 +1621,12 @@ function exportMonthlyPipeline(month) {
 function changeTab(tab) {
 
  state.activeTab = tab;
+ if (tab !== 'opportunities') oppStageFilter = 'All';
+ render();
+ }
+
+function setOppStageFilter(filter) {
+ oppStageFilter = filter;
  render();
  }
 
@@ -1997,6 +2017,7 @@ function submitPresalesPack(id) {
  presalesQuestions: questions || '',
  boq,
  assignedPurchase: PURCHASE_OWNER,
+ assignedSalesOps: SALES_OPS_OWNER,
  purchaseAssignedAt: now,
  purchaseDueAt: addHours(now, 24),
  workflowStage: 'Awaiting Purchase Costing'
