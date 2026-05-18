@@ -342,6 +342,7 @@ const SALES_HEAD_KRA_MASTER = [
  let activityFilter = { mode: 'today', from: '', to: '' };
  let oppStageFilter = 'All';
  let reportUserFilter = '';
+let oppUserFilter = '';
 let incentiveProfileCache = {};
 let incentiveProfileLoading = {};
 let aopPlanCache = {};
@@ -1403,7 +1404,16 @@ function renderAccounts(filtered) {
 }
  function renderOpportunities(filtered) {
  const role = getUserRole();
- const opps = filtered.opportunities || [];
+ const allOpps = filtered.opportunities || [];
+ const supervisorSalesUsers = isSupervisor ? Array.from(new Set(allOpps.flatMap(o => [o.salesOwner || o.owner, o.owner]).filter(Boolean))).sort((a,b) => a.localeCompare(b)) : [];
+ const selectedOppUser = isSupervisor ? ((oppUserFilter && supervisorSalesUsers.includes(oppUserFilter)) ? oppUserFilter : 'All') : '';
+ const opps = isSupervisor && selectedOppUser !== 'All'
+   ? allOpps.filter(o => {
+       const salesOwner = o.salesOwner || o.owner || '';
+       const owner = o.owner || o.salesOwner || '';
+       return salesOwner === selectedOppUser || owner === selectedOppUser;
+     })
+   : allOpps;
  const discoveryCount = opps.filter(o => (o.stage || '') === 'Discovery').length;
  const proposalCount = opps.filter(o => (o.stage || '') === 'Proposal').length;
  const negotiationCount = opps.filter(o => (o.stage || '') === 'Negotiation').length;
@@ -1428,6 +1438,14 @@ function renderAccounts(filtered) {
  return `
  <div class="card">
  <h2>💰 Opportunities (${filteredOpps.length})</h2>
+ ${isSupervisor ? `
+   <div style="max-width:360px; margin:12px 0 8px 0;">
+     <label style="display:block; margin-bottom:6px; opacity:0.9;">Choose Salesperson</label>
+     <select class="input" onchange="oppUserFilter=this.value; oppStageFilter='All'; render();">
+       <option value="All" ${selectedOppUser === 'All' ? 'selected' : ''}>All Sales Users</option>
+       ${supervisorSalesUsers.map(u => `<option value="${u}" ${u === selectedOppUser ? 'selected' : ''}>${u}</option>`).join('')}
+     </select>
+   </div>` : ''}
  <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
  <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:16px">
    ${pill('📋', 'All', opps.length)}
@@ -1729,7 +1747,7 @@ function renderReports(filtered) {
    }).map(o => String(o.accountId || '')).filter(Boolean)
  ]);
  const selectedSalesAccounts = allAccounts.filter(a => selectedSalesAccountIds.has(String(a.id || '')) || normalize(a.accountManager || a.owner) === selected);
- const salesAopPlans = (aopPlanCache[REPORT_FY] || []).filter(p => selectedSalesAccountIds.has(String(p.account_id || '')));
+ const salesAopPlans = (aopPlanCache[REPORT_FY] || []).filter(p => selectedSalesAccountIds.has(String(p.account_id || '')) || normalize(p.owner) === selected);
  const annualAopFromCrm = deriveAnnualAopFromPlans(salesAopPlans);
  const cachedSalesProfile = normalizeIncentiveProfile(incentiveProfileCache[selectedUser] || {}, selectedUser, selectedRole);
  const salesProfile = normalizeIncentiveProfile({ ...cachedSalesProfile, annualAopL: annualAopFromCrm > 0 ? annualAopFromCrm : cachedSalesProfile.annualAopL }, selectedUser, selectedRole);
