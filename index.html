@@ -298,41 +298,6 @@ const ACCOUNT_OWNER_MAP = {
   'POLICY BAZAAR': 'a.gupta@dnispl.com'
 };
  const CRM_API_BASE = window.location.origin;
-
-const PRESALES_KRA_MASTER = [
- { code:'PS1', kpi_name:'Proposal & RFP Win Rate', weight:'25%', target_benchmark:'Proposal submissions tracked; presales support reflected in final proposal flow', actual_key:'presales_final_proposals' },
- { code:'PS2', kpi_name:'Solution Design Accuracy', weight:'20%', target_benchmark:'Low revision count and better BOQ accuracy', actual_key:'presales_accuracy_placeholder' },
- { code:'PS3', kpi_name:'Revenue Pipeline Contribution', weight:'20%', target_benchmark:'Pipeline influenced through presales engagement', actual_key:'presales_value' },
- { code:'PS4', kpi_name:'Product & Tech Expertise', weight:'15%', target_benchmark:'Training, certifications, and technical readiness tracked', actual_key:'presales_learning_placeholder' },
- { code:'PS5', kpi_name:'Cross-functional Collaboration', weight:'10%', target_benchmark:'Sales support and activities logged within TAT', actual_key:'presales_activities' },
- { code:'PS6', kpi_name:'Innovation & Thought Leadership', weight:'10%', target_benchmark:'Case studies, workshops, COE initiatives captured', actual_key:'presales_innovation_placeholder' }
-];
-
-const SALESOPS_KRA_MASTER = [
- { code:'SO1', kpi_name:'OEM & Distributor Engagement — Quote Follow-ups', weight:'25%', target_benchmark:'Quote TAT <= 48 hrs; follow-up closure >= 90%; zero lapses', actual_key:'salesops_active_queue' },
- { code:'SO2', kpi_name:'Proposal Preparation & Quote Accuracy', weight:'20%', target_benchmark:'>= 95% pricing accuracy; revision cycles due to errors < 2', actual_key:'salesops_returned' },
- { code:'SO3', kpi_name:'Third-Party & L3 Vendor Coordination', weight:'20%', target_benchmark:'Vendor response TAT <= 72 hrs; escalation rate < 10%', actual_key:'salesops_avg_tat' },
- { code:'SO4', kpi_name:'Sales Pipeline & CRM Support', weight:'15%', target_benchmark:'CRM update accuracy >= 98%; weekly pipeline reports on time', actual_key:'salesops_activities' },
- { code:'SO5', kpi_name:'Order Processing & Documentation Compliance', weight:'10%', target_benchmark:'PO processing TAT <= 24 hrs; documentation accuracy >= 99%', actual_key:'salesops_overdue' },
- { code:'SO6', kpi_name:'OEM Partner Program & Deal Registration Management', weight:'10%', target_benchmark:'100% eligible deals registered on time; rebate tracking accuracy >= 98%', actual_key:'salesops_registration_placeholder' }
-];
-
-const SALES_KRA_MASTER = [
- { code:'S1', kpi_name:'Revenue (HW+SW+SV)', weight:'20%', target_benchmark:'Actual billed revenue vs quarterly AOP target', actual_key:'sales_revenue' },
- { code:'S2', kpi_name:'Account Coverage', weight:'40%', target_benchmark:'100% accounts covered with 3 key contacts in CRM', actual_key:'sales_account_coverage' },
- { code:'S3', kpi_name:'New Account Activation', weight:'20%', target_benchmark:'6 accounts with at least 1 confirmed PO in the quarter', actual_key:'sales_new_account_activation' },
- { code:'S4', kpi_name:'Pipeline Coverage', weight:'10%', target_benchmark:'Qualified pipeline >= 3x quarterly revenue target', actual_key:'sales_pipeline_coverage' },
- { code:'S5', kpi_name:'Deal Mix Compliance', weight:'10%', target_benchmark:'HW share <= 80% of billed revenue', actual_key:'sales_deal_mix' }
-];
-
-const SALES_HEAD_KRA_MASTER = [
- { code:'SH1', kpi_name:'Team Pipeline Coverage', weight:'25%', target_benchmark:'Team pipeline strength and coverage across stages', actual_key:'saleshead_team_pipeline' },
- { code:'SH2', kpi_name:'Team Conversion', weight:'20%', target_benchmark:'Proposal to win conversion monitored and improved', actual_key:'saleshead_team_conversion' },
- { code:'SH3', kpi_name:'Revenue Delivery', weight:'25%', target_benchmark:'Team closed won achievement vs plan', actual_key:'saleshead_team_won' },
- { code:'SH4', kpi_name:'CRM Governance', weight:'10%', target_benchmark:'Timely CRM hygiene and review rhythm', actual_key:'saleshead_crm_governance' },
- { code:'SH5', kpi_name:'Cross-functional Alignment', weight:'10%', target_benchmark:'Presales / sales ops bottlenecks resolved in TAT', actual_key:'saleshead_cross_function' },
- { code:'SH6', kpi_name:'Coaching & Team Enablement', weight:'10%', target_benchmark:'Reviews, coaching, and escalation handling logged', actual_key:'saleshead_coaching' }
-];
  
  // ═══════════════════════════════════════════════════════════════
  
@@ -340,13 +305,6 @@ const SALES_HEAD_KRA_MASTER = [
  let isSupervisor = false;
  let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] } };
  let activityFilter = { mode: 'today', from: '', to: '' };
- let oppStageFilter = 'All';
- let reportUserFilter = '';
-let oppUserFilter = '';
-let incentiveProfileCache = {};
-let incentiveProfileLoading = {};
-let aopPlanCache = {};
-let aopPlanLoading = {};
 
  function getUserRole() {
  if (isSupervisor) return 'supervisor';
@@ -468,12 +426,6 @@ function normalizeOpportunityFromApi(o) {
   purchaseCosting: o.purchase_costing || o.purchaseCosting || '',
   costingTat: o.costing_tat || o.costingTat || '',
   finalPricingProposal: o.final_pricing_proposal || o.finalPricingProposal || '',
-  proposalSubmittedAt: o.proposal_submitted_at || o.proposalSubmittedAt || '',
-  proposalOnTime: o.proposal_on_time || o.proposalOnTime || '',
-  revisionCount: parseInt(o.revision_count || o.revisionCount || 0, 10) || 0,
-  boqAccuracy: parseFloat(o.boq_accuracy || o.boqAccuracy || 0) || 0,
-  pocCount: parseInt(o.poc_count || o.pocCount || 0, 10) || 0,
-  demoCount: parseInt(o.demo_count || o.demoCount || 0, 10) || 0,
   presalesAssignedAt: o.presales_assigned_at || o.presalesAssignedAt || '',
   presalesDueAt: o.presales_due_at || o.presalesDueAt || '',
   purchaseAssignedAt: o.purchase_assigned_at || o.purchaseAssignedAt || '',
@@ -524,119 +476,6 @@ async function fetchAccountsFromApi() {
  if (!resp.ok) throw new Error(`accounts fetch failed (${resp.status})`);
  const data = await resp.json();
  return Array.isArray(data) ? data.map(normalizeAccountFromApi) : [];
-}
-
-
-function defaultSalesIncentiveProfile(email = '', role = 'sales') {
- return {
-  email,
-  role,
-  fixedSalaryL: 0,
-  annualAopL: 0,
-  variablePct: 20,
-  q1AopPct: 15,
-  q1NewAccountsTarget: 6,
-  accountCoverageTargetPct: 100,
-  pipelineCoverageMultiplier: 3,
-  dealMixTargetHwPct: 80,
-  thresholdPct: 85
- };
-}
-
-function normalizeIncentiveProfile(profile, email = '', role = 'sales') {
- const fallback = defaultSalesIncentiveProfile(email, role);
- return {
-  email: profile?.email || fallback.email,
-  role: profile?.role || fallback.role,
-  fixedSalaryL: parseFloat(profile?.fixed_salary_l ?? profile?.fixedSalaryL ?? fallback.fixedSalaryL) || 0,
-  annualAopL: parseFloat(profile?.annual_aop_l ?? profile?.annualAopL ?? fallback.annualAopL) || 0,
-  variablePct: parseFloat(profile?.variable_pct ?? profile?.variablePct ?? fallback.variablePct) || 0,
-  q1AopPct: parseFloat(profile?.q1_aop_pct ?? profile?.q1AopPct ?? fallback.q1AopPct) || 0,
-  q1NewAccountsTarget: parseInt(profile?.q1_new_accounts_target ?? profile?.q1NewAccountsTarget ?? fallback.q1NewAccountsTarget, 10) || 0,
-  accountCoverageTargetPct: parseFloat(profile?.account_coverage_target_pct ?? profile?.accountCoverageTargetPct ?? fallback.accountCoverageTargetPct) || 0,
-  pipelineCoverageMultiplier: parseFloat(profile?.pipeline_coverage_multiplier ?? profile?.pipelineCoverageMultiplier ?? fallback.pipelineCoverageMultiplier) || 0,
-  dealMixTargetHwPct: parseFloat(profile?.deal_mix_target_hw_pct ?? profile?.dealMixTargetHwPct ?? fallback.dealMixTargetHwPct) || 0,
-  thresholdPct: parseFloat(profile?.threshold_pct ?? profile?.thresholdPct ?? fallback.thresholdPct) || 0
- };
-}
-
-function deriveSalesPlan(profile) {
- const fixedSalaryL = parseFloat(profile.fixedSalaryL || 0) || 0;
- const annualAopL = parseFloat(profile.annualAopL || 0) || 0;
- const variablePct = parseFloat(profile.variablePct || 0) || 0;
- const q1AopPct = parseFloat(profile.q1AopPct || 0) || 0;
- const annualVariableL = fixedSalaryL * variablePct / 100;
- const quarterlyVariableL = annualVariableL * q1AopPct / 100;
- const monthlyVariableL = quarterlyVariableL / 3;
- const q1RevenueTargetL = annualAopL * q1AopPct / 100;
- return {
-  ...profile,
-  fixedSalaryL,
-  annualAopL,
-  variablePct,
-  q1AopPct,
-  annualVariableL,
-  quarterlyVariableL,
-  monthlyVariableL,
-  q1RevenueTargetL,
-  q1NewAccountsTarget: parseInt(profile.q1NewAccountsTarget || 0, 10) || 0,
-  accountCoverageTargetPct: parseFloat(profile.accountCoverageTargetPct || 0) || 0,
-  pipelineCoverageMultiplier: parseFloat(profile.pipelineCoverageMultiplier || 0) || 0,
-  dealMixTargetHwPct: parseFloat(profile.dealMixTargetHwPct || 0) || 0,
-  thresholdPct: parseFloat(profile.thresholdPct || 0) || 0
- };
-}
-
-async function fetchIncentiveProfileFromApi(email, roleHint = 'sales') {
- const url = `${CRM_API_BASE}/api/incentive-profiles/${encodeURIComponent(email)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
- const resp = await fetch(url);
- if (!resp.ok) throw new Error(`incentive profile fetch failed (${resp.status})`);
- const data = await resp.json();
- return normalizeIncentiveProfile(data, email, roleHint);
-}
-
-function ensureIncentiveProfileLoaded(email, roleHint = 'sales') {
- if (!email || incentiveProfileCache[email] || incentiveProfileLoading[email]) return;
- incentiveProfileLoading[email] = true;
- fetchIncentiveProfileFromApi(email, roleHint)
-  .then(profile => {
-   incentiveProfileCache[email] = profile;
-   if (state.activeTab === 'reports') render();
-  })
-  .catch(err => console.warn('Incentive profile unavailable', err))
-  .finally(() => {
-   delete incentiveProfileLoading[email];
-  });
-}
-
-async function saveSelectedIncentiveProfile(email, roleHint = 'sales', annualAopL = 0) {
- const payload = {
-  email,
-  role: roleHint,
-  fixed_salary_l: parseFloat(document.getElementById('salaryFixedL')?.value || 0) || 0,
-  annual_aop_l: annualAopL,
-  variable_pct: 20,
-  q1_aop_pct: 15,
-  q1_new_accounts_target: 6,
-  account_coverage_target_pct: 100,
-  pipeline_coverage_multiplier: 3,
-  deal_mix_target_hw_pct: 80,
-  threshold_pct: 85,
-  viewer_email: currentUser,
-  viewer_role: getViewerRoleForApi()
- };
- const resp = await fetch(`${CRM_API_BASE}/api/incentive-profiles`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify(payload)
- });
- if (!resp.ok) {
-  const msg = await resp.text();
-  throw new Error(msg || 'failed to save incentive profile');
- }
- incentiveProfileCache[email] = normalizeIncentiveProfile(payload, email, roleHint);
- alert('Salary and target profile saved');
- render();
 }
 
 async function fetchUserPassword(email) {
@@ -720,59 +559,6 @@ window.addEventListener('message', (event) => {
   refreshMicrosoftButton();
  }
 });
-
-async function fetchAopPlansFromApi(fyYear = '2026-27') {
- const url = `${CRM_API_BASE}/api/aop?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}&fy_year=${encodeURIComponent(fyYear)}`;
- const resp = await fetch(url);
- if (!resp.ok) throw new Error(`aop fetch failed (${resp.status})`);
- const data = await resp.json();
- return Array.isArray(data) ? data : [];
-}
-
-function toNum(v) {
- const n = parseFloat(v);
- return Number.isFinite(n) ? n : 0;
-}
-
-function deriveAnnualAopFromPlans(plans) {
- const preferredKeys = ['annual_aop_l', 'annualAopL', 'annual_aop', 'annualAop', 'aop_l', 'aop', 'annual_total_l', 'annualTotalL', 'annual_total', 'annualTotal', 'total_aop_l', 'totalAopL'];
- const monthlyKeys = ['apr','may','jun','jul','aug','sep','oct','nov','dec','jan','feb','mar','q1','q2','q3','q4'];
- let total = 0;
- for (const plan of plans || []) {
-  let picked = 0;
-  for (const key of preferredKeys) {
-   if (plan[key] !== undefined && plan[key] !== null && plan[key] !== '') {
-    picked = toNum(plan[key]);
-    if (picked) break;
-   }
-  }
-  if (!picked) {
-   const sumMonthly = Object.entries(plan).reduce((acc, [k, v]) => {
-    const lk = k.toLowerCase();
-    if (monthlyKeys.includes(lk)) return acc + toNum(v);
-    return acc;
-   }, 0);
-   picked = sumMonthly;
-  }
-  total += picked;
- }
- return total;
-}
-
-function ensureAopPlansLoaded(fyYear = '2026-27') {
- if (aopPlanCache[fyYear] || aopPlanLoading[fyYear]) return;
- aopPlanLoading[fyYear] = true;
- fetchAopPlansFromApi(fyYear)
-  .then(plans => {
-   aopPlanCache[fyYear] = plans;
-   if (state.activeTab === 'reports') render();
-  })
-  .catch(err => console.warn('AOP plans unavailable', err))
-  .finally(() => {
-   delete aopPlanLoading[fyYear];
-  });
-}
-
 async function fetchActivitiesFromApi() {
  const url = `${CRM_API_BASE}/api/activities?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
  const resp = await fetch(url);
@@ -1043,12 +829,6 @@ function seedAccountsFromMap() {
  normalized.purchaseCosting = normalized.purchaseCosting || '';
  normalized.costingTat = normalized.costingTat || '';
  normalized.finalPricingProposal = normalized.finalPricingProposal || '';
- normalized.proposalSubmittedAt = normalized.proposalSubmittedAt || '';
- normalized.proposalOnTime = normalized.proposalOnTime || '';
- normalized.revisionCount = parseInt(normalized.revisionCount || 0, 10) || 0;
- normalized.boqAccuracy = parseFloat(normalized.boqAccuracy || 0) || 0;
- normalized.pocCount = parseInt(normalized.pocCount || 0, 10) || 0;
- normalized.demoCount = parseInt(normalized.demoCount || 0, 10) || 0;
  normalized.presalesAssignedAt = normalized.presalesAssignedAt || '';
  normalized.presalesDueAt = normalized.presalesDueAt || '';
  normalized.purchaseAssignedAt = normalized.purchaseAssignedAt || '';
@@ -1204,8 +984,8 @@ function calculateICPScore(account) {
  const salesOpsStages = new Set(['awaiting purchase costing', 'awaiting sales ops pricing']);
  // Vinod should only see the current presales bin, which matches the Pending with Presales count.
  if (role === 'presales') return assignedPresales === me && workflowStage === 'assigned to presales';
- // Soumya is the single pricing owner, so his bin is the active pricing queue itself.
- if (role === 'salesops') return salesOpsStages.has(workflowStage);
+ // Soumya should only see active pricing-stage opportunities assigned to sales ops/purchase.
+ if (role === 'salesops') return (assignedSalesOps === me || assignedPurchase === me) && salesOpsStages.has(workflowStage);
  if (role === 'purchase') return assignedPurchase === me && salesOpsStages.has(workflowStage);
  if (oppOwner === me) return true;
  if (myAccountIds.has(o.accountId)) return true;
@@ -1227,7 +1007,7 @@ function calculateICPScore(account) {
  function render() {
  const role = getUserRole();
  const tabs = isSupervisor
- ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'reports', 'dashboard']
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'dashboard']
  : (role === 'sales'
  ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities']
  : (role === 'presales'
@@ -1404,16 +1184,7 @@ function renderAccounts(filtered) {
 }
  function renderOpportunities(filtered) {
  const role = getUserRole();
- const allOpps = filtered.opportunities || [];
- const supervisorSalesUsers = isSupervisor ? Array.from(new Set(allOpps.flatMap(o => [o.salesOwner || o.owner, o.owner]).filter(Boolean))).sort((a,b) => a.localeCompare(b)) : [];
- const selectedOppUser = isSupervisor ? ((oppUserFilter && supervisorSalesUsers.includes(oppUserFilter)) ? oppUserFilter : 'All') : '';
- const opps = isSupervisor && selectedOppUser !== 'All'
-   ? allOpps.filter(o => {
-       const salesOwner = o.salesOwner || o.owner || '';
-       const owner = o.owner || o.salesOwner || '';
-       return salesOwner === selectedOppUser || owner === selectedOppUser;
-     })
-   : allOpps;
+ const opps = filtered.opportunities || [];
  const discoveryCount = opps.filter(o => (o.stage || '') === 'Discovery').length;
  const proposalCount = opps.filter(o => (o.stage || '') === 'Proposal').length;
  const negotiationCount = opps.filter(o => (o.stage || '') === 'Negotiation').length;
@@ -1422,44 +1193,23 @@ function renderAccounts(filtered) {
  const pendingPresalesCount = opps.filter(o => (o.workflowStage || '') === 'Assigned to Presales').length;
  const awaitingPurchaseCount = opps.filter(o => (o.workflowStage || '') === 'Awaiting Purchase Costing').length;
  const awaitingSalesOpsCount = opps.filter(o => (o.workflowStage || '') === 'Awaiting Sales Ops Pricing').length;
- const awaitingPricingCount = awaitingPurchaseCount + awaitingSalesOpsCount;
- const filteredOpps = opps.filter(o => {
-   if (oppStageFilter === 'All') return true;
-   if (oppStageFilter === 'Discovery') return (o.stage || '') === 'Discovery';
-   if (oppStageFilter === 'Proposal') return (o.stage || '') === 'Proposal';
-   if (oppStageFilter === 'Negotiation') return (o.stage || '') === 'Negotiation';
-   if (oppStageFilter === 'Closed Won') return (o.stage || '') === 'Closed Won';
-   if (oppStageFilter === 'Closed Lost') return (o.stage || '') === 'Closed Lost';
-   if (oppStageFilter === 'Pending with Presales') return (o.workflowStage || '') === 'Assigned to Presales';
-   if (oppStageFilter === 'Awaiting Pricing') return ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'].includes(o.workflowStage || '');
-   return true;
- });
- const pill = (icon, label, count) => `<button type="button" class="tag" style="cursor:pointer; border:${oppStageFilter === label ? '2px solid #fff' : 'none'}" onclick="setOppStageFilter('${label}')">${icon} ${label} (${count})</button>`;
  return `
  <div class="card">
- <h2>💰 Opportunities (${filteredOpps.length})</h2>
- ${isSupervisor ? `
-   <div style="max-width:360px; margin:12px 0 8px 0;">
-     <label style="display:block; margin-bottom:6px; opacity:0.9;">Choose Salesperson</label>
-     <select class="input" onchange="oppUserFilter=this.value; oppStageFilter='All'; render();">
-       <option value="All" ${selectedOppUser === 'All' ? 'selected' : ''}>All Sales Users</option>
-       ${supervisorSalesUsers.map(u => `<option value="${u}" ${u === selectedOppUser ? 'selected' : ''}>${u}</option>`).join('')}
-     </select>
-   </div>` : ''}
+ <h2>💰 Opportunities (${opps.length})</h2>
  <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
  <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:16px">
-   ${pill('📋', 'All', opps.length)}
-   ${pill('🔎', 'Discovery', discoveryCount)}
-   ${pill('📝', 'Proposal', proposalCount)}
-   ${pill('🤝', 'Negotiation', negotiationCount)}
-   ${pill('🏆', 'Closed Won', wonCount)}
-   ${pill('❌', 'Closed Lost', lostCount)}
-   ${['presales','supervisor'].includes(role) ? pill('⏳', 'Pending with Presales', pendingPresalesCount) : ''}
-   ${['salesops','supervisor'].includes(role) ? pill('⏳', 'Awaiting Pricing', awaitingPricingCount) : ''}
+   <span class="tag">📋 All (${opps.length})</span>
+   <span class="tag">🔎 Discovery (${discoveryCount})</span>
+   <span class="tag">📝 Proposal (${proposalCount})</span>
+   <span class="tag">🤝 Negotiation (${negotiationCount})</span>
+   <span class="tag">🏆 Closed Won (${wonCount})</span>
+   <span class="tag">❌ Closed Lost (${lostCount})</span>
+   ${role === 'presales' ? `<span class="tag">⏳ Pending with Presales (${pendingPresalesCount})</span>` : ''}
+   ${role === 'salesops' ? `<span class="tag">⏳ Awaiting Pricing (${awaitingPurchaseCount + awaitingSalesOpsCount})</span>` : ''}
  </div>
  </div>
  <div class="grid">
- ${filteredOpps.map(o => {
+ ${opps.map(o => {
  const winProb = calculateWinProb(o);
  return `
  <div class="item-card" onclick="editOpportunity('${o.id}')">
@@ -1478,7 +1228,7 @@ function renderAccounts(filtered) {
  <div style="font-size:0.85em; opacity:0.85; margin-top:10px">
  Sales: ${o.salesOwner || o.owner || 'NA'}<br>
  Presales: ${o.assignedPresales || 'Unassigned'}<br>
- Purchase: ${o.assignedPurchase || o.assignedSalesOps || 'Unassigned'}
+ Purchase: ${o.assignedPurchase || 'Unassigned'}
  </div>
  <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
  📅 Created: ${fmtDate(o.createdDate)}<br>🕒 Updated: ${fmtDate(o.modifiedDate)}
@@ -1486,7 +1236,7 @@ function renderAccounts(filtered) {
  </div>
  `;
  }).join('')}
- ${filteredOpps.length === 0 ? '<div class="card">No opportunities in this bucket.</div>' : ''}
+ ${opps.length === 0 ? '<div class="card">No opportunities yet. Click + to add one!</div>' : ''}
  </div>
  `;
 }
@@ -1693,342 +1443,101 @@ function renderDashboard(filtered) {
 
 function renderReports(filtered) {
  const role = getUserRole();
+ const me = (currentUser || '').toLowerCase();
  const allOpps = state.data.opportunities || [];
  const allActs = state.data.activities || [];
  const allLeads = state.data.leads || [];
- const allAccounts = state.data.accounts || [];
- const normalize = v => (v || '').toLowerCase();
- const pct = (num, den) => den ? Math.round((num / den) * 100) : 0;
- const toNumber = weight => parseFloat(String(weight).replace('%','')) || 0;
- const inL = value => `₹${((value || 0) / 100000).toFixed(1)}L`;
- const calcAvgHours = (items, startKey, endKey) => {
-   const vals = items.map(o => {
-     const s = o[startKey] ? new Date(o[startKey]) : null;
-     const e = o[endKey] ? new Date(o[endKey]) : null;
-     if (s && e && !isNaN(s) && !isNaN(e)) return (e - s) / 36e5;
-     return null;
-   }).filter(v => v !== null);
-   return vals.length ? (vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(1) : 'NA';
- };
 
- const classifyUserRole = (email) => {
-   const e = normalize(email);
-   if (!e) return 'sales';
-   if (e === normalize(SUPERVISOR_EMAIL)) return 'sales_head';
-   if (['vinod.v@dnispl.com'].includes(e) || e.includes('presales') || e.includes('solutions')) return 'presales';
-   if (['soumya.m@dnispl.com', 'soumay.m@dnispl.com'].includes(e) || e.includes('salesops') || e.includes('sales ops') || e.includes('pricing')) return 'salesops';
-   return 'sales';
- };
-
- const reportUsers = (() => {
-   const users = new Set();
-   allOpps.forEach(o => [o.owner, o.salesOwner, o.assignedPresales, o.assignedSalesOps, o.assignedPurchase].forEach(v => v && users.add(v)));
-   allAccounts.forEach(a => [a.accountManager, a.owner].forEach(v => v && users.add(v)));
-   allLeads.forEach(l => l.owner && users.add(l.owner));
-   users.add(SUPERVISOR_EMAIL);
-   return Array.from(users).filter(Boolean).sort((a,b) => a.localeCompare(b));
- })();
-
- const selectedUser = isSupervisor
-   ? (reportUserFilter && reportUsers.includes(reportUserFilter) ? reportUserFilter : (reportUsers[0] || currentUser))
-   : currentUser;
- const selectedRole = isSupervisor ? classifyUserRole(selectedUser) : role;
- const selected = normalize(selectedUser);
-
- if (selectedRole === 'sales') ensureIncentiveProfileLoaded(selectedUser, selectedRole);
- const REPORT_FY = '2026-27';
- if (selectedRole === 'sales') ensureAopPlansLoaded(REPORT_FY);
- const selectedSalesAccountIds = new Set([
-   ...allAccounts.filter(a => normalize(a.accountManager || a.owner) === selected).map(a => String(a.id || '')),
-   ...allOpps.filter(o => {
-     const owner = normalize(o.owner || o.salesOwner);
-     const salesOwner = normalize(o.salesOwner || o.owner);
-     return owner === selected || salesOwner === selected;
-   }).map(o => String(o.accountId || '')).filter(Boolean)
- ]);
- const selectedSalesAccounts = allAccounts.filter(a => selectedSalesAccountIds.has(String(a.id || '')) || normalize(a.accountManager || a.owner) === selected);
- const salesAopPlans = (aopPlanCache[REPORT_FY] || []).filter(p => selectedSalesAccountIds.has(String(p.account_id || '')) || normalize(p.owner) === selected);
- const annualAopFromCrm = deriveAnnualAopFromPlans(salesAopPlans);
- const cachedSalesProfile = normalizeIncentiveProfile(incentiveProfileCache[selectedUser] || {}, selectedUser, selectedRole);
- const salesProfile = normalizeIncentiveProfile({ ...cachedSalesProfile, annualAopL: annualAopFromCrm > 0 ? annualAopFromCrm : cachedSalesProfile.annualAopL }, selectedUser, selectedRole);
- const SALES_Q1_PLAN = deriveSalesPlan(salesProfile);
-
- const userOpps = allOpps.filter(o => {
-   const owner = normalize(o.owner || o.salesOwner);
-   const salesOwner = normalize(o.salesOwner || o.owner);
-   const assignedPresales = normalize(o.assignedPresales);
-   const assignedSalesOps = normalize(o.assignedSalesOps);
-   const assignedPurchase = normalize(o.assignedPurchase);
-   const workflowStage = normalize(o.workflowStage || 'Sales Review');
-   if (selectedRole === 'presales') return assignedPresales === selected;
-   if (selectedRole === 'salesops') return (assignedSalesOps === selected || assignedPurchase === selected) && ['awaiting purchase costing', 'awaiting sales ops pricing'].includes(workflowStage);
-   if (selectedRole === 'sales_head') return true;
-   return owner === selected || salesOwner === selected;
+ const roleOpps = allOpps.filter(o => {
+   const assignedPresales = (o.assignedPresales || '').toLowerCase();
+   const assignedPurchase = (o.assignedPurchase || '').toLowerCase();
+   const assignedSalesOps = (o.assignedSalesOps || '').toLowerCase();
+   if (role === 'presales') return assignedPresales === me;
+   if (role === 'salesops') return assignedSalesOps === me || assignedPurchase === me;
+   return false;
  });
 
- const userActs = allActs.filter(a => selectedRole === 'sales_head' ? true : normalize(a.owner) === selected);
- const userLeads = allLeads.filter(l => selectedRole === 'sales_head' ? true : normalize(l.owner) === selected);
- const openOpps = userOpps.filter(o => !['Closed Won', 'Closed Lost'].includes(o.stage || ''));
- const wonOpps = userOpps.filter(o => (o.stage || '') === 'Closed Won');
- const presalesActive = userOpps.filter(o => (o.workflowStage || '') === 'Assigned to Presales');
- const salesOpsActive = userOpps.filter(o => ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'].includes(o.workflowStage || ''));
- const salesOpsReturned = userOpps.filter(o => ['Costing Returned', 'Pricing Returned to Presales'].includes(o.workflowStage || ''));
+ const activePresales = roleOpps.filter(o => (o.workflowStage || '') === 'Assigned to Presales');
+ const activeSalesOps = roleOpps.filter(o => ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'].includes(o.workflowStage || ''));
+ const costingReturned = roleOpps.filter(o => (o.workflowStage || '') === 'Costing Returned');
+ const finalProposalShared = roleOpps.filter(o => (o.workflowStage || '') === 'Final Proposal Shared');
+ const overduePresales = roleOpps.filter(o => isOverdue(o.presalesDueAt));
+ const overdueSalesOps = roleOpps.filter(o => isOverdue(o.purchaseDueAt));
+ const ownActivities = allActs.filter(a => (a.owner || '').toLowerCase() === me);
+ const ownLeads = allLeads.filter(l => (l.owner || '').toLowerCase() === me);
 
- const revenueWonL = wonOpps.reduce((s,o)=>s+(o.value||0),0) / 100000;
- const coveredAccountsCount = selectedSalesAccounts.filter(a => {
-   const contacts = state.data.contacts.filter(c => String(c.accountId || '') === String(a.id || ''));
-   const roles = new Set(contacts.map(c => normalize(c.roleType).replace(/\s+/g, '')));
-   return roles.has('mas') && roles.has('te') && (roles.has('eu') || roles.has('coach') || roles.has('eu/coach'));
- }).length;
- const accountCoverageActualPct = selectedSalesAccounts.length ? pct(coveredAccountsCount, selectedSalesAccounts.length) : 0;
- const newAccountActivationActual = wonOpps.filter(o => {
-   const accountId = String(o.accountId || '');
-   const accountWonCount = wonOpps.filter(x => String(x.accountId || '') === accountId).length;
-   return accountId && accountWonCount >= 1;
- }).map(o => String(o.accountId || '')).filter((v, i, arr) => arr.indexOf(v) === i).length;
- const pipelineValueL = openOpps.reduce((s,o)=>s+(o.value||0),0) / 100000;
- const requiredPipelineL = SALES_Q1_PLAN.q1RevenueTargetL > 0 ? SALES_Q1_PLAN.q1RevenueTargetL * SALES_Q1_PLAN.pipelineCoverageMultiplier : 0;
- const pipelineCoverageActualPct = requiredPipelineL > 0 ? Math.round((pipelineValueL / requiredPipelineL) * 100) : 0;
- const hwRevenueL = wonOpps.filter(o => /hardware|laptop|desktop|printer|cctv|server|storage|switch|firewall/i.test(`${o.name || ''} ${o.requirements || ''}`)).reduce((s,o)=>s+(o.value||0),0) / 100000;
- const hwMixPct = revenueWonL > 0 ? Math.round((hwRevenueL / revenueWonL) * 100) : 0;
+ const tatHours = roleOpps.map(o => {
+   if (role === 'presales') {
+     const start = o.presalesAssignedAt ? new Date(o.presalesAssignedAt) : null;
+     const end = o.purchaseAssignedAt ? new Date(o.purchaseAssignedAt) : (o.finalProposalAt ? new Date(o.finalProposalAt) : null);
+     if (start && end && !isNaN(start) && !isNaN(end)) return (end - start) / 36e5;
+   }
+   if (role === 'salesops') {
+     const start = o.purchaseAssignedAt ? new Date(o.purchaseAssignedAt) : null;
+     const end = o.costingReturnedAt ? new Date(o.costingReturnedAt) : null;
+     if (start && end && !isNaN(start) && !isNaN(end)) return (end - start) / 36e5;
+   }
+   return null;
+ }).filter(v => v !== null);
 
- const salesAchievementByKra = {
-   revenue: SALES_Q1_PLAN.q1RevenueTargetL > 0 ? Math.round((revenueWonL / SALES_Q1_PLAN.q1RevenueTargetL) * 100) : 0,
-   coverage: SALES_Q1_PLAN.accountCoverageTargetPct > 0 ? Math.round((accountCoverageActualPct / SALES_Q1_PLAN.accountCoverageTargetPct) * 100) : 0,
-   activation: SALES_Q1_PLAN.q1NewAccountsTarget > 0 ? Math.round((newAccountActivationActual / SALES_Q1_PLAN.q1NewAccountsTarget) * 100) : 0,
-   pipeline: pipelineCoverageActualPct,
-   dealmix: revenueWonL > 0 ? (hwMixPct <= SALES_Q1_PLAN.dealMixTargetHwPct ? 100 : Math.max(0, 100 - ((hwMixPct - SALES_Q1_PLAN.dealMixTargetHwPct) * 5))) : 0
- };
+ const avgTat = tatHours.length ? (tatHours.reduce((a, b) => a + b, 0) / tatHours.length).toFixed(1) : 'NA';
+ const totalValue = roleOpps.reduce((sum, o) => sum + (o.value || 0), 0);
 
- const actualMap = {
-   presales_final_proposals: `Final proposals shared: ${userOpps.filter(o => (o.workflowStage || '') === 'Final Proposal Shared').length}`,
-   presales_accuracy_placeholder: `Revisions: ${userOpps.reduce((s,o)=>s+(o.revisionCount||0),0)} | Avg BOQ accuracy: ${userOpps.length ? (userOpps.reduce((s,o)=>s+(o.boqAccuracy||0),0)/userOpps.length).toFixed(1) : 0}%`,
-   presales_value: `Handled value: ${inL(userOpps.reduce((s,o)=>s+(o.value||0),0))}`,
-   presales_learning_placeholder: `POC count: ${userOpps.reduce((s,o)=>s+(o.pocCount||0),0)} | Demo count: ${userOpps.reduce((s,o)=>s+(o.demoCount||0),0)}`,
-   presales_activities: `Activities logged: ${userActs.length}`,
-   presales_innovation_placeholder: `Avg presales TAT: ${calcAvgHours(userOpps, 'presalesAssignedAt', 'purchaseAssignedAt')} hrs`,
-   salesops_active_queue: `Active pricing queue: ${salesOpsActive.length}`,
-   salesops_returned: `Pricing returned: ${salesOpsReturned.length}`,
-   salesops_avg_tat: `Avg pricing TAT: ${calcAvgHours(userOpps, 'purchaseAssignedAt', 'costingReturnedAt')} hrs`,
-   salesops_activities: `Activities logged: ${userActs.length}`,
-   salesops_overdue: `Overdue pricing items: ${userOpps.filter(o => isOverdue(o.purchaseDueAt)).length}`,
-   salesops_registration_placeholder: `Queue value: ${inL(userOpps.reduce((s,o)=>s+(o.value||0),0))}`,
-   sales_revenue: `Won revenue: ${inL(wonOpps.reduce((s,o)=>s+(o.value||0),0))} vs Q1 target ₹${SALES_Q1_PLAN.q1RevenueTargetL.toFixed(1)}L (${salesAchievementByKra.revenue}%)`,
-   sales_account_coverage: `Accounts with MAS/TE/EU-Coach coverage: ${coveredAccountsCount}/${selectedSalesAccounts.length || 0} (${accountCoverageActualPct}%)`,
-   sales_new_account_activation: `New accounts activated: ${newAccountActivationActual}/${SALES_Q1_PLAN.q1NewAccountsTarget} (${salesAchievementByKra.activation}%)`,
-   sales_pipeline_coverage: requiredPipelineL > 0 ? `Pipeline coverage: ${pipelineValueL.toFixed(1)}L vs required ${requiredPipelineL.toFixed(1)}L (${salesAchievementByKra.pipeline}%)` : 'Pipeline coverage: AOP target not loaded from CRM/AOP yet',
-   sales_deal_mix: revenueWonL > 0 ? `HW share of won revenue: ${hwMixPct}% (target <= ${SALES_Q1_PLAN.dealMixTargetHwPct}%)` : 'Deal mix will be measured once billed/won revenue is available',
-   saleshead_team_pipeline: `Team open pipeline: ${inL(openOpps.reduce((s,o)=>s+(o.value||0),0))}`,
-   saleshead_team_conversion: `Team win rate: ${pct(wonOpps.length, userOpps.length)}%`,
-   saleshead_team_won: `Team won value: ${inL(wonOpps.reduce((s,o)=>s+(o.value||0),0))}`,
-   saleshead_crm_governance: `Activities captured: ${allActs.length}`,
-   saleshead_cross_function: `Presales queue: ${presalesActive.length} | Pricing queue: ${salesOpsActive.length}`,
-   saleshead_coaching: `Owned leads: ${userLeads.length}`
- };
-
- const masters = {
-   presales: PRESALES_KRA_MASTER,
-   salesops: SALESOPS_KRA_MASTER,
-   sales: SALES_KRA_MASTER,
-   sales_head: SALES_HEAD_KRA_MASTER
- };
-
- const scoreByRole = {
-   presales: [
-     pct(userOpps.filter(o => (o.workflowStage || '') === 'Final Proposal Shared').length, Math.max(userOpps.length, 1)),
-     Math.max(0, 100 - Math.min(100, userOpps.reduce((s,o)=>s+(o.revisionCount||0),0) * 10)),
-     pct(userOpps.reduce((s,o)=>s+(o.value||0),0), 50000000),
-     Math.min(100, (userOpps.reduce((s,o)=>s+(o.pocCount||0)+(o.demoCount||0),0)) * 10),
-     Math.min(100, userActs.length * 8),
-     calcAvgHours(userOpps, 'presalesAssignedAt', 'purchaseAssignedAt') === 'NA' ? 0 : Math.max(0, 100 - parseFloat(calcAvgHours(userOpps, 'presalesAssignedAt', 'purchaseAssignedAt')))
-   ],
-   salesops: [
-     Math.max(0, 100 - userOpps.filter(o => isOverdue(o.purchaseDueAt)).length * 10),
-     Math.max(0, 100 - userOpps.reduce((s,o)=>s+(o.revisionCount||0),0) * 10),
-     calcAvgHours(userOpps, 'purchaseAssignedAt', 'costingReturnedAt') === 'NA' ? 0 : Math.max(0, 100 - parseFloat(calcAvgHours(userOpps, 'purchaseAssignedAt', 'costingReturnedAt'))),
-     Math.min(100, userActs.length * 8),
-     Math.max(0, 100 - userOpps.filter(o => isOverdue(o.purchaseDueAt)).length * 10),
-     Math.min(100, salesOpsReturned.length * 10)
-   ],
-   sales: [
-     salesAchievementByKra.revenue,
-     salesAchievementByKra.coverage,
-     salesAchievementByKra.activation,
-     salesAchievementByKra.pipeline,
-     salesAchievementByKra.dealmix
-   ],
-   sales_head: [
-     pct(openOpps.length, 50),
-     pct(wonOpps.length, Math.max(userOpps.length, 1)),
-     pct(wonOpps.reduce((s,o)=>s+(o.value||0),0), 200000000),
-     80,
-     80,
-     75
-   ]
- };
-
- const master = masters[selectedRole] || SALES_KRA_MASTER;
- const scores = scoreByRole[selectedRole] || [];
- const weightedScore = master.reduce((sum, row, i) => sum + ((scores[i] || 0) * toNumber(row.weight) / 100), 0);
-
- const salesSlab = achievement => {
-   if (achievement < SALES_Q1_PLAN.thresholdPct) return { label: 'Below Threshold', payoutPct: 0, payoutL: 0.00, rationale: 'No payout — threshold not met. Fixed salary protected.' };
-   if (achievement < 100) return { label: 'Threshold', payoutPct: 70, payoutL: SALES_Q1_PLAN.quarterlyVariableL * 0.70, rationale: '70% of quarterly variable paid.' };
-   if (achievement < 110) return { label: 'On Target', payoutPct: 100, payoutL: SALES_Q1_PLAN.quarterlyVariableL, rationale: 'Full quarterly variable payout.' };
-   if (achievement < 120) return { label: 'Stretch', payoutPct: 120, payoutL: SALES_Q1_PLAN.quarterlyVariableL * 1.20, rationale: 'Overachievement bonus on quarterly variable.' };
-   return { label: 'Accelerator', payoutPct: 150, payoutL: SALES_Q1_PLAN.quarterlyVariableL * 1.50, rationale: 'Star performer accelerator. No cap.' };
- };
-
- const rolePayout = selectedRole === 'sales' ? salesSlab(weightedScore) : null;
-
- const summaryCardsByRole = {
-   presales: [
-     `<div class="metric"><div>Total Assigned</div><div class="metric-value">${userOpps.length}</div></div>`,
-     `<div class="metric"><div>Pending with Presales</div><div class="metric-value">${presalesActive.length}</div></div>`,
-     `<div class="metric"><div>Final Proposals</div><div class="metric-value">${userOpps.filter(o => (o.workflowStage || '') === 'Final Proposal Shared').length}</div></div>`,
-     `<div class="metric"><div>Overdue</div><div class="metric-value">${userOpps.filter(o => isOverdue(o.presalesDueAt)).length}</div></div>`,
-     `<div class="metric"><div>Achievement Score</div><div class="metric-value">${weightedScore.toFixed(1)}%</div></div>`,
-     `<div class="metric"><div>Leads Owned</div><div class="metric-value">${userLeads.length}</div></div>`
-   ],
-   salesops: [
-     `<div class="metric"><div>Total Assigned</div><div class="metric-value">${userOpps.length}</div></div>`,
-     `<div class="metric"><div>Awaiting Pricing</div><div class="metric-value">${salesOpsActive.length}</div></div>`,
-     `<div class="metric"><div>Pricing Returned</div><div class="metric-value">${salesOpsReturned.length}</div></div>`,
-     `<div class="metric"><div>Overdue</div><div class="metric-value">${userOpps.filter(o => isOverdue(o.purchaseDueAt)).length}</div></div>`,
-     `<div class="metric"><div>Achievement Score</div><div class="metric-value">${weightedScore.toFixed(1)}%</div></div>`,
-     `<div class="metric"><div>Queue Value</div><div class="metric-value">${inL(userOpps.reduce((s,o)=>s+(o.value||0),0))}</div></div>`
-   ],
-   sales: [
-     `<div class="metric"><div>Weighted Achievement</div><div class="metric-value">${weightedScore.toFixed(1)}%</div></div>`,
-     `<div class="metric"><div>Won Revenue</div><div class="metric-value">${inL(wonOpps.reduce((s,o)=>s+(o.value||0),0))}</div></div>`,
-     `<div class="metric"><div>Account Coverage</div><div class="metric-value">${accountCoverageActualPct}%</div></div>`,
-     `<div class="metric"><div>New Accounts</div><div class="metric-value">${newAccountActivationActual}</div></div>`,
-     `<div class="metric"><div>Pipeline Coverage</div><div class="metric-value">${pipelineCoverageActualPct}%</div></div>`,
-     `<div class="metric"><div>Deal Mix</div><div class="metric-value">${hwMixPct}% HW</div></div>`
-   ],
-   sales_head: [
-     `<div class="metric"><div>Team Opportunities</div><div class="metric-value">${userOpps.length}</div></div>`,
-     `<div class="metric"><div>Team Open Pipeline</div><div class="metric-value">${openOpps.length}</div></div>`,
-     `<div class="metric"><div>Team Closed Won</div><div class="metric-value">${wonOpps.length}</div></div>`,
-     `<div class="metric"><div>Team Won Value</div><div class="metric-value">${inL(wonOpps.reduce((s,o)=>s+(o.value||0),0))}</div></div>`,
-     `<div class="metric"><div>Presales Queue</div><div class="metric-value">${presalesActive.length}</div></div>`,
-     `<div class="metric"><div>Pricing Queue</div><div class="metric-value">${salesOpsActive.length}</div></div>`
-   ]
- };
-
- const titleByRole = {
-   presales: '📈 Presales Achievement Report',
-   salesops: '📈 Sales Ops Achievement Report',
-   sales: '📈 Sales Achievement & Incentive Report',
-   sales_head: '📈 Sales Head Achievement Report'
- };
-
- const detailHeading = 'Achievement Scorecard';
- const achievementTone = score => {
-   if (score >= 100) return { label: 'On Track', bg: '#22c55e', fg: '#ffffff' };
-   if (score >= 85) return { label: 'Watch', bg: '#facc15', fg: '#1f2937' };
-   return { label: 'Risk', bg: '#ef4444', fg: '#ffffff' };
- };
-
- const renderTable = (title, owner, summaryCards, rows) => `
+ if (role === 'presales') {
+   return `
    <div class="card">
-     <h2>${title}</h2>
-     <div style="opacity:0.8; margin-top:8px">Owner: ${owner}</div>
+   <h2>📈 Presales KRA Report</h2>
+   <div style="opacity:0.8; margin-top:8px">Owner: ${currentUser}</div>
    </div>
    <div class="grid">
-     ${summaryCards.join('')}
-     <div class="metric"><div>Total Achievement</div><div class="metric-value">${weightedScore.toFixed(1)}%</div></div>
+     <div class="metric"><div>Total Assigned</div><div class="metric-value">${roleOpps.length}</div></div>
+     <div class="metric"><div>Active Bin</div><div class="metric-value">${activePresales.length}</div></div>
+     <div class="metric"><div>Final Proposal Shared</div><div class="metric-value">${finalProposalShared.length}</div></div>
+     <div class="metric"><div>Overdue</div><div class="metric-value">${overduePresales.length}</div></div>
+     <div class="metric"><div>Avg TAT (hrs)</div><div class="metric-value">${avgTat}</div></div>
+     <div class="metric"><div>Activities Logged</div><div class="metric-value">${ownActivities.length}</div></div>
    </div>
    <div class="card">
-     <h3>${detailHeading}</h3>
-     <div style="overflow:auto; margin-top:12px">
-       <table style="width:100%; border-collapse:collapse; font-size:0.92em">
-         <thead>
-           <tr>
-             <th style="text-align:left; padding:10px; border-bottom:1px solid rgba(255,255,255,0.2)">#</th>
-             <th style="text-align:left; padding:10px; border-bottom:1px solid rgba(255,255,255,0.2)">KRA</th>
-             <th style="text-align:left; padding:10px; border-bottom:1px solid rgba(255,255,255,0.2)">Key Performance Indicators (KPI)</th>
-             <th style="text-align:left; padding:10px; border-bottom:1px solid rgba(255,255,255,0.2)">Target / Benchmark</th>
-             <th style="text-align:left; padding:10px; border-bottom:1px solid rgba(255,255,255,0.2)">Achievement Detail</th>
-             <th style="text-align:left; padding:10px; border-bottom:1px solid rgba(255,255,255,0.2)">Ach %</th>
-             <th style="text-align:left; padding:10px; border-bottom:1px solid rgba(255,255,255,0.2)">Status</th>
-             <th style="text-align:left; padding:10px; border-bottom:1px solid rgba(255,255,255,0.2)">Weight %</th>
-           </tr>
-         </thead>
-         <tbody>
-           ${rows.map((r, i) => {
-             const score = Math.max(0, Math.round(scores[i] || 0));
-             const tone = achievementTone(score);
-             return `
-             <tr>
-               <td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">${i + 1}</td>
-               <td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">${r.code}</td>
-               <td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">${r.kpi_name}</td>
-               <td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">${r.target_benchmark}</td>
-               <td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">${actualMap[r.actual_key] || 'Not captured yet'}</td>
-               <td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1); font-weight:700; color:${score >= 100 ? '#86efac' : score >= 85 ? '#fde68a' : '#fca5a5'};">${score}%</td>
-               <td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)"><span style="display:inline-block; padding:4px 10px; border-radius:999px; background:${tone.bg}; color:${tone.fg}; font-weight:700;">${tone.label}</span></td>
-               <td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">${r.weight}</td>
-             </tr>`;
-           }).join('')}
-         </tbody>
-       </table>
-     </div>
-   </div>`;
+   <h3>KRA Snapshot</h3>
+   <div style="line-height:1.8">
+     <div>1. Presales queue currently pending: <b>${activePresales.length}</b></div>
+     <div>2. Final proposals delivered: <b>${finalProposalShared.length}</b></div>
+     <div>3. Overdue presales items: <b>${overduePresales.length}</b></div>
+     <div>4. Average turnaround time: <b>${avgTat === 'NA' ? 'NA' : avgTat + ' hrs'}</b></div>
+     <div>5. Leads owned by Vinod: <b>${ownLeads.length}</b></div>
+   </div>
+   </div>
+   `;
+ }
 
- const canEditComp = selectedRole === 'sales' && (isSupervisor || normalize(currentUser) === selected);
- const payoutSection = selectedRole === 'sales' ? `
+ if (role === 'salesops') {
+   return `
    <div class="card">
-     <h3>💸 Sales Incentive Calculator (Q1 26-27)</h3>
-     <div style="opacity:0.88; margin-top:8px;">Only fixed salary is entered manually. Annual AOP, Q1 target and all achievement values come from CRM/AOP and the approved incentive scheme.</div>
-     <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin-top:12px; align-items:end;">
-       <div><label>Fixed Salary (₹ L)</label><input id="salaryFixedL" class="input" type="number" step="0.01" value="${SALES_Q1_PLAN.fixedSalaryL.toFixed(2)}" ${canEditComp ? '' : 'disabled'}></div>
-       <div><label>Annual AOP from CRM/AOP (₹ L)</label><div class="input" style="display:flex; align-items:center; min-height:44px; opacity:0.85;">${SALES_Q1_PLAN.annualAopL.toFixed(2)}</div></div>
-       <div><label>Q1 Revenue Target from CRM (₹ L)</label><div class="input" style="display:flex; align-items:center; min-height:44px; opacity:0.85;">${SALES_Q1_PLAN.q1RevenueTargetL.toFixed(2)}</div></div>
-     </div>
-     ${canEditComp ? `<button class="btn btn-success" onclick="saveSelectedIncentiveProfile('${selectedUser}','sales', ${annualAopFromCrm})">Save Salary</button>` : ''}
-     <div style="overflow:auto; margin-top:12px; font-size:0.92em;">
-       <table style="width:100%; border-collapse:collapse;">
-         <tbody>
-           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Fixed Salary</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">₹${SALES_Q1_PLAN.fixedSalaryL.toFixed(2)}L</td></tr>
-           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Annual AOP</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">₹${SALES_Q1_PLAN.annualAopL.toFixed(2)}L</td></tr>
-           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Annual Variable (${SALES_Q1_PLAN.variablePct.toFixed(0)}%)</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">₹${SALES_Q1_PLAN.annualVariableL.toFixed(2)}L</td></tr>
-           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Quarterly Variable (Q1 @ ${SALES_Q1_PLAN.q1AopPct.toFixed(0)}%)</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">₹${SALES_Q1_PLAN.quarterlyVariableL.toFixed(2)}L</td></tr>
-           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Monthly Variable</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">₹${SALES_Q1_PLAN.monthlyVariableL.toFixed(2)}L</td></tr>
-           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Q1 Revenue Target</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">₹${SALES_Q1_PLAN.q1RevenueTargetL.toFixed(2)}L</td></tr>
-           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Account Coverage Target</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">${SALES_Q1_PLAN.accountCoverageTargetPct.toFixed(0)}%</td></tr>
-           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">New Account Target</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">${SALES_Q1_PLAN.q1NewAccountsTarget}</td></tr>
-           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Pipeline Coverage Target</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">${SALES_Q1_PLAN.pipelineCoverageMultiplier.toFixed(1)}x</td></tr>
-           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">HW Mix Target</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">HW ≤ ${SALES_Q1_PLAN.dealMixTargetHwPct.toFixed(0)}%</td></tr>
-           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Weighted Achievement</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">${weightedScore.toFixed(1)}%</td></tr>
-           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Payout Slab</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">${rolePayout.label}</td></tr>
-           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Payout % of Quarterly Variable</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">${rolePayout.payoutPct}%</td></tr>
-           <tr><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">Payout Q1</td><td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.1)">₹${rolePayout.payoutL.toFixed(2)}L</td></tr>
-           <tr><td style="padding:10px;">Remarks</td><td style="padding:10px;">${rolePayout.rationale}</td></tr>
-         </tbody>
-       </table>
-     </div>
-   </div>` : (['presales', 'salesops'].includes(selectedRole) ? '' : `
+   <h2>📈 Sales Ops KRA Report</h2>
+   <div style="opacity:0.8; margin-top:8px">Owner: ${currentUser}</div>
+   </div>
+   <div class="grid">
+     <div class="metric"><div>Total Assigned</div><div class="metric-value">${roleOpps.length}</div></div>
+     <div class="metric"><div>Active Pricing Queue</div><div class="metric-value">${activeSalesOps.length}</div></div>
+     <div class="metric"><div>Costing Returned</div><div class="metric-value">${costingReturned.length}</div></div>
+     <div class="metric"><div>Overdue</div><div class="metric-value">${overdueSalesOps.length}</div></div>
+     <div class="metric"><div>Avg Pricing TAT (hrs)</div><div class="metric-value">${avgTat}</div></div>
+     <div class="metric"><div>Queue Value</div><div class="metric-value">₹${(totalValue / 100000).toFixed(1)}L</div></div>
+   </div>
    <div class="card">
-     <h3>💸 Incentive Status</h3>
-     <div style="opacity:0.85; margin-top:10px;">Formal incentive scheme not configured here yet for ${selectedRole.replace('_',' ')}. Achievement visibility only.</div>
-   </div>`);
+   <h3>KRA Snapshot</h3>
+   <div style="line-height:1.8">
+     <div>1. Pricing requests currently pending: <b>${activeSalesOps.length}</b></div>
+     <div>2. Pricing returned to presales: <b>${costingReturned.length}</b></div>
+     <div>3. Overdue pricing items: <b>${overdueSalesOps.length}</b></div>
+     <div>4. Average pricing turnaround time: <b>${avgTat === 'NA' ? 'NA' : avgTat + ' hrs'}</b></div>
+     <div>5. Total value of handled opportunities: <b>₹${(totalValue / 100000).toFixed(1)}L</b></div>
+   </div>
+   </div>
+   `;
+ }
 
- const selector = isSupervisor ? `
-   <div class="card">
-     <h2>📊 KRA Reports</h2>
-     <div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:14px; align-items:center;">
-       <div style="min-width:320px;">
-         <label style="display:block; margin-bottom:6px; opacity:0.9;">Choose Person</label>
-         <select class="input" onchange="reportUserFilter=this.value; render();">
-           ${reportUsers.map(u => `<option value="${u}" ${u === selectedUser ? 'selected' : ''}>${u} (${classifyUserRole(u).replace('_',' ')})</option>`).join('')}
-         </select>
-       </div>
-       <div class="metric" style="min-width:240px;"><div>Selected Role</div><div class="metric-value">${selectedRole.replace('_',' ').toUpperCase()}</div></div>
-     </div>
-   </div>` : '';
-
- return `${selector}${renderTable(titleByRole[selectedRole] || '📈 KRA Report', selectedUser, summaryCardsByRole[selectedRole] || summaryCardsByRole.sales, master)}${payoutSection}`;
+ return `<div class="card"><h2>Reports</h2><div>No role-based report available.</div></div>`;
 }
 
 function exportMonthlyPipeline(month) {
@@ -2049,12 +1558,6 @@ function exportMonthlyPipeline(month) {
 function changeTab(tab) {
 
  state.activeTab = tab;
- if (tab !== 'opportunities') oppStageFilter = 'All';
- render();
- }
-
-function setOppStageFilter(filter) {
- oppStageFilter = filter;
  render();
  }
 
@@ -2139,17 +1642,6 @@ function openAddModal() {
  <textarea name="purchaseCosting" placeholder="Purchase Costing">${opp?.purchaseCosting || ''}</textarea>
  <input class="input" type="datetime-local" name="costingTat" value="${opp?.costingTat ? opp.costingTat.slice(0,16) : ''}">
  <textarea name="finalPricingProposal" placeholder="Final Pricing Proposal">${opp?.finalPricingProposal || ''}</textarea>
- <label style="display:block; margin:8px 0 6px 2px; font-size:0.9em; opacity:0.9;">KRA Capture Fields</label>
- <input class="input" type="datetime-local" name="proposalSubmittedAt" value="${opp?.proposalSubmittedAt ? opp.proposalSubmittedAt.slice(0,16) : ''}" placeholder="Proposal Submitted At">
- <select class="input" name="proposalOnTime">
- <option value="">Proposal On Time?</option>
- <option value="Yes" ${opp?.proposalOnTime === 'Yes' ? 'selected' : ''}>Yes</option>
- <option value="No" ${opp?.proposalOnTime === 'No' ? 'selected' : ''}>No</option>
- </select>
- <input class="input" type="number" min="0" name="revisionCount" placeholder="Revision Count" value="${opp?.revisionCount || 0}">
- <input class="input" type="number" min="0" max="100" step="0.1" name="boqAccuracy" placeholder="BOQ Accuracy %" value="${opp?.boqAccuracy || ''}">
- <input class="input" type="number" min="0" name="pocCount" placeholder="POC Count" value="${opp?.pocCount || 0}">
- <input class="input" type="number" min="0" name="demoCount" placeholder="Demo Count" value="${opp?.demoCount || 0}">
  <select class="input" name="workflowStage">
  <option value="Sales Review" ${opp?.workflowStage === 'Sales Review' ? 'selected' : ''}>Sales Review</option>
  <option value="Assigned to Presales" ${opp?.workflowStage === 'Assigned to Presales' ? 'selected' : ''}>Assigned to Presales</option>
@@ -2445,7 +1937,6 @@ function submitPresalesPack(id) {
  presalesQuestions: questions || '',
  boq,
  assignedPurchase: PURCHASE_OWNER,
- assignedSalesOps: SALES_OPS_OWNER,
  purchaseAssignedAt: now,
  purchaseDueAt: addHours(now, 24),
  workflowStage: 'Awaiting Purchase Costing'
@@ -2564,12 +2055,6 @@ function saveOpportunity(e, id) {
  data.purchaseCosting = data.purchaseCosting || existing?.purchaseCosting || '';
  data.costingTat = toISOOrBlank(data.costingTat) || existing?.costingTat || '';
  data.finalPricingProposal = data.finalPricingProposal || existing?.finalPricingProposal || '';
- data.proposalSubmittedAt = toISOOrBlank(data.proposalSubmittedAt) || existing?.proposalSubmittedAt || '';
- data.proposalOnTime = data.proposalOnTime || existing?.proposalOnTime || '';
- data.revisionCount = parseInt(data.revisionCount || existing?.revisionCount || 0, 10) || 0;
- data.boqAccuracy = parseFloat(data.boqAccuracy || existing?.boqAccuracy || 0) || 0;
- data.pocCount = parseInt(data.pocCount || existing?.pocCount || 0, 10) || 0;
- data.demoCount = parseInt(data.demoCount || existing?.demoCount || 0, 10) || 0;
  if (id) {
  const index = state.data.opportunities.findIndex(o => o.id === id);
  state.data.opportunities[index] = {...data, id};
