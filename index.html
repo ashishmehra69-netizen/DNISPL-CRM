@@ -1720,10 +1720,19 @@ function renderReports(filtered) {
  if (selectedRole === 'sales') ensureIncentiveProfileLoaded(selectedUser, selectedRole);
  const REPORT_FY = '2026-27';
  if (selectedRole === 'sales') ensureAopPlansLoaded(REPORT_FY);
- const selectedSalesAccounts = allAccounts.filter(a => normalize(a.accountManager || a.owner) === selected).map(a => String(a.id || ''));
- const salesAopPlans = (aopPlanCache[REPORT_FY] || []).filter(p => selectedSalesAccounts.includes(String(p.account_id || '')));
+ const selectedSalesAccountIds = new Set([
+   ...allAccounts.filter(a => normalize(a.accountManager || a.owner) === selected).map(a => String(a.id || '')),
+   ...allOpps.filter(o => {
+     const owner = normalize(o.owner || o.salesOwner);
+     const salesOwner = normalize(o.salesOwner || o.owner);
+     return owner === selected || salesOwner === selected;
+   }).map(o => String(o.accountId || '')).filter(Boolean)
+ ]);
+ const selectedSalesAccounts = allAccounts.filter(a => selectedSalesAccountIds.has(String(a.id || '')) || normalize(a.accountManager || a.owner) === selected);
+ const salesAopPlans = (aopPlanCache[REPORT_FY] || []).filter(p => selectedSalesAccountIds.has(String(p.account_id || '')));
  const annualAopFromCrm = deriveAnnualAopFromPlans(salesAopPlans);
- const salesProfile = normalizeIncentiveProfile({ ...(incentiveProfileCache[selectedUser] || {}), annualAopL: annualAopFromCrm }, selectedUser, selectedRole);
+ const cachedSalesProfile = normalizeIncentiveProfile(incentiveProfileCache[selectedUser] || {}, selectedUser, selectedRole);
+ const salesProfile = normalizeIncentiveProfile({ ...cachedSalesProfile, annualAopL: annualAopFromCrm > 0 ? annualAopFromCrm : cachedSalesProfile.annualAopL }, selectedUser, selectedRole);
  const SALES_Q1_PLAN = deriveSalesPlan(salesProfile);
 
  const userOpps = allOpps.filter(o => {
@@ -1748,18 +1757,20 @@ function renderReports(filtered) {
  const salesOpsReturned = userOpps.filter(o => ['Costing Returned', 'Pricing Returned to Presales'].includes(o.workflowStage || ''));
 
  const revenueWonL = wonOpps.reduce((s,o)=>s+(o.value||0),0) / 100000;
- const accountCoverageActualPct = allAccounts.length ? pct(allAccounts.filter(a => normalize(a.accountManager || a.owner) === selected).filter(a => {
+ const coveredAccountsCount = selectedSalesAccounts.filter(a => {
    const contacts = state.data.contacts.filter(c => String(c.accountId || '') === String(a.id || ''));
-   const roles = new Set(contacts.map(c => c.roleType));
-   return roles.has('MAS') && roles.has('TE') && (roles.has('EU') || roles.has('Coach'));
- }).length, Math.max(allAccounts.filter(a => normalize(a.accountManager || a.owner) === selected).length, 1)) : 0;
+   const roles = new Set(contacts.map(c => normalize(c.roleType).replace(/\s+/g, '')));
+   return roles.has('mas') && roles.has('te') && (roles.has('eu') || roles.has('coach') || roles.has('eu/coach'));
+ }).length;
+ const accountCoverageActualPct = selectedSalesAccounts.length ? pct(coveredAccountsCount, selectedSalesAccounts.length) : 0;
  const newAccountActivationActual = wonOpps.filter(o => {
    const accountId = String(o.accountId || '');
    const accountWonCount = wonOpps.filter(x => String(x.accountId || '') === accountId).length;
    return accountId && accountWonCount >= 1;
  }).map(o => String(o.accountId || '')).filter((v, i, arr) => arr.indexOf(v) === i).length;
  const pipelineValueL = openOpps.reduce((s,o)=>s+(o.value||0),0) / 100000;
- const pipelineCoverageActualPct = SALES_Q1_PLAN.q1RevenueTargetL > 0 ? Math.round((pipelineValueL / (SALES_Q1_PLAN.q1RevenueTargetL * SALES_Q1_PLAN.pipelineCoverageMultiplier)) * 100) : 0;
+ const requiredPipelineL = SALES_Q1_PLAN.q1RevenueTargetL > 0 ? SALES_Q1_PLAN.q1RevenueTargetL * SALES_Q1_PLAN.pipelineCoverageMultiplier : 0;
+ const pipelineCoverageActualPct = requiredPipelineL > 0 ? Math.round((pipelineValueL / requiredPipelineL) * 100) : 0;
  const hwRevenueL = wonOpps.filter(o => /hardware|laptop|desktop|printer|cctv|server|storage|switch|firewall/i.test(`${o.name || ''} ${o.requirements || ''}`)).reduce((s,o)=>s+(o.value||0),0) / 100000;
  const hwMixPct = revenueWonL > 0 ? Math.round((hwRevenueL / revenueWonL) * 100) : 0;
 
@@ -1768,7 +1779,7 @@ function renderReports(filtered) {
    coverage: SALES_Q1_PLAN.accountCoverageTargetPct > 0 ? Math.round((accountCoverageActualPct / SALES_Q1_PLAN.accountCoverageTargetPct) * 100) : 0,
    activation: SALES_Q1_PLAN.q1NewAccountsTarget > 0 ? Math.round((newAccountActivationActual / SALES_Q1_PLAN.q1NewAccountsTarget) * 100) : 0,
    pipeline: pipelineCoverageActualPct,
-   dealmix: revenueWonL === 0 ? 100 : (hwMixPct <= SALES_Q1_PLAN.dealMixTargetHwPct ? 100 : Math.max(0, 100 - ((hwMixPct - SALES_Q1_PLAN.dealMixTargetHwPct) * 5)))
+   dealmix: revenueWonL > 0 ? (hwMixPct <= SALES_Q1_PLAN.dealMixTargetHwPct ? 100 : Math.max(0, 100 - ((hwMixPct - SALES_Q1_PLAN.dealMixTargetHwPct) * 5))) : 0
  };
 
  const actualMap = {
@@ -1785,10 +1796,10 @@ function renderReports(filtered) {
    salesops_overdue: `Overdue pricing items: ${userOpps.filter(o => isOverdue(o.purchaseDueAt)).length}`,
    salesops_registration_placeholder: `Queue value: ${inL(userOpps.reduce((s,o)=>s+(o.value||0),0))}`,
    sales_revenue: `Won revenue: ${inL(wonOpps.reduce((s,o)=>s+(o.value||0),0))} vs Q1 target ₹${SALES_Q1_PLAN.q1RevenueTargetL.toFixed(1)}L (${salesAchievementByKra.revenue}%)`,
-   sales_account_coverage: `Accounts with MAS/TE/EU-Coach coverage: ${accountCoverageActualPct}% (target ${SALES_Q1_PLAN.accountCoverageTargetPct}%)`,
+   sales_account_coverage: `Accounts with MAS/TE/EU-Coach coverage: ${coveredAccountsCount}/${selectedSalesAccounts.length || 0} (${accountCoverageActualPct}%)`,
    sales_new_account_activation: `New accounts activated: ${newAccountActivationActual}/${SALES_Q1_PLAN.q1NewAccountsTarget} (${salesAchievementByKra.activation}%)`,
-   sales_pipeline_coverage: `Pipeline coverage: ${pipelineValueL.toFixed(1)}L vs required ${(SALES_Q1_PLAN.q1RevenueTargetL * SALES_Q1_PLAN.pipelineCoverageMultiplier).toFixed(1)}L (${salesAchievementByKra.pipeline}%)`,
-   sales_deal_mix: `HW share of won revenue: ${hwMixPct}% (target <= ${SALES_Q1_PLAN.dealMixTargetHwPct}%)`,
+   sales_pipeline_coverage: requiredPipelineL > 0 ? `Pipeline coverage: ${pipelineValueL.toFixed(1)}L vs required ${requiredPipelineL.toFixed(1)}L (${salesAchievementByKra.pipeline}%)` : 'Pipeline coverage: AOP target not loaded from CRM/AOP yet',
+   sales_deal_mix: revenueWonL > 0 ? `HW share of won revenue: ${hwMixPct}% (target <= ${SALES_Q1_PLAN.dealMixTargetHwPct}%)` : 'Deal mix will be measured once billed/won revenue is available',
    saleshead_team_pipeline: `Team open pipeline: ${inL(openOpps.reduce((s,o)=>s+(o.value||0),0))}`,
    saleshead_team_conversion: `Team win rate: ${pct(wonOpps.length, userOpps.length)}%`,
    saleshead_team_won: `Team won value: ${inL(wonOpps.reduce((s,o)=>s+(o.value||0),0))}`,
