@@ -316,6 +316,24 @@ const SALESOPS_KRA_MASTER = [
  { code:'SO5', kpi_name:'Order Processing & Documentation Compliance', weight:'10%', target_benchmark:'PO processing TAT <= 24 hrs; documentation accuracy >= 99%', actual_key:'salesops_overdue' },
  { code:'SO6', kpi_name:'OEM Partner Program & Deal Registration Management', weight:'10%', target_benchmark:'100% eligible deals registered on time; rebate tracking accuracy >= 98%', actual_key:'salesops_registration_placeholder' }
 ];
+
+const SALES_KRA_MASTER = [
+ { code:'S1', kpi_name:'Pipeline Creation', weight:'25%', target_benchmark:'Healthy discovery and proposal pipeline creation every quarter', actual_key:'sales_pipeline_created' },
+ { code:'S2', kpi_name:'Stage Progression', weight:'20%', target_benchmark:'Movement from discovery to proposal/negotiation without aging', actual_key:'sales_stage_progression' },
+ { code:'S3', kpi_name:'Revenue Closure', weight:'25%', target_benchmark:'Closed won value against target', actual_key:'sales_won_value' },
+ { code:'S4', kpi_name:'Forecast Hygiene', weight:'10%', target_benchmark:'CRM updates and stage accuracy kept current', actual_key:'sales_forecast_hygiene' },
+ { code:'S5', kpi_name:'Activity Discipline', weight:'10%', target_benchmark:'Consistent meeting / call / follow-up logging', actual_key:'sales_activity_discipline' },
+ { code:'S6', kpi_name:'Lead Conversion', weight:'10%', target_benchmark:'Owned leads progressed into active opportunities', actual_key:'sales_lead_conversion' }
+];
+
+const SALES_HEAD_KRA_MASTER = [
+ { code:'SH1', kpi_name:'Team Pipeline Coverage', weight:'25%', target_benchmark:'Team pipeline strength and coverage across stages', actual_key:'saleshead_team_pipeline' },
+ { code:'SH2', kpi_name:'Team Conversion', weight:'20%', target_benchmark:'Proposal to win conversion monitored and improved', actual_key:'saleshead_team_conversion' },
+ { code:'SH3', kpi_name:'Revenue Delivery', weight:'25%', target_benchmark:'Team closed won achievement vs plan', actual_key:'saleshead_team_won' },
+ { code:'SH4', kpi_name:'CRM Governance', weight:'10%', target_benchmark:'Timely CRM hygiene and review rhythm', actual_key:'saleshead_crm_governance' },
+ { code:'SH5', kpi_name:'Cross-functional Alignment', weight:'10%', target_benchmark:'Presales / sales ops bottlenecks resolved in TAT', actual_key:'saleshead_cross_function' },
+ { code:'SH6', kpi_name:'Coaching & Team Enablement', weight:'10%', target_benchmark:'Reviews, coaching, and escalation handling logged', actual_key:'saleshead_coaching' }
+];
  
  // ═══════════════════════════════════════════════════════════════
  
@@ -324,6 +342,7 @@ const SALESOPS_KRA_MASTER = [
  let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] } };
  let activityFilter = { mode: 'today', from: '', to: '' };
  let oppStageFilter = 'All';
+ let reportUserFilter = '';
 
  function getUserRole() {
  if (isSupervisor) return 'supervisor';
@@ -1487,17 +1506,11 @@ function renderDashboard(filtered) {
 
 function renderReports(filtered) {
  const role = getUserRole();
- const me = (currentUser || '').toLowerCase();
  const allOpps = state.data.opportunities || [];
  const allActs = state.data.activities || [];
  const allLeads = state.data.leads || [];
-
- const presalesOpps = allOpps.filter(o => role === 'supervisor' || (o.assignedPresales || '').toLowerCase() === me);
- const salesOpsOpps = allOpps.filter(o => {
-   const salesOps = (o.assignedSalesOps || '').toLowerCase();
-   const purchase = (o.assignedPurchase || '').toLowerCase();
-   return role === 'supervisor' ? Boolean(salesOps || purchase) : (salesOps === me || purchase === me);
- });
+ const allAccounts = state.data.accounts || [];
+ const me = (currentUser || '').toLowerCase();
 
  const calcAvgHours = (items, startKey, endKey) => {
    const vals = items.map(o => {
@@ -1509,34 +1522,175 @@ function renderReports(filtered) {
    return vals.length ? (vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(1) : 'NA';
  };
 
- const presalesFinalProposal = presalesOpps.filter(o => (o.workflowStage || '') === 'Final Proposal Shared').length;
- const presalesActive = presalesOpps.filter(o => (o.workflowStage || '') === 'Assigned to Presales').length;
- const presalesOverdue = presalesOpps.filter(o => isOverdue(o.presalesDueAt)).length;
- const presalesAvgTat = calcAvgHours(presalesOpps, 'presalesAssignedAt', 'purchaseAssignedAt');
- const presalesActivities = allActs.filter(a => role === 'supervisor' || (a.owner || '').toLowerCase() === me).length;
- const presalesLeads = allLeads.filter(l => role === 'supervisor' || (l.owner || '').toLowerCase() === me).length;
- const presalesValue = presalesOpps.reduce((s,o)=>s+(o.value||0),0);
+ const pct = (num, den) => den ? Math.round((num / den) * 100) : 0;
+ const inL = value => `₹${((value || 0) / 100000).toFixed(1)}L`;
+ const normalize = v => (v || '').toLowerCase();
+ const toNumber = weight => parseFloat(String(weight).replace('%','')) || 0;
 
- const salesOpsActive = salesOpsOpps.filter(o => ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'].includes(o.workflowStage || '')).length;
- const salesOpsReturned = salesOpsOpps.filter(o => (o.workflowStage || '') === 'Costing Returned').length;
- const salesOpsOverdue = salesOpsOpps.filter(o => isOverdue(o.purchaseDueAt)).length;
- const salesOpsAvgTat = calcAvgHours(salesOpsOpps, 'purchaseAssignedAt', 'costingReturnedAt');
- const salesOpsValue = salesOpsOpps.reduce((s,o)=>s+(o.value||0),0);
- const salesOpsActivities = allActs.filter(a => role === 'supervisor' || (a.owner || '').toLowerCase() === me).length;
+ const classifyUserRole = (email) => {
+   const e = normalize(email);
+   if (!e) return 'sales';
+   if (e === normalize(SUPERVISOR_EMAIL)) return 'sales_head';
+   if (['vinod.v@dnispl.com'].includes(e) || e.includes('presales') || e.includes('solutions')) return 'presales';
+   if (['soumya.m@dnispl.com', 'soumay.m@dnispl.com'].includes(e) || e.includes('salesops') || e.includes('sales ops') || e.includes('pricing')) return 'salesops';
+   return 'sales';
+ };
+
+ const reportUsers = (() => {
+   const users = new Set();
+   allOpps.forEach(o => {
+     [o.owner, o.salesOwner, o.assignedPresales, o.assignedSalesOps, o.assignedPurchase].forEach(v => v && users.add(v));
+   });
+   allAccounts.forEach(a => [a.accountManager, a.owner].forEach(v => v && users.add(v)));
+   allLeads.forEach(l => l.owner && users.add(l.owner));
+   users.add(SUPERVISOR_EMAIL);
+   return Array.from(users).filter(Boolean).sort((a,b) => a.localeCompare(b));
+ })();
+
+ const selectedUser = isSupervisor
+   ? (reportUserFilter && reportUsers.includes(reportUserFilter) ? reportUserFilter : (reportUsers[0] || currentUser))
+   : currentUser;
+ const selectedRole = isSupervisor ? classifyUserRole(selectedUser) : role;
+ const selected = normalize(selectedUser);
+
+ const userOpps = allOpps.filter(o => {
+   const owner = normalize(o.owner || o.salesOwner);
+   const salesOwner = normalize(o.salesOwner || o.owner);
+   const assignedPresales = normalize(o.assignedPresales);
+   const assignedSalesOps = normalize(o.assignedSalesOps);
+   const assignedPurchase = normalize(o.assignedPurchase);
+   if (selectedRole === 'presales') return assignedPresales === selected;
+   if (selectedRole === 'salesops') return assignedSalesOps === selected || assignedPurchase === selected || ['awaiting purchase costing', 'awaiting sales ops pricing'].includes(normalize(o.workflowStage));
+   if (selectedRole === 'sales_head') return true;
+   return owner === selected || salesOwner === selected;
+ });
+
+ const userActs = allActs.filter(a => selectedRole === 'sales_head' ? true : normalize(a.owner) === selected);
+ const userLeads = allLeads.filter(l => selectedRole === 'sales_head' ? true : normalize(l.owner) === selected);
+ const openOpps = userOpps.filter(o => !['Closed Won', 'Closed Lost'].includes(o.stage || ''));
+ const wonOpps = userOpps.filter(o => (o.stage || '') === 'Closed Won');
+ const proposalOpps = userOpps.filter(o => (o.stage || '') === 'Proposal');
+ const discoveryOpps = userOpps.filter(o => (o.stage || '') === 'Discovery');
+ const negotiationOpps = userOpps.filter(o => (o.stage || '') === 'Negotiation');
+ const presalesActive = userOpps.filter(o => (o.workflowStage || '') === 'Assigned to Presales');
+ const salesOpsActive = userOpps.filter(o => ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'].includes(o.workflowStage || ''));
+ const salesOpsReturned = userOpps.filter(o => (o.workflowStage || '') === 'Costing Returned');
 
  const actualMap = {
-   presales_final_proposals: `Final proposals shared: ${presalesFinalProposal}`,
-   presales_accuracy_placeholder: 'Revision count / BOQ accuracy capture to be enabled',
-   presales_value: `Handled value: ₹${(presalesValue/100000).toFixed(1)}L`,
+   presales_final_proposals: `Final proposals shared: ${userOpps.filter(o => (o.workflowStage || '') === 'Final Proposal Shared').length}`,
+   presales_accuracy_placeholder: `Revisions: ${userOpps.reduce((s,o)=>s+(o.revisionCount||0),0)} | Avg BOQ accuracy: ${userOpps.length ? (userOpps.reduce((s,o)=>s+(o.boqAccuracy||0),0)/userOpps.length).toFixed(1) : 0}%`,
+   presales_value: `Handled value: ${inL(userOpps.reduce((s,o)=>s+(o.value||0),0))}`,
    presales_learning_placeholder: 'Training / certification module pending capture',
-   presales_activities: `Activities logged: ${presalesActivities}`,
+   presales_activities: `Activities logged: ${userActs.length}`,
    presales_innovation_placeholder: 'Innovation module pending capture',
-   salesops_active_queue: `Active pricing queue: ${salesOpsActive}`,
-   salesops_returned: `Pricing returned: ${salesOpsReturned}`,
-   salesops_avg_tat: `Avg pricing TAT: ${salesOpsAvgTat === 'NA' ? 'NA' : salesOpsAvgTat + ' hrs'}`,
-   salesops_activities: `Activities logged: ${salesOpsActivities}`,
-   salesops_overdue: `Overdue pricing items: ${salesOpsOverdue}`,
-   salesops_registration_placeholder: 'Deal registration / rebate tracking module pending capture'
+   salesops_active_queue: `Active pricing queue: ${salesOpsActive.length}`,
+   salesops_returned: `Pricing returned: ${salesOpsReturned.length}`,
+   salesops_avg_tat: `Avg pricing TAT: ${calcAvgHours(userOpps, 'purchaseAssignedAt', 'costingReturnedAt')} hrs`,
+   salesops_activities: `Activities logged: ${userActs.length}`,
+   salesops_overdue: `Overdue pricing items: ${userOpps.filter(o => isOverdue(o.purchaseDueAt)).length}`,
+   salesops_registration_placeholder: 'Deal registration / rebate tracking module pending capture',
+   sales_pipeline_created: `Open pipeline: ${openOpps.length} | Value: ${inL(openOpps.reduce((s,o)=>s+(o.value||0),0))}`,
+   sales_stage_progression: `Proposal+Negotiation opportunities: ${proposalOpps.length + negotiationOpps.length}`,
+   sales_won_value: `Closed won value: ${inL(wonOpps.reduce((s,o)=>s+(o.value||0),0))}`,
+   sales_forecast_hygiene: `Discovery/Proposal/Negotiation mix: ${discoveryOpps.length}/${proposalOpps.length}/${negotiationOpps.length}`,
+   sales_activity_discipline: `Activities logged: ${userActs.length}`,
+   sales_lead_conversion: `Owned leads: ${userLeads.length}`,
+   saleshead_team_pipeline: `Team open pipeline: ${openOpps.length} | Value: ${inL(openOpps.reduce((s,o)=>s+(o.value||0),0))}`,
+   saleshead_team_conversion: `Team win rate: ${pct(wonOpps.length, userOpps.length)}%`,
+   saleshead_team_won: `Team won value: ${inL(wonOpps.reduce((s,o)=>s+(o.value||0),0))}`,
+   saleshead_crm_governance: `Activities captured: ${allActs.length}`,
+   saleshead_cross_function: `Presales queue: ${presalesActive.length} | Pricing queue: ${salesOpsActive.length}`,
+   saleshead_coaching: `Owned leads: ${userLeads.length}`
+ };
+
+ const masters = {
+   presales: PRESALES_KRA_MASTER,
+   salesops: SALESOPS_KRA_MASTER,
+   sales: SALES_KRA_MASTER,
+   sales_head: SALES_HEAD_KRA_MASTER
+ };
+
+ const scoreByRole = {
+   presales: [
+     pct(userOpps.filter(o => (o.workflowStage || '') === 'Final Proposal Shared').length, Math.max(userOpps.length, 1)),
+     Math.max(0, 100 - Math.min(100, userOpps.reduce((s,o)=>s+(o.revisionCount||0),0) * 10)),
+     pct(userOpps.reduce((s,o)=>s+(o.value||0),0), 50000000),
+     Math.min(100, userActs.length * 10),
+     Math.min(100, userActs.length * 8),
+     50
+   ],
+   salesops: [
+     Math.max(0, 100 - userOpps.filter(o => isOverdue(o.purchaseDueAt)).length * 10),
+     Math.max(0, 100 - userOpps.reduce((s,o)=>s+(o.revisionCount||0),0) * 10),
+     calcAvgHours(userOpps, 'purchaseAssignedAt', 'costingReturnedAt') === 'NA' ? 0 : Math.max(0, 100 - parseFloat(calcAvgHours(userOpps, 'purchaseAssignedAt', 'costingReturnedAt'))),
+     Math.min(100, userActs.length * 8),
+     Math.max(0, 100 - userOpps.filter(o => isOverdue(o.purchaseDueAt)).length * 10),
+     50
+   ],
+   sales: [
+     pct(openOpps.length, 20),
+     pct(proposalOpps.length + negotiationOpps.length, Math.max(openOpps.length, 1)),
+     pct(wonOpps.reduce((s,o)=>s+(o.value||0),0), 50000000),
+     75,
+     Math.min(100, userActs.length * 8),
+     Math.min(100, userLeads.length * 10)
+   ],
+   sales_head: [
+     pct(openOpps.length, 50),
+     pct(wonOpps.length, Math.max(userOpps.length, 1)),
+     pct(wonOpps.reduce((s,o)=>s+(o.value||0),0), 200000000),
+     80,
+     80,
+     75
+   ]
+ };
+
+ const master = masters[selectedRole] || SALES_KRA_MASTER;
+ const scores = scoreByRole[selectedRole] || [];
+ const weightedScore = master.reduce((sum, row, i) => sum + ((scores[i] || 0) * toNumber(row.weight) / 100), 0);
+ const incentiveCaps = { presales: 20000, salesops: 15000, sales: 30000, sales_head: 50000 };
+ const incentive = Math.round((weightedScore / 100) * (incentiveCaps[selectedRole] || 20000));
+
+ const summaryCardsByRole = {
+   presales: [
+     `<div class="metric"><div>Total Assigned</div><div class="metric-value">${userOpps.length}</div></div>`,
+     `<div class="metric"><div>Pending with Presales</div><div class="metric-value">${presalesActive.length}</div></div>`,
+     `<div class="metric"><div>Final Proposals</div><div class="metric-value">${userOpps.filter(o => (o.workflowStage || '') === 'Final Proposal Shared').length}</div></div>`,
+     `<div class="metric"><div>Overdue</div><div class="metric-value">${userOpps.filter(o => isOverdue(o.presalesDueAt)).length}</div></div>`,
+     `<div class="metric"><div>Avg TAT</div><div class="metric-value">${calcAvgHours(userOpps, 'presalesAssignedAt', 'purchaseAssignedAt')} hrs</div></div>`,
+     `<div class="metric"><div>Leads Owned</div><div class="metric-value">${userLeads.length}</div></div>`
+   ],
+   salesops: [
+     `<div class="metric"><div>Total Assigned</div><div class="metric-value">${userOpps.length}</div></div>`,
+     `<div class="metric"><div>Awaiting Pricing</div><div class="metric-value">${salesOpsActive.length}</div></div>`,
+     `<div class="metric"><div>Costing Returned</div><div class="metric-value">${salesOpsReturned.length}</div></div>`,
+     `<div class="metric"><div>Overdue</div><div class="metric-value">${userOpps.filter(o => isOverdue(o.purchaseDueAt)).length}</div></div>`,
+     `<div class="metric"><div>Avg Pricing TAT</div><div class="metric-value">${calcAvgHours(userOpps, 'purchaseAssignedAt', 'costingReturnedAt')} hrs</div></div>`,
+     `<div class="metric"><div>Queue Value</div><div class="metric-value">${inL(userOpps.reduce((s,o)=>s+(o.value||0),0))}</div></div>`
+   ],
+   sales: [
+     `<div class="metric"><div>Open Pipeline</div><div class="metric-value">${openOpps.length}</div></div>`,
+     `<div class="metric"><div>Proposal Stage</div><div class="metric-value">${proposalOpps.length}</div></div>`,
+     `<div class="metric"><div>Negotiation Stage</div><div class="metric-value">${negotiationOpps.length}</div></div>`,
+     `<div class="metric"><div>Closed Won</div><div class="metric-value">${wonOpps.length}</div></div>`,
+     `<div class="metric"><div>Won Value</div><div class="metric-value">${inL(wonOpps.reduce((s,o)=>s+(o.value||0),0))}</div></div>`,
+     `<div class="metric"><div>Lead Base</div><div class="metric-value">${userLeads.length}</div></div>`
+   ],
+   sales_head: [
+     `<div class="metric"><div>Team Opportunities</div><div class="metric-value">${userOpps.length}</div></div>`,
+     `<div class="metric"><div>Team Open Pipeline</div><div class="metric-value">${openOpps.length}</div></div>`,
+     `<div class="metric"><div>Team Closed Won</div><div class="metric-value">${wonOpps.length}</div></div>`,
+     `<div class="metric"><div>Team Won Value</div><div class="metric-value">${inL(wonOpps.reduce((s,o)=>s+(o.value||0),0))}</div></div>`,
+     `<div class="metric"><div>Presales Queue</div><div class="metric-value">${presalesActive.length}</div></div>`,
+     `<div class="metric"><div>Pricing Queue</div><div class="metric-value">${salesOpsActive.length}</div></div>`
+   ]
+ };
+
+ const titleByRole = {
+   presales: '📈 Presales KRA Report',
+   salesops: '📈 Sales Ops KRA Report',
+   sales: '📈 Sales KRA Report',
+   sales_head: '📈 Sales Head KRA Report'
  };
 
  const renderTable = (title, owner, summaryCards, rows) => `
@@ -1574,35 +1728,29 @@ function renderReports(filtered) {
          </tbody>
        </table>
      </div>
+   </div>
+   <div class="grid">
+     <div class="metric"><div>Total KRA Score</div><div class="metric-value">${weightedScore.toFixed(1)}</div></div>
+     <div class="metric"><div>Indicative Incentive</div><div class="metric-value">₹${incentive.toLocaleString('en-IN')}</div></div>
+     <div class="metric"><div>Role</div><div class="metric-value">${selectedRole.replace('_',' ').toUpperCase()}</div></div>
    </div>`;
 
- const presalesCards = [
-   `<div class="metric"><div>Total Assigned</div><div class="metric-value">${presalesOpps.length}</div></div>`,
-   `<div class="metric"><div>Pending with Presales</div><div class="metric-value">${presalesActive}</div></div>`,
-   `<div class="metric"><div>Final Proposals</div><div class="metric-value">${presalesFinalProposal}</div></div>`,
-   `<div class="metric"><div>Overdue</div><div class="metric-value">${presalesOverdue}</div></div>`,
-   `<div class="metric"><div>Avg TAT</div><div class="metric-value">${presalesAvgTat === 'NA' ? 'NA' : presalesAvgTat + ' hrs'}</div></div>`,
-   `<div class="metric"><div>Leads Owned</div><div class="metric-value">${presalesLeads}</div></div>`
- ];
+ const selector = isSupervisor ? `
+   <div class="card">
+     <h2>📊 KRA Reports</h2>
+     <div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:14px; align-items:center;">
+       <div style="min-width:320px;">
+         <label style="display:block; margin-bottom:6px; opacity:0.9;">Choose Person</label>
+         <select class="input" onchange="reportUserFilter=this.value; render();">
+           ${reportUsers.map(u => `<option value="${u}" ${u === selectedUser ? 'selected' : ''}>${u} (${classifyUserRole(u).replace('_',' ')})</option>`).join('')}
+         </select>
+       </div>
+       <div class="metric" style="min-width:220px;"><div>Indicative Incentive</div><div class="metric-value">₹${incentive.toLocaleString('en-IN')}</div></div>
+     </div>
+   </div>` : '';
 
- const salesOpsCards = [
-   `<div class="metric"><div>Total Assigned</div><div class="metric-value">${salesOpsOpps.length}</div></div>`,
-   `<div class="metric"><div>Awaiting Pricing</div><div class="metric-value">${salesOpsActive}</div></div>`,
-   `<div class="metric"><div>Costing Returned</div><div class="metric-value">${salesOpsReturned}</div></div>`,
-   `<div class="metric"><div>Overdue</div><div class="metric-value">${salesOpsOverdue}</div></div>`,
-   `<div class="metric"><div>Avg Pricing TAT</div><div class="metric-value">${salesOpsAvgTat === 'NA' ? 'NA' : salesOpsAvgTat + ' hrs'}</div></div>`,
-   `<div class="metric"><div>Queue Value</div><div class="metric-value">₹${(salesOpsValue/100000).toFixed(1)}L</div></div>`
- ];
-
- if (role === 'presales') return renderTable('📈 Presales KRA Report', currentUser, presalesCards, PRESALES_KRA_MASTER);
- if (role === 'salesops') return renderTable('📈 Sales Ops KRA Report', currentUser, salesOpsCards, SALESOPS_KRA_MASTER);
- if (role === 'supervisor') return `
-   ${renderTable('📈 Presales KRA Report', 'vinod.v@dnispl.com', presalesCards, PRESALES_KRA_MASTER)}
-   ${renderTable('📈 Sales Ops KRA Report', 'soumya.m@dnispl.com', salesOpsCards, SALESOPS_KRA_MASTER)}
- `;
- return `<div class="card"><h2>Reports</h2><div>No role-based report available.</div></div>`;
+ return `${selector}${renderTable(titleByRole[selectedRole] || '📈 KRA Report', selectedUser, summaryCardsByRole[selectedRole] || summaryCardsByRole.sales, master)}`;
 }
-
 function exportMonthlyPipeline(month) {
  const m = month || prompt('Enter month (YYYY-MM):', new Date().toISOString().slice(0,7));
  if (!m) return;
