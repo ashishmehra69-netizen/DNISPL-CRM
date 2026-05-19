@@ -82,6 +82,7 @@
  const SPREADSHEET_ID = 'YOUR_GOOGLE_SHEET_ID_HERE';
  const API_KEY = 'YOUR_GOOGLE_API_KEY_HERE';
 const SUPERVISOR_EMAIL = 'ashish.mehra@dnispl.com';
+const SUPERVISOR_EMAILS = ['ashish.mehra@dnispl.com', 'a.gupta@dnispl.com'];
 const PASSWORD = 'crm2026'; // Simple password for demo
 const PRESALES_OWNER = 'vinod.v@dnispl.com';
 const PURCHASE_OWNER = 'soumya.m@dnispl.com';
@@ -718,7 +719,7 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  }
  
  currentUser = email;
- isSupervisor = email.toLowerCase() === SUPERVISOR_EMAIL.toLowerCase();
+ isSupervisor = SUPERVISOR_EMAILS.includes(email.toLowerCase());
  
  document.getElementById('loginScreen').style.display = 'none';
  document.getElementById('mainScreen').style.display = 'block';
@@ -1007,7 +1008,7 @@ function calculateICPScore(account) {
  function render() {
  const role = getUserRole();
  const tabs = isSupervisor
- ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'dashboard']
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'dashboard', 'reports']
  : (role === 'sales'
  ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities']
  : (role === 'presales'
@@ -1029,7 +1030,7 @@ function calculateICPScore(account) {
  else if (state.activeTab === 'opportunities') content = renderOpportunities(filtered);
  	else if (state.activeTab === 'activities') content = 		renderActivities(filtered);
  else if (state.activeTab === 'workflow') content = renderWorkflow(filtered);
- else if (state.activeTab === 'reports') content = renderReports(filtered);
+ else if (state.activeTab === 'reports') content = `<div id="reportsRoot">${renderReports(filtered)}</div>`;
  else if (state.activeTab === 'dashboard') content = renderDashboard(filtered);
  
  document.getElementById('content').innerHTML = content;
@@ -1441,103 +1442,187 @@ function renderDashboard(filtered) {
  }
 
 
+// KRA state for reports
+let kraState = { data: null, loading: false, quarter: 'Q1', fy_year: '2025-26', targetEmail: '', teamMembers: [] };
+
+async function loadKraReport(targetEmail, quarter, fy_year) {
+  kraState.loading = true;
+  kraState.data = null;
+  renderKraSection();
+  try {
+    const role = getUserRole();
+    const viewerRole = getViewerRoleForApi();
+    const url = `${CRM_API_BASE}/api/reports/kra?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(viewerRole)}&target_email=${encodeURIComponent(targetEmail)}&quarter=${encodeURIComponent(quarter)}&fy_year=${encodeURIComponent(fy_year)}`;
+    const resp = await fetch(url);
+    kraState.data = await resp.json();
+  } catch(e) {
+    kraState.data = { error: String(e) };
+  }
+  kraState.loading = false;
+  renderKraSection();
+}
+
+function renderKraSection() {
+  const el = document.getElementById('kraReportContent');
+  if (!el) return;
+  el.innerHTML = buildKraHtml();
+}
+
+function buildKraHtml() {
+  if (kraState.loading) return '<div class="card" style="text-align:center;padding:32px">⏳ Loading KRA data…</div>';
+  const d = kraState.data;
+  if (!d) return '<div class="card">Select a team member and click Load KRA Report.</div>';
+  if (d.error) return `<div class="card" style="color:#e53e3e">Error: ${d.error}</div>`;
+
+  const kras = d.kras || [];
+  const rows = kras.map(k => {
+    const ach = k.achievement_pct;
+    const achStr = ach === null || ach === undefined ? '—' : ach + '%';
+    const color = ach === null || ach === undefined ? '#888' : ach >= 100 ? '#38a169' : ach >= 85 ? '#d69e2e' : '#e53e3e';
+    const bar = ach !== null && ach !== undefined
+      ? `<div style="background:#e2e8f0;border-radius:4px;height:8px;margin-top:4px"><div style="background:${color};width:${Math.min(ach,150)}%;height:8px;border-radius:4px"></div></div>`
+      : '';
+    return `<tr>
+      <td style="padding:10px 8px;font-weight:600">${k.name}</td>
+      <td style="padding:10px 8px;text-align:center">${k.weight}%</td>
+      <td style="padding:10px 8px">${k.target || '—'}</td>
+      <td style="padding:10px 8px">${k.actual_label || '—'}</td>
+      <td style="padding:10px 8px;text-align:center;color:${color};font-weight:700">${achStr}${bar}</td>
+    </tr>`;
+  }).join('');
+
+  const header = d.role === 'account_manager'
+    ? `<b>Q Target:</b> ₹${(d.q_target_cr||0).toFixed(2)} Cr &nbsp;|&nbsp; <b>Won:</b> ₹${(d.won_value_cr||0).toFixed(2)} Cr`
+    : '';
+
+  return `
+    <div class="card">
+      <h3>📊 KRA Report — ${d.target_email} &nbsp;|&nbsp; ${d.quarter} ${d.fy_year}</h3>
+      ${header ? `<div style="margin:8px 0;opacity:0.85">${header}</div>` : ''}
+      <div style="overflow-x:auto;margin-top:12px">
+        <table style="width:100%;border-collapse:collapse;font-size:14px">
+          <thead>
+            <tr style="background:#f7fafc;border-bottom:2px solid #e2e8f0">
+              <th style="padding:10px 8px;text-align:left">KRA</th>
+              <th style="padding:10px 8px;text-align:center">Weight</th>
+              <th style="padding:10px 8px;text-align:left">Target</th>
+              <th style="padding:10px 8px;text-align:left">Actual</th>
+              <th style="padding:10px 8px;text-align:center">Achievement</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
 function renderReports(filtered) {
- const role = getUserRole();
- const me = (currentUser || '').toLowerCase();
- const allOpps = state.data.opportunities || [];
- const allActs = state.data.activities || [];
- const allLeads = state.data.leads || [];
+  const role = getUserRole();
+  const me = (currentUser || '').toLowerCase();
 
- const roleOpps = allOpps.filter(o => {
-   const assignedPresales = (o.assignedPresales || '').toLowerCase();
-   const assignedPurchase = (o.assignedPurchase || '').toLowerCase();
-   const assignedSalesOps = (o.assignedSalesOps || '').toLowerCase();
-   if (role === 'presales') return assignedPresales === me;
-   if (role === 'salesops') return assignedSalesOps === me || assignedPurchase === me;
-   return false;
- });
+  // ── SUPERVISOR VIEW: team member dropdown + KRA lookup ──
+  if (role === 'supervisor') {
+    // Fetch team list once
+    if (kraState.teamMembers.length === 0 && !kraState._teamFetching) {
+      kraState._teamFetching = true;
+      fetch(`${CRM_API_BASE}/api/reports/team?viewer_role=supervisor`)
+        .then(r => r.json())
+        .then(members => {
+          kraState.teamMembers = Array.isArray(members) ? members : [];
+          kraState._teamFetching = false;
+          // Re-render now that we have the list
+          const el = document.getElementById('reportsRoot');
+          if (el) el.innerHTML = renderReports(filtered);
+        })
+        .catch(() => { kraState._teamFetching = false; });
+    }
 
- const activePresales = roleOpps.filter(o => (o.workflowStage || '') === 'Assigned to Presales');
- const activeSalesOps = roleOpps.filter(o => ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'].includes(o.workflowStage || ''));
- const costingReturned = roleOpps.filter(o => (o.workflowStage || '') === 'Costing Returned');
- const finalProposalShared = roleOpps.filter(o => (o.workflowStage || '') === 'Final Proposal Shared');
- const overduePresales = roleOpps.filter(o => isOverdue(o.presalesDueAt));
- const overdueSalesOps = roleOpps.filter(o => isOverdue(o.purchaseDueAt));
- const ownActivities = allActs.filter(a => (a.owner || '').toLowerCase() === me);
- const ownLeads = allLeads.filter(l => (l.owner || '').toLowerCase() === me);
+    const memberOptions = kraState.teamMembers.map(m =>
+      `<option value="${m.email}" ${kraState.targetEmail === m.email ? 'selected' : ''}>${m.name || m.email} (${m.role})</option>`
+    ).join('');
 
- const tatHours = roleOpps.map(o => {
-   if (role === 'presales') {
-     const start = o.presalesAssignedAt ? new Date(o.presalesAssignedAt) : null;
-     const end = o.purchaseAssignedAt ? new Date(o.purchaseAssignedAt) : (o.finalProposalAt ? new Date(o.finalProposalAt) : null);
-     if (start && end && !isNaN(start) && !isNaN(end)) return (end - start) / 36e5;
-   }
-   if (role === 'salesops') {
-     const start = o.purchaseAssignedAt ? new Date(o.purchaseAssignedAt) : null;
-     const end = o.costingReturnedAt ? new Date(o.costingReturnedAt) : null;
-     if (start && end && !isNaN(start) && !isNaN(end)) return (end - start) / 36e5;
-   }
-   return null;
- }).filter(v => v !== null);
+    const quarters = ['Q1','Q2','Q3','Q4'].map(q =>
+      `<option value="${q}" ${kraState.quarter === q ? 'selected' : ''}>${q}</option>`
+    ).join('');
 
- const avgTat = tatHours.length ? (tatHours.reduce((a, b) => a + b, 0) / tatHours.length).toFixed(1) : 'NA';
- const totalValue = roleOpps.reduce((sum, o) => sum + (o.value || 0), 0);
+    return `
+      <div class="card">
+        <h2>📈 Team KRA Reports</h2>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:16px;align-items:flex-end">
+          <div>
+            <label style="display:block;font-size:12px;opacity:0.7;margin-bottom:4px">Team Member</label>
+            <select id="kraTeamSelect" style="padding:8px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:14px;min-width:220px"
+              onchange="kraState.targetEmail=this.value">
+              <option value="">— Select member —</option>
+              ${memberOptions}
+            </select>
+          </div>
+          <div>
+            <label style="display:block;font-size:12px;opacity:0.7;margin-bottom:4px">Quarter</label>
+            <select id="kraQuarterSelect" style="padding:8px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:14px"
+              onchange="kraState.quarter=this.value">
+              ${quarters}
+            </select>
+          </div>
+          <div>
+            <label style="display:block;font-size:12px;opacity:0.7;margin-bottom:4px">FY Year</label>
+            <input id="kraFyYear" type="text" value="${kraState.fy_year}"
+              style="padding:8px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:14px;width:90px"
+              onchange="kraState.fy_year=this.value">
+          </div>
+          <button class="btn" onclick="
+            kraState.targetEmail = document.getElementById('kraTeamSelect').value;
+            kraState.quarter = document.getElementById('kraQuarterSelect').value;
+            kraState.fy_year = document.getElementById('kraFyYear').value;
+            if (!kraState.targetEmail) { alert('Please select a team member'); return; }
+            loadKraReport(kraState.targetEmail, kraState.quarter, kraState.fy_year);
+          ">Load KRA Report</button>
+        </div>
+      </div>
+      <div id="kraReportContent">${buildKraHtml()}</div>
+    `;
+  }
 
- if (role === 'presales') {
-   return `
-   <div class="card">
-   <h2>📈 Presales KRA Report</h2>
-   <div style="opacity:0.8; margin-top:8px">Owner: ${currentUser}</div>
-   </div>
-   <div class="grid">
-     <div class="metric"><div>Total Assigned</div><div class="metric-value">${roleOpps.length}</div></div>
-     <div class="metric"><div>Active Bin</div><div class="metric-value">${activePresales.length}</div></div>
-     <div class="metric"><div>Final Proposal Shared</div><div class="metric-value">${finalProposalShared.length}</div></div>
-     <div class="metric"><div>Overdue</div><div class="metric-value">${overduePresales.length}</div></div>
-     <div class="metric"><div>Avg TAT (hrs)</div><div class="metric-value">${avgTat}</div></div>
-     <div class="metric"><div>Activities Logged</div><div class="metric-value">${ownActivities.length}</div></div>
-   </div>
-   <div class="card">
-   <h3>KRA Snapshot</h3>
-   <div style="line-height:1.8">
-     <div>1. Presales queue currently pending: <b>${activePresales.length}</b></div>
-     <div>2. Final proposals delivered: <b>${finalProposalShared.length}</b></div>
-     <div>3. Overdue presales items: <b>${overduePresales.length}</b></div>
-     <div>4. Average turnaround time: <b>${avgTat === 'NA' ? 'NA' : avgTat + ' hrs'}</b></div>
-     <div>5. Leads owned by Vinod: <b>${ownLeads.length}</b></div>
-   </div>
-   </div>
-   `;
- }
+  // ── INDIVIDUAL KRA VIEW (presales / salesops / sales) ──
+  // Auto-load KRA on first visit
+  if (!kraState.data && !kraState.loading && !kraState._autoLoaded) {
+    kraState._autoLoaded = true;
+    kraState.targetEmail = me;
+    loadKraReport(me, kraState.quarter, kraState.fy_year);
+  }
 
- if (role === 'salesops') {
-   return `
-   <div class="card">
-   <h2>📈 Sales Ops KRA Report</h2>
-   <div style="opacity:0.8; margin-top:8px">Owner: ${currentUser}</div>
-   </div>
-   <div class="grid">
-     <div class="metric"><div>Total Assigned</div><div class="metric-value">${roleOpps.length}</div></div>
-     <div class="metric"><div>Active Pricing Queue</div><div class="metric-value">${activeSalesOps.length}</div></div>
-     <div class="metric"><div>Costing Returned</div><div class="metric-value">${costingReturned.length}</div></div>
-     <div class="metric"><div>Overdue</div><div class="metric-value">${overdueSalesOps.length}</div></div>
-     <div class="metric"><div>Avg Pricing TAT (hrs)</div><div class="metric-value">${avgTat}</div></div>
-     <div class="metric"><div>Queue Value</div><div class="metric-value">₹${(totalValue / 100000).toFixed(1)}L</div></div>
-   </div>
-   <div class="card">
-   <h3>KRA Snapshot</h3>
-   <div style="line-height:1.8">
-     <div>1. Pricing requests currently pending: <b>${activeSalesOps.length}</b></div>
-     <div>2. Pricing returned to presales: <b>${costingReturned.length}</b></div>
-     <div>3. Overdue pricing items: <b>${overdueSalesOps.length}</b></div>
-     <div>4. Average pricing turnaround time: <b>${avgTat === 'NA' ? 'NA' : avgTat + ' hrs'}</b></div>
-     <div>5. Total value of handled opportunities: <b>₹${(totalValue / 100000).toFixed(1)}L</b></div>
-   </div>
-   </div>
-   `;
- }
+  const quarters = ['Q1','Q2','Q3','Q4'].map(q =>
+    `<option value="${q}" ${kraState.quarter === q ? 'selected' : ''}>${q}</option>`
+  ).join('');
 
- return `<div class="card"><h2>Reports</h2><div>No role-based report available.</div></div>`;
+  const title = role === 'presales' ? '📈 Presales KRA Report' : role === 'salesops' ? '📈 Sales Ops KRA Report' : '📈 My KRA Report';
+
+  return `
+    <div class="card">
+      <h2>${title}</h2>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:16px;align-items:flex-end">
+        <div>
+          <label style="display:block;font-size:12px;opacity:0.7;margin-bottom:4px">Quarter</label>
+          <select id="kraQuarterSelect" style="padding:8px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:14px"
+            onchange="kraState.quarter=this.value">
+            ${quarters}
+          </select>
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;opacity:0.7;margin-bottom:4px">FY Year</label>
+          <input id="kraFyYear" type="text" value="${kraState.fy_year}"
+            style="padding:8px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:14px;width:90px"
+            onchange="kraState.fy_year=this.value">
+        </div>
+        <button class="btn" onclick="
+          kraState.quarter = document.getElementById('kraQuarterSelect').value;
+          kraState.fy_year = document.getElementById('kraFyYear').value;
+          loadKraReport('${me}', kraState.quarter, kraState.fy_year);
+        ">Refresh</button>
+      </div>
+    </div>
+    <div id="kraReportContent">${buildKraHtml()}</div>
+  `;
 }
 
 function exportMonthlyPipeline(month) {
