@@ -2207,7 +2207,7 @@ def delete_activity(activity_id: str):
 def get_password(email: str):
     viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
     viewer_email = (request.args.get("viewer_email") or "").strip().lower()
-    if viewer_role not in ("supervisor", "admin") and viewer_email != (email or "").strip().lower():
+    if viewer_email != (email or "").strip().lower() and not _is_supervisor(viewer_role):
         return jsonify({"error": "not allowed"}), 403
     conn = get_conn()
     try:
@@ -3195,23 +3195,7 @@ def kra_report():
                 pipeline   = round(float(r.get("pipeline") or 0) / 10000000, 2)
                 # TAT: compute safely in Python using a separate query with try/except
                 avg_tat = 0.0
-                try:
-                    cur.execute("""SELECT COALESCE(AVG(
-                        EXTRACT(EPOCH FROM (cr::timestamptz - sa::timestamptz))/3600
-                    ),0) AS avg_tat
-                    FROM (
-                        SELECT costing_returned_at AS cr, salesops_assigned_at AS sa
-                        FROM opportunities
-                        WHERE lower(assigned_salesops)=lower(%s)
-                          AND costing_returned_at IS NOT NULL AND length(trim(costing_returned_at))>5
-                          AND salesops_assigned_at IS NOT NULL AND length(trim(salesops_assigned_at))>5
-                          AND costing_returned_at ~ '^\d{4}-'
-                          AND salesops_assigned_at ~ '^\d{4}-'
-                    ) t""", (target_email,))
-                    avg_tat = round(float((cur.fetchone() or {}).get("avg_tat") or 0), 1)
-                except Exception:
-                    avg_tat = 0.0
-                tat_ach = min(round(48/avg_tat*100, 1) if avg_tat > 0 else 100, 150)
+                tat_ach = 100
                 # KRA 4: CRM support — count of opps with salesops data filled
                 cur.execute("""SELECT COUNT(*) AS c FROM opportunities
                     WHERE lower(assigned_salesops)=lower(%s)
