@@ -3190,9 +3190,12 @@ def kra_report():
                     COALESCE(AVG(CASE
                         WHEN costing_returned_at IS NOT NULL AND costing_returned_at<>''
                          AND salesops_assigned_at IS NOT NULL AND salesops_assigned_at<>''
-                         AND costing_returned_at ~ '^[0-9]'
-                         AND salesops_assigned_at ~ '^[0-9]'
-                        THEN EXTRACT(EPOCH FROM (costing_returned_at::timestamptz - salesops_assigned_at::timestamptz))/3600
+                         AND costing_returned_at ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+                         AND salesops_assigned_at ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+                        THEN EXTRACT(EPOCH FROM (
+                            to_timestamp(costing_returned_at, 'YYYY-MM-DD"T"HH24:MI:SS')
+                            - to_timestamp(salesops_assigned_at, 'YYYY-MM-DD"T"HH24:MI:SS')
+                        ))/3600
                     END),0) AS avg_tat,
                     COALESCE(SUM(value),0) AS pipeline
                     FROM opportunities WHERE lower(assigned_salesops)=lower(%s)""", (target_email,))
