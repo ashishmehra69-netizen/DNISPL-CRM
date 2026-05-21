@@ -506,7 +506,7 @@ async function fetchAccountsFromApi() {
 
 async function fetchUserPassword(email) {
  try {
- const url = `${CRM_API_BASE}/api/passwords/${encodeURIComponent(email)}?viewer_email=${encodeURIComponent(email)}&viewer_role=account_manager`;
+ const url = `${CRM_API_BASE}/api/passwords/${encodeURIComponent(email)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
  const resp = await fetch(url);
  if (!resp.ok) return null;
  const data = await resp.json();
