@@ -3138,6 +3138,8 @@ def kra_report():
     viewer_email = _normalize_email(request.args.get("viewer_email") or "")
     viewer_role  = (request.args.get("viewer_role") or "account_manager").strip().lower()
     target_email = _normalize_email(request.args.get("target_email") or viewer_email)
+    # Frontend sends target_role as the authoritative role — no DB lookup needed
+    target_role  = (request.args.get("target_role") or "").strip().lower()
     fy_year      = (request.args.get("fy_year") or "2025-26").strip()
     quarter      = (request.args.get("quarter") or "Q1").strip().upper()
 
@@ -3153,8 +3155,11 @@ def kra_report():
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
 
+            # Use target_role from frontend (authoritative) to pick KRA branch
+            effective_role = target_role if target_role else viewer_role
+
             # PRESALES KRA
-            if viewer_role == "presales" or "vinod" in target_email:
+            if effective_role == "presales":
                 cur.execute("""SELECT COUNT(*) AS total,
                     COUNT(CASE WHEN lower(workflow_stage) IN ('won','closed won') THEN 1 END) AS won,
                     COUNT(CASE WHEN final_pricing_proposal IS NOT NULL AND final_pricing_proposal<>'' THEN 1 END) AS proposals,
@@ -3175,6 +3180,36 @@ def kra_report():
                         {"id":"expertise","name":"Product & Technology Expertise","weight":10,"target":">=3 certs/year; 40hrs training/year","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
                         {"id":"collaboration","name":"Cross-functional Collaboration","weight":15,"target":"Stakeholder feedback; quarterly review","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
                         {"id":"innovation","name":"Innovation & Thought Leadership","weight":10,"target":"COE lab setup; case studies","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
+                    ]})
+
+            # SALESOPS KRA
+            if effective_role in ("salesops", "sales_ops"):
+                cur.execute("""SELECT COUNT(*) AS total,
+                    COUNT(CASE WHEN lower(workflow_stage) IN ('costing returned','final proposal shared','won','closed won') THEN 1 END) AS completed,
+                    COALESCE(SUM(value),0) AS pipeline
+                    FROM opportunities WHERE lower(assigned_salesops)=lower(%s)""", (target_email,))
+                r = cur.fetchone() or {}
+                total    = int(r.get("total") or 0)
+                completed= int(r.get("completed") or 0)
+                pipeline = float(r.get("pipeline") or 0) / 10000000
+                on_time  = round(completed / total * 100, 1) if total > 0 else 0
+                cur.execute("""SELECT COALESCE(AVG(EXTRACT(EPOCH FROM
+                    (costing_returned_at::timestamp - salesops_assigned_at::timestamp))/3600),0) AS avg_tat
+                    FROM opportunities WHERE lower(assigned_salesops)=lower(%s)
+                    AND salesops_assigned_at IS NOT NULL AND salesops_assigned_at<>''
+                    AND costing_returned_at IS NOT NULL AND costing_returned_at<>''""", (target_email,))
+                avg_tat = round(float((cur.fetchone() or {}).get("avg_tat") or 0), 1)
+                tat_ach = min(round(24/avg_tat*100,1) if avg_tat > 0 else 100, 150)
+                return jsonify({"role":"salesops","target_email":target_email,"quarter":quarter,"fy_year":fy_year,
+                    "kras":[
+                        {"id":"tat","name":"Pricing Turnaround Time","weight":35,"target":"<24h avg TAT",
+                         "actual_label":f"Avg {avg_tat}h ({completed} completed)","actual_value":avg_tat,"target_value":24,"unit":"hours","achievement_pct":tat_ach},
+                        {"id":"on_time","name":"On-Time Delivery Rate","weight":25,"target":">=95% on-time",
+                         "actual_label":f"{on_time}% ({total} total)","actual_value":on_time,"target_value":95,"unit":"%","achievement_pct":min(round(on_time/95*100,1),150)},
+                        {"id":"pipeline","name":"Pipeline Value Handled","weight":20,"target":"Track pipeline",
+                         "actual_label":f"Rs{pipeline:.1f}Cr","actual_value":pipeline,"target_value":None,"unit":"Cr","achievement_pct":None,"manual":True},
+                        {"id":"accuracy","name":"Pricing Accuracy","weight":20,"target":"<5% revisions",
+                         "actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
                     ]})
 
             # ACCOUNT MANAGER KRA
