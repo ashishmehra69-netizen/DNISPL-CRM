@@ -311,7 +311,7 @@ const ACCOUNT_OWNER_MAP = {
  if (isSupervisor) return 'supervisor';
  const email = (currentUser || '').toLowerCase();
  const PRESALES_USERS = ['vinod.v@dnispl.com'];
- const SALESOPS_USERS = ['soumya.m@dnispl.com'];
+ const SALESOPS_USERS = ['soumya.m@dnispl.com', 'soumay.m@dnispl.com'];
  const PURCHASE_USERS = [];
  if (PRESALES_USERS.includes(email)) return 'presales';
  if (SALESOPS_USERS.includes(email)) return 'salesops';
@@ -322,6 +322,31 @@ const ACCOUNT_OWNER_MAP = {
  return 'sales';
  }
 
+
+// Authoritative role map — frontend source of truth for known emails.
+// This overrides whatever role the backend DB has stored, so no backend migration needed.
+const KNOWN_EMAIL_ROLES = {
+  'ashish.mehra@dnispl.com': 'supervisor',
+  'a.gupta@dnispl.com':      'supervisor',
+  'rakesh.uniyal@dnispl.com':'supervisor',
+  'vinod.v@dnispl.com':      'presales',
+  'soumya.m@dnispl.com':     'salesops',
+};
+
+// Friendly display labels for roles
+const ROLE_LABELS = {
+  supervisor:       'Supervisor',
+  account_manager:  'Sales',
+  sales_head:       'Sales Head',
+  presales:         'Presales',
+  salesops:         'Sales Ops',
+  sales_ops:        'Sales Ops',
+  purchase:         'Purchase',
+};
+
+function getRoleForEmail(email) {
+  return KNOWN_EMAIL_ROLES[(email || '').toLowerCase()] || 'account_manager';
+}
 
 function getViewerRoleForApi() {
  const role = getUserRole();
@@ -579,6 +604,39 @@ async function upsertActivityToApi(activity) {
  throw new Error(`activity save failed (${resp.status}): ${msg}`);
  }
  return resp.json();
+}
+
+async function upsertLeadToApi(lead) {
+  try {
+    const payload = {
+      id: lead.id || undefined,
+      name: lead.name,
+      company: lead.company,
+      email: lead.email,
+      phone: lead.phone,
+      source: lead.source,
+      status: lead.status,
+      notes: lead.notes || '',
+      owner: lead.owner || currentUser
+    };
+    const resp = await fetch(`${CRM_API_BASE}/api/leads`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!resp.ok) { const t = await resp.text(); console.warn('Lead API save failed:', t); }
+    else {
+      const r = await resp.json();
+      return r.id || lead.id;
+    }
+  } catch(e) { console.warn('Lead API save error:', e); }
+  return lead.id;
+}
+
+async function deleteLeadFromApi(leadId) {
+  try {
+    await fetch(`${CRM_API_BASE}/api/leads/${encodeURIComponent(leadId)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`, { method: 'DELETE' });
+  } catch(e) { console.warn('Lead delete API error:', e); }
 }
 
 async function deleteActivityFromApi(activityId) {
@@ -983,8 +1041,8 @@ function calculateICPScore(account) {
  const assignedSalesOps = (o.assignedSalesOps || '').toLowerCase();
  const workflowStage = (o.workflowStage || 'Sales Review').toLowerCase();
  const salesOpsStages = new Set(['awaiting purchase costing', 'awaiting sales ops pricing']);
- // Vinod should only see the current presales bin, which matches the Pending with Presales count.
- if (role === 'presales') return assignedPresales === me && workflowStage === 'assigned to presales';
+ // Presales (Vinod) can see opportunities they are assigned to OR opportunities they own/created.
+ if (role === 'presales') return assignedPresales === me || oppOwner === me;
  // Soumya should only see active pricing-stage opportunities assigned to sales ops/purchase.
  if (role === 'salesops') return (assignedSalesOps === me || assignedPurchase === me) && salesOpsStages.has(workflowStage);
  if (role === 'purchase') return assignedPurchase === me && salesOpsStages.has(workflowStage);
@@ -1259,18 +1317,15 @@ function renderAccounts(filtered) {
  <span class="tag">${o.stage || 'Discovery'}</span>
  <span class="tag" style="background:#4ade80; color:white">${calculateWinProb(o)}% Win</span>
  </div>
- <div style="font-size:0.85em; line-height:1.5; opacity:0.9">
+ <div style="font-size:0.85em; line-height:1.6; opacity:0.9">
  <b>Sales:</b> ${o.salesOwner || o.owner || 'NA'}<br>
- <b>Presales:</b> ${o.assignedPresales || 'Unassigned'}<br>
- <b>Purchase:</b> ${o.assignedPurchase || 'Unassigned'}<br>
- <div style="margin-top:8px">${slaBadge('Presales', o.presalesDueAt)} ${slaBadge('Purchase', o.purchaseDueAt)}</div>
- <div style="margin-top:8px">
- ${isOverdue(o.presalesDueAt) ? `<a class=\"btn btn-danger\" style=\"text-decoration:none\" href=\"${escalationMailto(o, 'Presales', o.presalesDueAt)}\">Escalate Presales</a>` : ''}
- ${isOverdue(o.purchaseDueAt) ? `<a class=\"btn btn-danger\" style=\"text-decoration:none\" href=\"${escalationMailto(o, 'Purchase', o.purchaseDueAt)}\">Escalate Purchase</a>` : ''}
- </div>
- <b>BOQ:</b> ${o.boq ? 'Yes' : 'No'} | <b>Costing:</b> ${o.purchaseCosting ? 'Yes' : 'No'}<br>
- <b>TAT:</b> ${fmtDateTime(o.costingTat)}<br>
- <b>Final Proposal:</b> ${o.finalPricingProposal ? 'Ready' : 'Pending'}
+ ${o.salesComments ? `<div style="margin:4px 0;padding:6px 8px;background:rgba(66,153,225,0.1);border-left:3px solid #4299e1;border-radius:3px"><b>💬 Sales:</b> ${o.salesComments}</div>` : ''}
+ ${o.requirements ? `<div style="margin:4px 0;padding:6px 8px;background:rgba(160,174,192,0.15);border-left:3px solid #a0aec0;border-radius:3px"><b>📋 Requirements:</b> ${o.requirements}</div>` : ''}
+ ${o.presalesArchitecture ? `<div style="margin:4px 0;padding:6px 8px;background:rgba(72,187,120,0.1);border-left:3px solid #48bb78;border-radius:3px"><b>🔧 Presales Notes:</b> ${o.presalesArchitecture}</div>` : ''}
+ ${(o.salesOpsComments || o.purchaseCosting) ? `<div style="margin:4px 0;padding:6px 8px;background:rgba(237,137,54,0.1);border-left:3px solid #ed8936;border-radius:3px"><b>💰 Pricing:</b> ${o.salesOpsComments || o.purchaseCosting}</div>` : ''}
+ <div style="margin-top:6px">${slaBadge('Presales', o.presalesDueAt)} ${slaBadge('Purchase', o.purchaseDueAt)}</div>
+ ${isOverdue(o.presalesDueAt) ? `<a class=\\"btn btn-danger\\" style=\\"text-decoration:none;margin-top:4px\\" href=\\"${escalationMailto(o, 'Presales', o.presalesDueAt)}\\">Escalate Presales</a>` : ''}
+ ${isOverdue(o.purchaseDueAt) ? `<a class=\\"btn btn-danger\\" style=\\"text-decoration:none;margin-top:4px\\" href=\\"${escalationMailto(o, 'Purchase', o.purchaseDueAt)}\\">Escalate Purchase</a>` : ''}
  </div>
  <div style="margin-top:10px">
  ${renderWorkflowActions(o, role)}
@@ -1287,20 +1342,49 @@ function renderAccounts(filtered) {
  }
 
  function renderWorkflowActions(o, role) {
- if (role === 'sales' && (!o.salesOwner || o.salesOwner === currentUser) && (o.workflowStage || 'Sales Review') === 'Sales Review') {
- return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();assignToPresales('${o.id}')">Assign to Presales</button>`;
+ const meL = (currentUser || '').toLowerCase();
+ // SALES: send to presales
+ if (role === 'sales' && (o.workflowStage || 'Sales Review') === 'Sales Review') {
+  return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();assignToPresales('${o.id}')">\u2192 Send to Presales</button>`;
  }
- if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Assigned to Presales') {
- return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPresalesPack('${o.id}')">Send BOQ to Purchase</button>`;
+ // PRESALES: active bin
+ if (role === 'presales' && (o.assignedPresales||'').toLowerCase() === meL && o.workflowStage === 'Assigned to Presales') {
+  return `<div onclick="event.stopPropagation()" style="margin-top:4px">
+   <textarea id="pnote_${o.id}" rows="2" placeholder="Presales notes / architecture\u2026"
+    style="width:100%;padding:6px;border-radius:6px;border:1px solid #cbd5e0;font-size:13px;margin-bottom:6px;resize:vertical;box-sizing:border-box"
+   >${o.presalesArchitecture||''}</textarea>
+   <div style="display:flex;gap:6px;flex-wrap:wrap">
+    <button type="button" class="btn btn-success" onclick="presalesToSalesOps('${o.id}')">\u2192 Send to Sales Ops</button>
+    <button type="button" class="btn" style="background:#f6ad55;color:#fff" onclick="presalesBackToSales('${o.id}')">\u21a9 Return to Sales</button>
+   </div></div>`;
  }
- if (role === 'purchase' && o.assignedPurchase === currentUser && o.workflowStage === 'Awaiting Purchase Costing') {
- return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPurchaseCosting('${o.id}')">Return Costing</button>`;
+ // PRESALES: costing returned
+ if (role === 'presales' && (o.assignedPresales||'').toLowerCase() === meL && o.workflowStage === 'Costing Returned') {
+  return `<div onclick="event.stopPropagation()" style="margin-top:4px">
+   <textarea id="fp_${o.id}" rows="2" placeholder="Final proposal notes for Sales\u2026"
+    style="width:100%;padding:6px;border-radius:6px;border:1px solid #cbd5e0;font-size:13px;margin-bottom:6px;resize:vertical;box-sizing:border-box"
+   >${o.finalPricingProposal||''}</textarea>
+   <button type="button" class="btn btn-success" onclick="submitFinalPricing('${o.id}')">\u2192 Send Final Proposal to Sales</button>
+   </div>`;
  }
- if (role === 'presales' && o.assignedPresales === currentUser && o.workflowStage === 'Costing Returned') {
- return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitFinalPricing('${o.id}')">Send Final Proposal</button>`;
+ // SALES OPS: pricing queue
+ if (role === 'salesops' && ['Awaiting Sales Ops Pricing','Awaiting Purchase Costing'].includes(o.workflowStage)
+     && ((o.assignedSalesOps||o.assigned_salesops||'').toLowerCase() === meL || meL === SALES_OPS_OWNER.toLowerCase())) {
+  return `<div onclick="event.stopPropagation()" style="margin-top:4px">
+   <textarea id="sonote_${o.id}" rows="2" placeholder="Pricing / costing details\u2026"
+    style="width:100%;padding:6px;border-radius:6px;border:1px solid #cbd5e0;font-size:13px;margin-bottom:6px;resize:vertical;box-sizing:border-box"
+   >${o.salesOpsComments||o.purchaseCosting||''}</textarea>
+   <div style="display:flex;gap:6px;flex-wrap:wrap">
+    <button type="button" class="btn btn-success" onclick="salesOpsReturnToPresales('${o.id}')">\u21a9 Return to Presales</button>
+    <button type="button" class="btn" style="background:#f6ad55;color:#fff" onclick="salesOpsBackToSales('${o.id}')">\u21a9 Return to Sales</button>
+   </div></div>`;
+ }
+ // PURCHASE (legacy)
+ if (role === 'purchase' && (o.assignedPurchase||'').toLowerCase() === meL && o.workflowStage === 'Awaiting Purchase Costing') {
+  return `<button type="button" class="btn btn-success" onclick="event.stopPropagation();submitPurchaseCosting('${o.id}')">Return Costing</button>`;
  }
  return '';
- }
+}
 function renderActivities(filtered) {
  const allActivities = [...filtered.activities].sort((a, b) =>
  new Date(b.date || b.modifiedDate || b.createdDate) - new Date(a.date || a.modifiedDate || a.createdDate)
@@ -1445,14 +1529,131 @@ function renderDashboard(filtered) {
 // KRA state for reports
 let kraState = { data: null, loading: false, quarter: 'Q1', fy_year: '2025-26', targetEmail: '', teamMembers: [] };
 
+// Incentive state for reports
+let incState = { data: null, loading: false, quarter: 'Q1', targetEmail: '', salaryData: null };
+
+async function loadIncentiveReport(targetEmail, quarter) {
+  incState.loading = true;
+  incState.data = null;
+  incState.salaryData = null;
+  renderIncentiveSection();
+  try {
+    const viewerRole = getViewerRoleForApi();
+    const targetRole = getRoleForEmail(targetEmail);
+    const [incResp, salResp] = await Promise.all([
+      fetch(`${CRM_API_BASE}/api/reports/incentive?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(viewerRole)}&target_email=${encodeURIComponent(targetEmail)}&target_role=${encodeURIComponent(targetRole)}&quarter=${encodeURIComponent(quarter)}`),
+      fetch(`${CRM_API_BASE}/api/salary?viewer_email=${encodeURIComponent(targetEmail)}`)
+    ]);
+    incState.data = await incResp.json();
+    incState.salaryData = await salResp.json();
+  } catch(e) {
+    incState.data = { error: String(e) };
+  }
+  incState.loading = false;
+  renderIncentiveSection();
+}
+
+async function saveIncentiveSalary(targetEmail, fixed, variable) {
+  try {
+    const resp = await fetch(`${CRM_API_BASE}/api/salary`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ viewer_email: targetEmail, fixed_annual_lakhs: fixed, variable_annual_lakhs: variable })
+    });
+    const r = await resp.json();
+    if (r.status === 'ok') { alert('Salary saved!'); loadIncentiveReport(incState.targetEmail, incState.quarter); }
+    else alert('Save failed: ' + JSON.stringify(r));
+  } catch(e) { alert('Error: ' + e); }
+}
+
+function renderIncentiveSection() {
+  const el = document.getElementById('incentiveReportContent');
+  if (!el) return;
+  el.innerHTML = buildIncentiveHtml();
+}
+
+function buildIncentiveHtml() {
+  if (incState.loading) return '<div class="card" style="text-align:center;padding:32px">⏳ Loading incentive data…</div>';
+  const d = incState.data;
+  if (!d) return '<div class="card" style="opacity:0.7">Select a team member and load the report to see incentive calculations.</div>';
+  if (d.error) return `<div class="card" style="color:#e53e3e">Error: ${d.error}</div>`;
+
+  const fixed = d.fixed_annual_lakhs || 0;
+  const variable = d.variable_annual_lakhs || 0;
+  const qVar = d.quarterly_variable_lakhs || 0;
+  const configured = d.salary_configured;
+  const slabs = d.slabs || [];
+  const target = incState.targetEmail;
+  const isSup = getUserRole() === 'supervisor';
+
+  const salaryForm = isSup ? `
+    <div class="card" style="margin-top:12px">
+      <h4 style="margin:0 0 12px">⚙️ Salary Configuration for ${target}</h4>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
+        <div>
+          <label style="font-size:12px;opacity:0.7;display:block;margin-bottom:4px">Fixed Annual (₹ Lakhs)</label>
+          <input id="incFixed" type="number" step="0.01" value="${fixed}" style="padding:8px 12px;border-radius:6px;border:1px solid #cbd5e0;width:140px">
+        </div>
+        <div>
+          <label style="font-size:12px;opacity:0.7;display:block;margin-bottom:4px">Variable Annual (₹ Lakhs)</label>
+          <input id="incVariable" type="number" step="0.01" value="${variable}" style="padding:8px 12px;border-radius:6px;border:1px solid #cbd5e0;width:140px">
+        </div>
+        <button class="btn btn-success" onclick="saveIncentiveSalary('${target}', parseFloat(document.getElementById('incFixed').value)||0, parseFloat(document.getElementById('incVariable').value)||0)">Save Salary</button>
+      </div>
+    </div>` : '';
+
+  if (!configured || (fixed === 0 && variable === 0)) {
+    return `<div class="card">
+      <h3>💰 Incentive Report — ${target} | ${d.quarter}</h3>
+      <div style="color:#d69e2e;margin:12px 0">⚠️ Salary not configured for this employee. ${isSup ? 'Use the form below to set it.' : 'Please contact your supervisor.'}</div>
+      ${salaryForm}
+    </div>`;
+  }
+
+  const slabRows = slabs.map(s => `
+    <tr style="border-bottom:1px solid #e2e8f0">
+      <td style="padding:8px">${s.label}</td>
+      <td style="padding:8px;text-align:center">${s.min}% – ${s.max >= 999 ? '∞' : s.max + '%'}</td>
+      <td style="padding:8px;text-align:center">${s.payout_pct}%</td>
+      <td style="padding:8px;text-align:center">₹${(qVar * s.payout_pct / 100).toFixed(2)}L</td>
+    </tr>`).join('');
+
+  return `
+    <div class="card">
+      <h3>💰 Incentive Report — ${target} | ${d.quarter}</h3>
+      <div style="display:flex;flex-wrap:wrap;gap:16px;margin:12px 0">
+        <div class="metric" style="min-width:140px"><div>Fixed (Annual)</div><div class="metric-value" style="font-size:1.3rem">₹${fixed}L</div></div>
+        <div class="metric" style="min-width:140px"><div>Variable (Annual)</div><div class="metric-value" style="font-size:1.3rem">₹${variable}L</div></div>
+        <div class="metric" style="min-width:140px"><div>Quarterly Variable (${d.quarter})</div><div class="metric-value" style="font-size:1.3rem">₹${qVar.toFixed(2)}L</div></div>
+      </div>
+      <p style="font-size:13px;opacity:0.75;margin:4px 0 12px">Payout is determined by your KRA achievement % for ${d.quarter}. Load the KRA report to see achievement.</p>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:14px">
+          <thead>
+            <tr style="background:#f7fafc;border-bottom:2px solid #e2e8f0">
+              <th style="padding:8px;text-align:left">Slab</th>
+              <th style="padding:8px;text-align:center">Achievement Range</th>
+              <th style="padding:8px;text-align:center">Payout %</th>
+              <th style="padding:8px;text-align:center">Payout Amount</th>
+            </tr>
+          </thead>
+          <tbody>${slabRows}</tbody>
+        </table>
+      </div>
+    </div>
+    ${salaryForm}`;
+}
+
 async function loadKraReport(targetEmail, quarter, fy_year) {
   kraState.loading = true;
   kraState.data = null;
   renderKraSection();
   try {
-    const role = getUserRole();
     const viewerRole = getViewerRoleForApi();
-    const url = `${CRM_API_BASE}/api/reports/kra?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(viewerRole)}&target_email=${encodeURIComponent(targetEmail)}&quarter=${encodeURIComponent(quarter)}&fy_year=${encodeURIComponent(fy_year)}`;
+    // Pass the target's actual role so the backend picks the right KRA branch,
+    // regardless of what role is stored in the DB for that user.
+    const targetRole = getRoleForEmail(targetEmail);
+    const url = `${CRM_API_BASE}/api/reports/kra?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(viewerRole)}&target_email=${encodeURIComponent(targetEmail)}&target_role=${encodeURIComponent(targetRole)}&quarter=${encodeURIComponent(quarter)}&fy_year=${encodeURIComponent(fy_year)}`;
     const resp = await fetch(url);
     kraState.data = await resp.json();
   } catch(e) {
@@ -1528,7 +1729,11 @@ function renderReports(filtered) {
       fetch(`${CRM_API_BASE}/api/reports/team?viewer_role=supervisor`)
         .then(r => r.json())
         .then(members => {
-          kraState.teamMembers = Array.isArray(members) ? members : [];
+          // Override roles from DB with frontend source-of-truth for known emails
+          kraState.teamMembers = (Array.isArray(members) ? members : []).map(m => ({
+            ...m,
+            role: KNOWN_EMAIL_ROLES[m.email.toLowerCase()] || m.role
+          }));
           kraState._teamFetching = false;
           // Re-render now that we have the list
           const el = document.getElementById('reportsRoot');
@@ -1538,7 +1743,7 @@ function renderReports(filtered) {
     }
 
     const memberOptions = kraState.teamMembers.map(m =>
-      `<option value="${m.email}" ${kraState.targetEmail === m.email ? 'selected' : ''}>${m.name || m.email} (${m.role})</option>`
+      `<option value="${m.email}" ${kraState.targetEmail === m.email ? 'selected' : ''}>${m.name || m.email} (${ ({'account_manager':'Sales','presales':'Presales','salesops':'Sales Ops','sales_ops':'Sales Ops','sales_head':'Sales Head','supervisor':'Supervisor'})[m.role] || m.role })</option>`
     ).join('');
 
     const quarters = ['Q1','Q2','Q3','Q4'].map(q =>
@@ -1580,6 +1785,33 @@ function renderReports(filtered) {
         </div>
       </div>
       <div id="kraReportContent">${buildKraHtml()}</div>
+      <div class="card" style="margin-top:16px">
+        <h3>💰 Incentive Calculator</h3>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:12px;align-items:flex-end">
+          <div>
+            <label style="display:block;font-size:12px;opacity:0.7;margin-bottom:4px">Team Member</label>
+            <select id="incTeamSelect" style="padding:8px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:14px;min-width:220px"
+              onchange="incState.targetEmail=this.value">
+              <option value="">— Select member —</option>
+              ${kraState.teamMembers.map(m => `<option value="${m.email}" ${incState.targetEmail === m.email ? 'selected' : ''}>${m.name || m.email} (${ ({'account_manager':'Sales','presales':'Presales','salesops':'Sales Ops','sales_ops':'Sales Ops','sales_head':'Sales Head','supervisor':'Supervisor'})[m.role] || m.role })</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label style="display:block;font-size:12px;opacity:0.7;margin-bottom:4px">Quarter</label>
+            <select id="incQuarterSelect" style="padding:8px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:14px"
+              onchange="incState.quarter=this.value">
+              ${['Q1','Q2','Q3','Q4'].map(q=>`<option value="${q}" ${incState.quarter===q?'selected':''}>${q}</option>`).join('')}
+            </select>
+          </div>
+          <button class="btn" onclick="
+            incState.targetEmail = document.getElementById('incTeamSelect').value;
+            incState.quarter = document.getElementById('incQuarterSelect').value;
+            if (!incState.targetEmail) { alert('Please select a team member'); return; }
+            loadIncentiveReport(incState.targetEmail, incState.quarter);
+          ">Load Incentive</button>
+        </div>
+      </div>
+      <div id="incentiveReportContent">${buildIncentiveHtml()}</div>
     `;
   }
 
@@ -1589,6 +1821,11 @@ function renderReports(filtered) {
     kraState._autoLoaded = true;
     kraState.targetEmail = me;
     loadKraReport(me, kraState.quarter, kraState.fy_year);
+  }
+  if (!incState.data && !incState.loading && !incState._autoLoaded) {
+    incState._autoLoaded = true;
+    incState.targetEmail = me;
+    loadIncentiveReport(me, incState.quarter);
   }
 
   const quarters = ['Q1','Q2','Q3','Q4'].map(q =>
@@ -1622,6 +1859,24 @@ function renderReports(filtered) {
       </div>
     </div>
     <div id="kraReportContent">${buildKraHtml()}</div>
+    <div class="card" style="margin-top:16px">
+      <h3>💰 My Incentive</h3>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:12px;align-items:flex-end">
+        <div>
+          <label style="display:block;font-size:12px;opacity:0.7;margin-bottom:4px">Quarter</label>
+          <select id="incQuarterSelectInd" style="padding:8px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:14px"
+            onchange="incState.quarter=this.value">
+            ${['Q1','Q2','Q3','Q4'].map(q=>`<option value="${q}" ${incState.quarter===q?'selected':''}>${q}</option>`).join('')}
+          </select>
+        </div>
+        <button class="btn" onclick="
+          incState.quarter = document.getElementById('incQuarterSelectInd').value;
+          incState.targetEmail = '${me}';
+          loadIncentiveReport('${me}', incState.quarter);
+        ">Load Incentive</button>
+      </div>
+    </div>
+    <div id="incentiveReportContent">${buildIncentiveHtml()}</div>
   `;
 }
 
@@ -1973,19 +2228,31 @@ function getTeamUsers(role) {
  return Array.from(users);
 }
 
-function updateOpportunityWorkflow(id, updates) {
+async function updateOpportunityWorkflow(id, updates) {
  const idx = state.data.opportunities.findIndex(o => o.id === id);
  if (idx === -1) return;
  const prev = state.data.opportunities[idx].workflowStage || 'Sales Review';
  state.data.opportunities[idx] = {
- ...state.data.opportunities[idx],
- ...updates,
- modifiedDate: new Date().toISOString()
+  ...state.data.opportunities[idx],
+  ...updates,
+  modifiedDate: new Date().toISOString()
  };
  const next = state.data.opportunities[idx].workflowStage || prev;
  recordActivity('Workflow', `Opportunity moved: ${state.data.opportunities[idx].name}`, `${prev} → ${next}`);
  saveData();
  render();
+ // Persist to backend
+ try {
+  await fetch(`${CRM_API_BASE}/api/opportunities`, {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json' },
+   body: JSON.stringify({
+    ...state.data.opportunities[idx],
+    viewer_email: currentUser,
+    viewer_role: getViewerRoleForApi()
+   })
+  });
+ } catch(e) { console.warn('Workflow API sync failed:', e); }
 }
 
 function assignToPresales(id) {
@@ -2006,26 +2273,67 @@ function assignToPresales(id) {
  });
 }
 
-function submitPresalesPack(id) {
+// ── PRESALES ACTIONS ──
+
+function presalesToSalesOps(id) {
  const opp = state.data.opportunities.find(o => o.id === id);
  if (!opp) return;
- const architecture = prompt('Presales architecture notes:', opp.presalesArchitecture || '');
- const questions = prompt('Presales questions:', opp.presalesQuestions || '');
- const boq = prompt('Enter BOQ details:', opp.boq || '');
+ const notes = (document.getElementById('pnote_' + id) || {}).value || opp.presalesArchitecture || '';
+ if (!notes.trim()) { alert('Please add presales notes before sending to Sales Ops.'); return; }
  const now = new Date().toISOString();
- if (!boq) {
- alert('BOQ is required.');
- return;
- }
  updateOpportunityWorkflow(id, {
- presalesArchitecture: architecture || '',
- presalesQuestions: questions || '',
- boq,
- assignedPurchase: PURCHASE_OWNER,
- purchaseAssignedAt: now,
- purchaseDueAt: addHours(now, 24),
- workflowStage: 'Awaiting Purchase Costing'
+  presalesArchitecture: notes,
+  assignedSalesOps: SALES_OPS_OWNER,
+  assigned_salesops: SALES_OPS_OWNER,
+  salesopsAssignedAt: now,
+  salesopsDueAt: addHours(now, 24),
+  purchaseAssignedAt: now,
+  purchaseDueAt: addHours(now, 24),
+  workflowStage: 'Awaiting Sales Ops Pricing'
  });
+}
+
+function presalesBackToSales(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ const notes = (document.getElementById('pnote_' + id) || {}).value || opp.presalesArchitecture || '';
+ updateOpportunityWorkflow(id, {
+  presalesArchitecture: notes,
+  workflowStage: 'Sales Review'
+ });
+}
+
+// ── SALES OPS ACTIONS ──
+
+function salesOpsReturnToPresales(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ const pricing = (document.getElementById('sonote_' + id) || {}).value || opp.salesOpsComments || '';
+ if (!pricing.trim()) { alert('Please add pricing details before returning to Presales.'); return; }
+ const now = new Date().toISOString();
+ updateOpportunityWorkflow(id, {
+  salesOpsComments: pricing,
+  purchaseCosting: pricing,
+  costingReturnedAt: now,
+  workflowStage: 'Costing Returned'
+ });
+}
+
+function salesOpsBackToSales(id) {
+ const opp = state.data.opportunities.find(o => o.id === id);
+ if (!opp) return;
+ const pricing = (document.getElementById('sonote_' + id) || {}).value || opp.salesOpsComments || '';
+ updateOpportunityWorkflow(id, {
+  salesOpsComments: pricing,
+  purchaseCosting: pricing,
+  workflowStage: 'Sales Review'
+ });
+}
+
+// ── KEPT for legacy purchase role ──
+function submitPresalesPack(id) {
+ // legacy — presales now uses presalesToSalesOps()
+ presalesToSalesOps(id);
 }
 
 function submitPurchaseCosting(id) {
@@ -2050,36 +2358,42 @@ function submitPurchaseCosting(id) {
 function submitFinalPricing(id) {
  const opp = state.data.opportunities.find(o => o.id === id);
  if (!opp) return;
- const proposal = prompt('Final pricing proposal for sales:', opp.finalPricingProposal || '');
- if (!proposal) {
- alert('Final proposal is required.');
- return;
- }
+ const proposal = (document.getElementById('fp_' + id) || {}).value || opp.finalPricingProposal || '';
+ if (!proposal.trim()) { alert('Please add final proposal notes before sending.'); return; }
  const now = new Date().toISOString();
  updateOpportunityWorkflow(id, {
- finalPricingProposal: proposal,
- finalProposalAt: now,
- workflowStage: 'Final Proposal Shared'
+  finalPricingProposal: proposal,
+  finalProposalAt: now,
+  workflowStage: 'Final Proposal Shared'
  });
 }
 
-function saveLead(e, id) {
+async function saveLead(e, id) {
  e.preventDefault();
  const data = Object.fromEntries(new FormData(e.target));
  data.owner = data.owner || currentUser;
  data.createdDate = id ? state.data.leads.find(l => l.id === id).createdDate : new Date().toISOString();
  data.modifiedDate = new Date().toISOString();
+ const localId = id || ('lead_' + Date.now().toString());
+ data.id = localId;
  if (id) {
- const index = state.data.leads.findIndex(l => l.id === id);
- state.data.leads[index] = {...data, id};
- recordActivity('Lead', `Lead updated: ${data.name}`, `Assigned to ${data.owner}`, data.owner);
+   const index = state.data.leads.findIndex(l => l.id === id);
+   state.data.leads[index] = {...data, id};
+   recordActivity('Lead', `Lead updated: ${data.name}`, `Assigned to ${data.owner}`, data.owner);
  } else {
- state.data.leads.push({...data, id: Date.now().toString()});
- recordActivity('Lead', `Lead created: ${data.name}`, `Assigned to ${data.owner}`, data.owner);
+   state.data.leads.push({...data, id: localId});
+   recordActivity('Lead', `Lead created: ${data.name}`, `Assigned to ${data.owner}`, data.owner);
  }
  saveData();
  closeModal();
  render();
+ // Persist to backend
+ const apiId = await upsertLeadToApi({...data, id: localId});
+ if (apiId && apiId !== localId) {
+   const idx2 = state.data.leads.findIndex(l => l.id === localId);
+   if (idx2 >= 0) state.data.leads[idx2].id = apiId;
+   saveData();
+ }
 }
 
 function saveAccount(e, id) {
@@ -2157,8 +2471,9 @@ function saveOpportunity(e, id) {
  function editContact(id) { openContactModal(state.data.contacts.find(c => c.id === id)); }
  function editOpportunity(id) { openOpportunityModal(state.data.opportunities.find(o => o.id === id)); }
 
- function deleteLead(id) {
+ async function deleteLead(id) {
  if (confirm('Delete this lead?')) {
+ await deleteLeadFromApi(id);
  state.data.leads = state.data.leads.filter(l => l.id !== id);
  saveData();
  closeModal();
