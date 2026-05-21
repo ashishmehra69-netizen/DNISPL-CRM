@@ -1069,8 +1069,8 @@ function calculateICPScore(account) {
  const salesOpsStages = new Set(['awaiting purchase costing', 'awaiting sales ops pricing']);
  // Presales (Vinod) can see opportunities they are assigned to OR opportunities they own/created.
  if (role === 'presales') return assignedPresales === me || oppOwner === me;
- // Soumya should only see active pricing-stage opportunities assigned to sales ops/purchase.
- if (role === 'salesops') return (assignedSalesOps === me || assignedPurchase === me) && salesOpsStages.has(workflowStage);
+ // Soumya sees all opportunities assigned to her as salesops/purchase (workflow tab scopes to active bin)
+ if (role === 'salesops') return assignedSalesOps === me || assignedPurchase === me || oppOwner === me;
  if (role === 'purchase') return assignedPurchase === me && salesOpsStages.has(workflowStage);
  if (oppOwner === me) return true;
  if (myAccountIds.has(o.accountId)) return true;
