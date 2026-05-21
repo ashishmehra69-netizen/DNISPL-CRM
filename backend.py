@@ -3407,3 +3407,4 @@ if __name__ == "__main__":
     print(f"Simple CRM backend running on port {port}")
     print("DB host:", urlparse(DATABASE_URL).hostname)
     app.run(host="0.0.0.0", port=port, debug=True)
+ 
