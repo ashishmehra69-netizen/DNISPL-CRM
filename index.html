@@ -506,7 +506,12 @@ async function fetchAccountsFromApi() {
 
 async function fetchUserPassword(email) {
  try {
- const url = `${CRM_API_BASE}/api/passwords/${encodeURIComponent(email)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const normEmail = (email || '').toLowerCase();
+ const selfRole = SUPERVISOR_EMAILS.includes(normEmail) ? 'supervisor'
+   : normEmail === 'vinod.v@dnispl.com' ? 'presales'
+   : normEmail === 'soumya.m@dnispl.com' ? 'salesops'
+   : 'account_manager';
+ const url = `${CRM_API_BASE}/api/passwords/${encodeURIComponent(email)}?viewer_email=${encodeURIComponent(email)}&viewer_role=${encodeURIComponent(selfRole)}`;
  const resp = await fetch(url);
  if (!resp.ok) return null;
  const data = await resp.json();
