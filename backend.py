@@ -3182,34 +3182,56 @@ def kra_report():
                         {"id":"innovation","name":"Innovation & Thought Leadership","weight":10,"target":"COE lab setup; case studies","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
                     ]})
 
-            # SALESOPS KRA
+            # SALESOPS KRA — OEM/Distributor Quote & Pricing Ops
             if effective_role in ("salesops", "sales_ops"):
+                # KRA 1: OEM quote TAT — time from salesops_assigned_at to costing_returned_at
                 cur.execute("""SELECT COUNT(*) AS total,
-                    COUNT(CASE WHEN lower(workflow_stage) IN ('costing returned','final proposal shared','won','closed won') THEN 1 END) AS completed,
+                    COUNT(CASE WHEN costing_returned_at IS NOT NULL AND costing_returned_at<>'' THEN 1 END) AS returned,
+                    COALESCE(AVG(CASE WHEN costing_returned_at IS NOT NULL AND costing_returned_at<>''
+                        AND salesops_assigned_at IS NOT NULL AND salesops_assigned_at<>''
+                        THEN EXTRACT(EPOCH FROM (costing_returned_at::timestamp - salesops_assigned_at::timestamp))/3600
+                    END),0) AS avg_tat,
                     COALESCE(SUM(value),0) AS pipeline
                     FROM opportunities WHERE lower(assigned_salesops)=lower(%s)""", (target_email,))
                 r = cur.fetchone() or {}
-                total    = int(r.get("total") or 0)
-                completed= int(r.get("completed") or 0)
-                pipeline = float(r.get("pipeline") or 0) / 10000000
-                on_time  = round(completed / total * 100, 1) if total > 0 else 0
-                cur.execute("""SELECT COALESCE(AVG(EXTRACT(EPOCH FROM
-                    (costing_returned_at::timestamp - salesops_assigned_at::timestamp))/3600),0) AS avg_tat
-                    FROM opportunities WHERE lower(assigned_salesops)=lower(%s)
-                    AND salesops_assigned_at IS NOT NULL AND salesops_assigned_at<>''
-                    AND costing_returned_at IS NOT NULL AND costing_returned_at<>''""", (target_email,))
-                avg_tat = round(float((cur.fetchone() or {}).get("avg_tat") or 0), 1)
-                tat_ach = min(round(24/avg_tat*100,1) if avg_tat > 0 else 100, 150)
+                total      = int(r.get("total") or 0)
+                returned   = int(r.get("returned") or 0)
+                avg_tat    = round(float(r.get("avg_tat") or 0), 1)
+                pipeline   = round(float(r.get("pipeline") or 0) / 10000000, 2)
+                # TAT target = 48hrs; achievement = 48/avg_tat * 100 (lower is better)
+                tat_ach    = min(round(48/avg_tat*100, 1) if avg_tat > 0 else 100, 150)
+                # KRA 4: CRM support — count of opps with salesops data filled
+                cur.execute("""SELECT COUNT(*) AS c FROM opportunities
+                    WHERE lower(assigned_salesops)=lower(%s)
+                    AND sales_ops_comments IS NOT NULL AND sales_ops_comments<>''""", (target_email,))
+                crm_filled = int((cur.fetchone() or {}).get("c") or 0)
+                crm_ach    = min(round(crm_filled/total*100, 1) if total > 0 else 100, 100)
                 return jsonify({"role":"salesops","target_email":target_email,"quarter":quarter,"fy_year":fy_year,
                     "kras":[
-                        {"id":"tat","name":"Pricing Turnaround Time","weight":35,"target":"<24h avg TAT",
-                         "actual_label":f"Avg {avg_tat}h ({completed} completed)","actual_value":avg_tat,"target_value":24,"unit":"hours","achievement_pct":tat_ach},
-                        {"id":"on_time","name":"On-Time Delivery Rate","weight":25,"target":">=95% on-time",
-                         "actual_label":f"{on_time}% ({total} total)","actual_value":on_time,"target_value":95,"unit":"%","achievement_pct":min(round(on_time/95*100,1),150)},
-                        {"id":"pipeline","name":"Pipeline Value Handled","weight":20,"target":"Track pipeline",
-                         "actual_label":f"Rs{pipeline:.1f}Cr","actual_value":pipeline,"target_value":None,"unit":"Cr","achievement_pct":None,"manual":True},
-                        {"id":"accuracy","name":"Pricing Accuracy","weight":20,"target":"<5% revisions",
-                         "actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
+                        {"id":"oem_quote_tat","name":"OEM & Distributor Quote Follow-ups","weight":25,
+                         "target":"Quote TAT <=48hrs; follow-up closure >=90%; zero lapses",
+                         "actual_label":f"Avg TAT {avg_tat}h | {returned}/{total} quotes returned",
+                         "actual_value":avg_tat,"target_value":48,"unit":"hours","achievement_pct":tat_ach},
+                        {"id":"proposal_accuracy","name":"Proposal Preparation & Quote Accuracy","weight":20,
+                         "target":">=95% pricing accuracy; <2 revision cycles/month; within TAT",
+                         "actual_label":"Manual input required — track revision cycles",
+                         "actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
+                        {"id":"vendor_coordination","name":"Third-Party & L3 Vendor Coordination","weight":20,
+                         "target":"Vendor TAT <=72hrs; escalation rate <10%; >=2 price sources/req",
+                         "actual_label":"Manual input required — track vendor responses",
+                         "actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
+                        {"id":"crm_support","name":"Sales Pipeline & CRM Support","weight":15,
+                         "target":"CRM accuracy >=98%; weekly pipeline reports on time; ops TAT <=24hrs",
+                         "actual_label":f"{crm_filled}/{total} opps with pricing data in CRM ({crm_ach}%)",
+                         "actual_value":crm_ach,"target_value":98,"unit":"%","achievement_pct":min(round(crm_ach/98*100,1),150)},
+                        {"id":"order_processing","name":"Order Processing & Documentation Compliance","weight":10,
+                         "target":"PO TAT <=24hrs; doc accuracy >=99%; zero compliance misses",
+                         "actual_label":"Manual input required — track PO processing",
+                         "actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
+                        {"id":"deal_registration","name":"OEM Partner Program & Deal Registration","weight":10,
+                         "target":"100% eligible deals registered; rebate tracking >=98%; zero missed",
+                         "actual_label":"Manual input required — track deal registrations",
+                         "actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
                     ]})
 
             # ACCOUNT MANAGER KRA
