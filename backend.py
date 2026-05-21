@@ -3187,9 +3187,12 @@ def kra_report():
                 # KRA 1: OEM quote TAT — time from salesops_assigned_at to costing_returned_at
                 cur.execute("""SELECT COUNT(*) AS total,
                     COUNT(CASE WHEN costing_returned_at IS NOT NULL AND costing_returned_at<>'' THEN 1 END) AS returned,
-                    COALESCE(AVG(CASE WHEN costing_returned_at IS NOT NULL AND costing_returned_at<>''
-                        AND salesops_assigned_at IS NOT NULL AND salesops_assigned_at<>''
-                        THEN EXTRACT(EPOCH FROM (costing_returned_at::timestamp - salesops_assigned_at::timestamp))/3600
+                    COALESCE(AVG(CASE
+                        WHEN costing_returned_at IS NOT NULL AND costing_returned_at<>''
+                         AND salesops_assigned_at IS NOT NULL AND salesops_assigned_at<>''
+                         AND costing_returned_at ~ '^[0-9]'
+                         AND salesops_assigned_at ~ '^[0-9]'
+                        THEN EXTRACT(EPOCH FROM (costing_returned_at::timestamptz - salesops_assigned_at::timestamptz))/3600
                     END),0) AS avg_tat,
                     COALESCE(SUM(value),0) AS pipeline
                     FROM opportunities WHERE lower(assigned_salesops)=lower(%s)""", (target_email,))
