@@ -3187,25 +3187,31 @@ def kra_report():
                 # KRA 1: OEM quote TAT — time from salesops_assigned_at to costing_returned_at
                 cur.execute("""SELECT COUNT(*) AS total,
                     COUNT(CASE WHEN costing_returned_at IS NOT NULL AND costing_returned_at<>'' THEN 1 END) AS returned,
-                    COALESCE(AVG(CASE
-                        WHEN costing_returned_at IS NOT NULL AND costing_returned_at<>''
-                         AND salesops_assigned_at IS NOT NULL AND salesops_assigned_at<>''
-                         AND costing_returned_at ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
-                         AND salesops_assigned_at ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
-                        THEN EXTRACT(EPOCH FROM (
-                            to_timestamp(costing_returned_at, 'YYYY-MM-DD"T"HH24:MI:SS')
-                            - to_timestamp(salesops_assigned_at, 'YYYY-MM-DD"T"HH24:MI:SS')
-                        ))/3600
-                    END),0) AS avg_tat,
                     COALESCE(SUM(value),0) AS pipeline
                     FROM opportunities WHERE lower(assigned_salesops)=lower(%s)""", (target_email,))
                 r = cur.fetchone() or {}
                 total      = int(r.get("total") or 0)
                 returned   = int(r.get("returned") or 0)
-                avg_tat    = round(float(r.get("avg_tat") or 0), 1)
                 pipeline   = round(float(r.get("pipeline") or 0) / 10000000, 2)
-                # TAT target = 48hrs; achievement = 48/avg_tat * 100 (lower is better)
-                tat_ach    = min(round(48/avg_tat*100, 1) if avg_tat > 0 else 100, 150)
+                # TAT: compute safely in Python using a separate query with try/except
+                avg_tat = 0.0
+                try:
+                    cur.execute("""SELECT COALESCE(AVG(
+                        EXTRACT(EPOCH FROM (cr::timestamptz - sa::timestamptz))/3600
+                    ),0) AS avg_tat
+                    FROM (
+                        SELECT costing_returned_at AS cr, salesops_assigned_at AS sa
+                        FROM opportunities
+                        WHERE lower(assigned_salesops)=lower(%s)
+                          AND costing_returned_at IS NOT NULL AND length(trim(costing_returned_at))>5
+                          AND salesops_assigned_at IS NOT NULL AND length(trim(salesops_assigned_at))>5
+                          AND costing_returned_at ~ '^\d{4}-'
+                          AND salesops_assigned_at ~ '^\d{4}-'
+                    ) t""", (target_email,))
+                    avg_tat = round(float((cur.fetchone() or {}).get("avg_tat") or 0), 1)
+                except Exception:
+                    avg_tat = 0.0
+                tat_ach = min(round(48/avg_tat*100, 1) if avg_tat > 0 else 100, 150)
                 # KRA 4: CRM support — count of opps with salesops data filled
                 cur.execute("""SELECT COUNT(*) AS c FROM opportunities
                     WHERE lower(assigned_salesops)=lower(%s)
@@ -3407,4 +3413,3 @@ if __name__ == "__main__":
     print(f"Simple CRM backend running on port {port}")
     print("DB host:", urlparse(DATABASE_URL).hostname)
     app.run(host="0.0.0.0", port=port, debug=True)
- 
