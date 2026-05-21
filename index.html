@@ -777,6 +777,7 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  }
  
  currentUser = email;
+ resetReportState();
  isSupervisor = SUPERVISOR_EMAILS.includes(email.toLowerCase());
  
  document.getElementById('loginScreen').style.display = 'none';
@@ -799,9 +800,14 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  await refreshMicrosoftButton();
  }
 
+ function resetReportState() {
+   kraState = { data: null, loading: false, quarter: 'Q1', fy_year: '2025-26', targetEmail: '', teamMembers: [] };
+   incState = { data: null, loading: false, quarter: 'Q1', targetEmail: '', salaryData: null };
+ }
  function logout() {
  currentUser = '';
  isSupervisor = false;
+ resetReportState();
  document.getElementById('loginScreen').style.display = 'block';
  document.getElementById('mainScreen').style.display = 'none';
  document.getElementById('fabBtn').style.display = 'none';
@@ -916,6 +922,26 @@ function seedAccountsFromMap() {
  document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
  render();
  }
+
+function filterOpps(filter) {
+  const cards = document.querySelectorAll('.opp-card');
+  const PRICING_STAGES = ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'];
+  cards.forEach(card => {
+    const stage = card.dataset.stage || '';
+    const wfStage = card.dataset.wfstage || '';
+    let show = false;
+    if (filter === 'all') show = true;
+    else if (filter === 'Awaiting Pricing') show = PRICING_STAGES.includes(wfStage);
+    else if (filter === 'Assigned to Presales') show = wfStage === 'Assigned to Presales';
+    else show = stage === filter;
+    card.style.display = show ? '' : 'none';
+  });
+  document.querySelectorAll('[onclick^="filterOpps"]').forEach(btn => {
+    const isActive = btn.getAttribute('onclick').includes("'" + filter + "'");
+    btn.style.fontWeight = isActive ? '700' : '400';
+    btn.style.boxShadow = isActive ? '0 0 0 2px #5a67d8' : 'none';
+  });
+}
 
 function calculateWinProb(opp) {
  // Base probability from stage
@@ -1256,33 +1282,31 @@ function renderAccounts(filtered) {
  <div class="card">
  <h2>💰 Opportunities (${opps.length})</h2>
  <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
- <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:16px">
-   <span class="tag">📋 All (${opps.length})</span>
-   <span class="tag">🔎 Discovery (${discoveryCount})</span>
-   <span class="tag">📝 Proposal (${proposalCount})</span>
-   <span class="tag">🤝 Negotiation (${negotiationCount})</span>
-   <span class="tag">🏆 Closed Won (${wonCount})</span>
-   <span class="tag">❌ Closed Lost (${lostCount})</span>
-   ${role === 'presales' ? `<span class="tag">⏳ Pending with Presales (${pendingPresalesCount})</span>` : ''}
-   ${role === 'salesops' ? `<span class="tag">⏳ Awaiting Pricing (${awaitingPurchaseCount + awaitingSalesOpsCount})</span>` : ''}
+ <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:16px">
+   <button onclick="filterOpps('all')" style="background:#fff;color:#333;border:1px solid #cbd5e0;padding:5px 12px;border-radius:20px;cursor:pointer;font-size:0.85em;font-weight:600">📋 All (${opps.length})</button>
+   <button onclick="filterOpps('Discovery')" style="background:#fff;color:#333;border:1px solid #cbd5e0;padding:5px 12px;border-radius:20px;cursor:pointer;font-size:0.85em">🔎 Discovery (${discoveryCount})</button>
+   <button onclick="filterOpps('Proposal')" style="background:#fff;color:#333;border:1px solid #cbd5e0;padding:5px 12px;border-radius:20px;cursor:pointer;font-size:0.85em">📝 Proposal (${proposalCount})</button>
+   <button onclick="filterOpps('Negotiation')" style="background:#fff;color:#333;border:1px solid #cbd5e0;padding:5px 12px;border-radius:20px;cursor:pointer;font-size:0.85em">🤝 Negotiation (${negotiationCount})</button>
+   <button onclick="filterOpps('Closed Won')" style="background:#fff;color:#333;border:1px solid #cbd5e0;padding:5px 12px;border-radius:20px;cursor:pointer;font-size:0.85em">🏆 Closed Won (${wonCount})</button>
+   <button onclick="filterOpps('Closed Lost')" style="background:#fff;color:#333;border:1px solid #cbd5e0;padding:5px 12px;border-radius:20px;cursor:pointer;font-size:0.85em">❌ Closed Lost (${lostCount})</button>
+   <button onclick="filterOpps('Assigned to Presales')" style="background:#fff;color:#5a67d8;border:2px solid #5a67d8;padding:5px 12px;border-radius:20px;cursor:pointer;font-size:0.85em;font-weight:600">⏳ Pending with Presales (${pendingPresalesCount})</button>
+   <button onclick="filterOpps('Awaiting Pricing')" style="background:#fff;color:#d97706;border:2px solid #d97706;padding:5px 12px;border-radius:20px;cursor:pointer;font-size:0.85em;font-weight:600">💰 Pending for Pricing (${awaitingPurchaseCount + awaitingSalesOpsCount})</button>
  </div>
  </div>
- <div class="grid">
+ <div class="grid" id="oppsGrid">
  ${opps.map(o => {
  const winProb = calculateWinProb(o);
+ const wfStage = o.workflowStage || 'Sales Review';
  return `
- <div class="item-card" onclick="editOpportunity('${o.id}')">
+ <div class="item-card opp-card" data-stage="${o.stage}" data-wfstage="${wfStage}" onclick="editOpportunity('${o.id}')">
  <h3>${o.name}</h3>
  <div style="color:#4ade80; font-weight:bold; font-size:1.2em; margin:10px 0">
  ₹${(o.value / 100000).toFixed(1)}L
  </div>
  <div>
- <span class="tag">${o.stage}</span>
- <span class="tag">${o.workflowStage || 'Sales Review'}</span>
+ <span class="tag" style="background:rgba(255,255,255,0.9);color:#333">${o.stage}</span>
+ <span class="tag" style="background:rgba(255,255,255,0.9);color:#333">${wfStage}</span>
  <span class="tag" style="background:#4ade80; color:white">Win Probability: ${winProb}%</span>
- </div>
- <div style="margin-top:6px; font-size:0.9em; font-weight:bold">
- Win Probability: ${winProb}%
  </div>
  <div style="font-size:0.85em; opacity:0.85; margin-top:10px">
  Sales: ${o.salesOwner || o.owner || 'NA'}<br>
@@ -1302,7 +1326,14 @@ function renderAccounts(filtered) {
 
  function renderWorkflow(filtered) {
  const role = getUserRole();
- const list = filtered.opportunities;
+ const meL = (currentUser || '').toLowerCase();
+ let list = filtered.opportunities;
+ if (role === 'presales') {
+   list = list.filter(o => (o.assignedPresales||'').toLowerCase() === meL
+     && ['Assigned to Presales','Costing Returned'].includes(o.workflowStage));
+ } else if (role === 'salesops') {
+   list = list.filter(o => ['Awaiting Sales Ops Pricing','Awaiting Purchase Costing'].includes(o.workflowStage));
+ }
  return `
  <div class="card">
  <h2>🔄 Workflow Board (${list.length})</h2>
@@ -1667,6 +1698,44 @@ function renderKraSection() {
   const el = document.getElementById('kraReportContent');
   if (!el) return;
   el.innerHTML = buildKraHtml();
+  // Also refresh incentive section for individual view
+  const role = getUserRole();
+  if (role !== 'supervisor') {
+    renderIndividualIncentiveSection(role, (currentUser||'').toLowerCase());
+  }
+}
+
+function renderIndividualIncentiveSection(role, me) {
+  const el = document.getElementById('incentiveReportContent');
+  if (!el) return;
+  // Only sales/account_manager roles see incentive
+  if (role !== 'account_manager' && role !== 'sales') {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+  // Show incentive UI
+  const qOpts = ['Q1','Q2','Q3','Q4'].map(q =>
+    `<option value="${q}" ${incState.quarter===q?'selected':''}>${q}</option>`).join('');
+  el.innerHTML = `
+    <div class="card" style="margin-top:16px">
+      <h3>💰 My Incentive</h3>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:12px;align-items:flex-end">
+        <div>
+          <label style="display:block;font-size:12px;opacity:0.7;margin-bottom:4px">Quarter</label>
+          <select id="incQuarterSelectInd" style="padding:8px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:14px"
+            onchange="incState.quarter=this.value">
+            ${qOpts}
+          </select>
+        </div>
+        <button class="btn" onclick="
+          incState.quarter = document.getElementById('incQuarterSelectInd').value;
+          incState.targetEmail = '${me}';
+          loadIncentiveReport('${me}', incState.quarter);
+        ">Load Incentive</button>
+      </div>
+    </div>
+    ${buildIncentiveHtml()}`;
 }
 
 function buildKraHtml() {
@@ -1817,12 +1886,17 @@ function renderReports(filtered) {
 
   // ── INDIVIDUAL KRA VIEW (presales / salesops / sales) ──
   // Auto-load KRA on first visit
-  if (!kraState.data && !kraState.loading && !kraState._autoLoaded) {
-    kraState._autoLoaded = true;
+  // Always load KRA for the current user (me), ignoring any stale targetEmail
+  if (!kraState.loading && kraState.targetEmail !== me) {
+    kraState.data = null;
+    kraState.targetEmail = me;
+    loadKraReport(me, kraState.quarter, kraState.fy_year);
+  } else if (!kraState.data && !kraState.loading) {
     kraState.targetEmail = me;
     loadKraReport(me, kraState.quarter, kraState.fy_year);
   }
-  if (!incState.data && !incState.loading && !incState._autoLoaded) {
+  // Only auto-load incentive for account_manager/sales roles
+  if ((role === 'account_manager' || role === 'sales') && !incState.data && !incState.loading && !incState._autoLoaded) {
     incState._autoLoaded = true;
     incState.targetEmail = me;
     loadIncentiveReport(me, incState.quarter);
@@ -1859,24 +1933,7 @@ function renderReports(filtered) {
       </div>
     </div>
     <div id="kraReportContent">${buildKraHtml()}</div>
-    <div class="card" style="margin-top:16px">
-      <h3>💰 My Incentive</h3>
-      <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:12px;align-items:flex-end">
-        <div>
-          <label style="display:block;font-size:12px;opacity:0.7;margin-bottom:4px">Quarter</label>
-          <select id="incQuarterSelectInd" style="padding:8px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:14px"
-            onchange="incState.quarter=this.value">
-            ${['Q1','Q2','Q3','Q4'].map(q=>`<option value="${q}" ${incState.quarter===q?'selected':''}>${q}</option>`).join('')}
-          </select>
-        </div>
-        <button class="btn" onclick="
-          incState.quarter = document.getElementById('incQuarterSelectInd').value;
-          incState.targetEmail = '${me}';
-          loadIncentiveReport('${me}', incState.quarter);
-        ">Load Incentive</button>
-      </div>
-    </div>
-    <div id="incentiveReportContent">${buildIncentiveHtml()}</div>
+    <div id="incentiveReportContent"></div>
   `;
 }
 
@@ -1986,6 +2043,7 @@ function openAddModal() {
  <option value="Sales Review" ${opp?.workflowStage === 'Sales Review' ? 'selected' : ''}>Sales Review</option>
  <option value="Assigned to Presales" ${opp?.workflowStage === 'Assigned to Presales' ? 'selected' : ''}>Assigned to Presales</option>
  <option value="Awaiting Purchase Costing" ${opp?.workflowStage === 'Awaiting Purchase Costing' ? 'selected' : ''}>Awaiting Purchase Costing</option>
+ <option value="Awaiting Sales Ops Pricing" ${opp?.workflowStage === 'Awaiting Sales Ops Pricing' ? 'selected' : ''}>Awaiting Sales Ops Pricing</option>
  <option value="Costing Returned" ${opp?.workflowStage === 'Costing Returned' ? 'selected' : ''}>Costing Returned</option>
  <option value="Final Proposal Shared" ${opp?.workflowStage === 'Final Proposal Shared' ? 'selected' : ''}>Final Proposal Shared</option>
  </select>
