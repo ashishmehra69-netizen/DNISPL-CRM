@@ -2515,7 +2515,7 @@ function saveContact(e, id) {
  render();
 }
 
-function saveOpportunity(e, id) {
+async function saveOpportunity(e, id) {
  e.preventDefault();
  const existing = id ? state.data.opportunities.find(o => o.id === id) : null;
  const data = Object.fromEntries(new FormData(e.target));
@@ -2535,17 +2535,45 @@ function saveOpportunity(e, id) {
  data.purchaseCosting = data.purchaseCosting || existing?.purchaseCosting || '';
  data.costingTat = toISOOrBlank(data.costingTat) || existing?.costingTat || '';
  data.finalPricingProposal = data.finalPricingProposal || existing?.finalPricingProposal || '';
+ const localId = id || ('opp_' + Date.now().toString());
  if (id) {
- const index = state.data.opportunities.findIndex(o => o.id === id);
- state.data.opportunities[index] = {...data, id};
- recordActivity('Opportunity', `Opportunity updated: ${data.name}`);
+  const index = state.data.opportunities.findIndex(o => o.id === id);
+  state.data.opportunities[index] = {...data, id};
+  recordActivity('Opportunity', `Opportunity updated: ${data.name}`);
  } else {
- state.data.opportunities.push({...data, id: Date.now().toString()});
- recordActivity('Opportunity', `Opportunity created: ${data.name}`);
+  state.data.opportunities.push({...data, id: localId});
+  recordActivity('Opportunity', `Opportunity created: ${data.name}`);
  }
  saveData();
  closeModal();
  render();
+ // Persist to backend
+ try {
+  const resp = await fetch(`${CRM_API_BASE}/api/opportunities`, {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json' },
+   body: JSON.stringify({
+    ...data,
+    id: localId,
+    viewer_email: currentUser,
+    viewer_role: getViewerRoleForApi()
+   })
+  });
+  if (!resp.ok) {
+   const err = await resp.json().catch(() => ({}));
+   alert('⚠️ Save failed: ' + (err.error || resp.status) + '\nChanges reverted on next refresh.');
+  } else {
+   const r = await resp.json();
+   // Update local id if backend assigned a different one
+   if (r.id && r.id !== localId) {
+    const idx = state.data.opportunities.findIndex(o => o.id === localId);
+    if (idx >= 0) state.data.opportunities[idx].id = r.id;
+    saveData();
+   }
+  }
+ } catch(e) {
+  alert('⚠️ Network error — opp saved locally but not to server. Please retry.');
+ }
 }
  function editLead(id) { openLeadModal(state.data.leads.find(l => l.id === id)); }
  function editAccount(id) { openAccountModal(state.data.accounts.find(a => a.id === id)); }
