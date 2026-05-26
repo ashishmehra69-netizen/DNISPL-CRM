@@ -2251,7 +2251,8 @@ def delete_activity(activity_id: str):
 def get_password(email: str):
     viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
     viewer_email = (request.args.get("viewer_email") or "").strip().lower()
-    if viewer_role not in ("supervisor", "admin") and viewer_email != (email or "").strip().lower():
+    email = (email or "").strip().lower()
+    if viewer_email != email and not _is_supervisor(viewer_role):
         return jsonify({"error": "not allowed"}), 403
     conn = get_conn()
     try:
