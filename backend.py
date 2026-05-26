@@ -1922,7 +1922,7 @@ def upsert_opportunity():
             # by presales or salesops (they move stages without filling intake forms)
             viewer_role_now = (payload.get("viewer_role") or "").strip().lower()
             is_workflow_transition = viewer_role_now in ("presales", "salesops", "purchase")
-            requires_intake = (not exists) and not is_workflow_transition
+            requires_intake = False
             missing_intake = [label for key, label in required_intake_fields if not payload.get(key)]
             if requires_intake and missing_intake:
                 return jsonify({"error": "Mandatory presales intake fields missing", "missing_fields": missing_intake}), 400
