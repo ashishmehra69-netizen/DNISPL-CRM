@@ -44,6 +44,7 @@ DATABASE_URL = (
 PRESALES_OWNER = os.environ.get("PRESALES_OWNER", "vinod.v@dnispl.com")
 SALES_OPS_OWNER = os.environ.get("SALES_OPS_OWNER", "soumya.m@dnispl.com")
 SUPERVISOR_EMAIL = os.environ.get("SUPERVISOR_EMAIL", "ashish.mehra@dnispl.com").strip().lower()
+SUPERVISOR_EMAILS_ALL = [SUPERVISOR_EMAIL, 'a.gupta@dnispl.com', 'rakesh.uniyal@dnispl.com']
 ESCALATION_EMAILS = [
     e.strip().lower()
     for e in os.environ.get("ESCALATION_EMAILS", "ashish.mehra@dnispl.com,a.gupta@dnispl.com").split(",")
@@ -823,7 +824,7 @@ def send_opportunity_assignment_email(opportunity_name: str, opp_id: str, presal
         print(f"[CRM EMAIL] Aborted — no valid presales email")
         return
     cc_list = []
-    for e in [SUPERVISOR_EMAIL, sales_email, account_manager_email]:
+    for e in SUPERVISOR_EMAILS_ALL + [sales_email, account_manager_email]:
         e = (e or "").strip().lower()
         if e and "@" in e and e != presales_target and e not in cc_list:
             cc_list.append(e)
@@ -836,7 +837,19 @@ def send_opportunity_assignment_email(opportunity_name: str, opp_id: str, presal
         f"Presales Due At (72h SLA): {presales_due_iso}\n\n"
         "Please review requirements and submit solution/proposal within SLA."
     )
-    send_email_smtp([presales_target], subject, body, cc_emails=cc_list)
+    # Try Graph first (uses connected Microsoft 365), fall back to SMTP
+    sent = False
+    for sender in [SUPERVISOR_EMAIL] + cc_list:
+        try:
+            html_body = f"<pre style='font-family:sans-serif'>{body}</pre>"
+            _send_graph_mail(sender, [presales_target], cc_list, subject, html_body)
+            sent = True
+            print(f"[CRM EMAIL] Sent via Graph as {sender}")
+            break
+        except Exception as eg:
+            print(f"[CRM EMAIL] Graph failed for {sender}: {eg}")
+    if not sent:
+        send_email_smtp([presales_target], subject, body, cc_emails=cc_list)
 
 
 def send_salesops_assignment_email(
@@ -853,7 +866,7 @@ def send_salesops_assignment_email(
     if "@" not in target:
         return
     cc_list = []
-    for e in [SUPERVISOR_EMAIL, sales_email, presales_email, account_manager_email]:
+    for e in SUPERVISOR_EMAILS_ALL + [sales_email, presales_email, account_manager_email]:
         e = (e or "").strip().lower()
         if e and "@" in e and e != target and e not in cc_list:
             cc_list.append(e)
@@ -868,7 +881,20 @@ def send_salesops_assignment_email(
         f"Pricing Due At: {due_iso or 'NA'}\n\n"
         "Please coordinate with OEM / distributor and update pricing support in CRM."
     )
-    send_email_smtp([target], subject, body, cc_emails=cc_list)
+    # Try Graph first (uses connected Microsoft 365), fall back to SMTP
+    sent = False
+    for sender in [SUPERVISOR_EMAIL] + cc_list:
+        try:
+            html_body = f"<pre style='font-family:sans-serif'>{body}</pre>"
+            _send_graph_mail(sender, [target], cc_list, subject, html_body)
+            sent = True
+            print(f"[CRM EMAIL] SalesOps mail sent via Graph as {sender}")
+            break
+        except Exception as eg:
+            print(f"[CRM EMAIL] Graph failed for {sender}: {eg}")
+    if not sent:
+        send_email_smtp([target], subject, body, cc_emails=cc_list)
+
 def enforce_opportunity_sla(conn, rows):
     now = datetime.now(timezone.utc)
     changed = False
@@ -1892,7 +1918,11 @@ def upsert_opportunity():
                 ("intake_decision_timeline", "Decision Timeline"),
             ]
             workflow_now = (payload.get("workflow_stage") or "").strip()
-            requires_intake = (not exists) or workflow_now == "Assigned to Presales"
+            # Only enforce intake when Sales is creating/editing — not for workflow stage transitions
+            # by presales or salesops (they move stages without filling intake forms)
+            viewer_role_now = (payload.get("viewer_role") or "").strip().lower()
+            is_workflow_transition = viewer_role_now in ("presales", "salesops", "purchase")
+            requires_intake = (not exists) and not is_workflow_transition
             missing_intake = [label for key, label in required_intake_fields if not payload.get(key)]
             if requires_intake and missing_intake:
                 return jsonify({"error": "Mandatory presales intake fields missing", "missing_fields": missing_intake}), 400
@@ -2070,6 +2100,20 @@ def upsert_opportunity():
                 (payload.get("salesops_due_at") or "").strip(),
                 account_manager_email,
             )
+        # Clear bootstrap cache for all affected users so supervisor/presales/salesops see fresh data
+        affected_emails = set()
+        for e in [
+            payload.get("owner"), payload.get("sales_owner"),
+            payload.get("assigned_presales"), payload.get("assigned_salesops"),
+            SUPERVISOR_EMAIL,
+        ]:
+            if e and "@" in str(e):
+                affected_emails.add(str(e).strip().lower())
+        with _write_limits_lock:
+            keys_to_clear = [k for k in _write_limits if any(e in k for e in affected_emails) or k.startswith("bootstrap:")]
+            for k in keys_to_clear:
+                _write_limits.pop(k, None)
+
         return jsonify({"status": status, "id": opp_id})
     finally:
         conn.close()
@@ -2207,7 +2251,7 @@ def delete_activity(activity_id: str):
 def get_password(email: str):
     viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
     viewer_email = (request.args.get("viewer_email") or "").strip().lower()
-    if viewer_email != (email or "").strip().lower() and not _is_supervisor(viewer_role):
+    if viewer_role not in ("supervisor", "admin") and viewer_email != (email or "").strip().lower():
         return jsonify({"error": "not allowed"}), 403
     conn = get_conn()
     try:
@@ -3195,7 +3239,23 @@ def kra_report():
                 pipeline   = round(float(r.get("pipeline") or 0) / 10000000, 2)
                 # TAT: compute safely in Python using a separate query with try/except
                 avg_tat = 0.0
-                tat_ach = 100
+                try:
+                    cur.execute("""SELECT COALESCE(AVG(
+                        EXTRACT(EPOCH FROM (cr::timestamptz - sa::timestamptz))/3600
+                    ),0) AS avg_tat
+                    FROM (
+                        SELECT costing_returned_at AS cr, salesops_assigned_at AS sa
+                        FROM opportunities
+                        WHERE lower(assigned_salesops)=lower(%s)
+                          AND costing_returned_at IS NOT NULL AND length(trim(costing_returned_at))>5
+                          AND salesops_assigned_at IS NOT NULL AND length(trim(salesops_assigned_at))>5
+                          AND costing_returned_at ~ '^\d{4}-'
+                          AND salesops_assigned_at ~ '^\d{4}-'
+                    ) t""", (target_email,))
+                    avg_tat = round(float((cur.fetchone() or {}).get("avg_tat") or 0), 1)
+                except Exception:
+                    avg_tat = 0.0
+                tat_ach = min(round(48/avg_tat*100, 1) if avg_tat > 0 else 100, 150)
                 # KRA 4: CRM support — count of opps with salesops data filled
                 cur.execute("""SELECT COUNT(*) AS c FROM opportunities
                     WHERE lower(assigned_salesops)=lower(%s)
