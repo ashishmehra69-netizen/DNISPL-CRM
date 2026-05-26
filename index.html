@@ -1072,10 +1072,10 @@ function calculateICPScore(account) {
  const assignedSalesOps = (o.assignedSalesOps || '').toLowerCase();
  const workflowStage = (o.workflowStage || 'Sales Review').toLowerCase();
  const salesOpsStages = new Set(['awaiting purchase costing', 'awaiting sales ops pricing']);
- // Presales (Vinod) can see opportunities they are assigned to OR opportunities they own/created.
- if (role === 'presales') return assignedPresales === me || oppOwner === me;
+ // Presales sees only their active bin (assigned to them as presales)
+ if (role === 'presales') return assignedPresales === me;
  // Soumya sees only her active pricing queue (assigned to her AND in a pricing stage)
- if (role === 'salesops') return (assignedSalesOps === me || assignedPurchase === me) && salesOpsStages.has(workflowStage);
+ if (role === 'salesops') return assignedSalesOps === me || assignedPurchase === me;
  if (role === 'purchase') return assignedPurchase === me && salesOpsStages.has(workflowStage);
  if (oppOwner === me) return true;
  if (myAccountIds.has(o.accountId)) return true;
@@ -2295,18 +2295,19 @@ async function updateOpportunityWorkflow(id, updates) {
  const idx = state.data.opportunities.findIndex(o => o.id === id);
  if (idx === -1) return;
  const prev = state.data.opportunities[idx].workflowStage || 'Sales Review';
+ // Snapshot for rollback
+ const snapshot = {...state.data.opportunities[idx]};
  state.data.opportunities[idx] = {
   ...state.data.opportunities[idx],
   ...updates,
   modifiedDate: new Date().toISOString()
  };
  const next = state.data.opportunities[idx].workflowStage || prev;
- recordActivity('Workflow', `Opportunity moved: ${state.data.opportunities[idx].name}`, `${prev} → ${next}`);
  saveData();
  render();
- // Persist to backend
+ // Persist to backend — rollback and alert on failure
  try {
-  await fetch(`${CRM_API_BASE}/api/opportunities`, {
+  const resp = await fetch(`${CRM_API_BASE}/api/opportunities`, {
    method: 'POST',
    headers: { 'Content-Type': 'application/json' },
    body: JSON.stringify({
@@ -2315,7 +2316,24 @@ async function updateOpportunityWorkflow(id, updates) {
     viewer_role: getViewerRoleForApi()
    })
   });
- } catch(e) { console.warn('Workflow API sync failed:', e); }
+  if (!resp.ok) {
+   const err = await resp.json().catch(() => ({}));
+   const msg = err.error || `Server error ${resp.status}`;
+   const missing = err.missing_fields ? '\nMissing: ' + err.missing_fields.join(', ') : '';
+   alert('⚠️ Assignment failed: ' + msg + missing + '\n\nChange has been reverted.');
+   // Rollback local state
+   state.data.opportunities[idx] = snapshot;
+   saveData();
+   render();
+   return;
+  }
+  recordActivity('Workflow', `Opportunity moved: ${state.data.opportunities[idx].name}`, `${prev} → ${next}`);
+ } catch(e) {
+  alert('⚠️ Network error — assignment not saved. Please retry.');
+  state.data.opportunities[idx] = snapshot;
+  saveData();
+  render();
+ }
 }
 
 function assignToPresales(id) {
