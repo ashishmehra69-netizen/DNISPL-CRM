@@ -2240,7 +2240,7 @@ async function saveActivity(e, id) {
  const formData = Object.fromEntries(new FormData(e.target));
  const existing = id ? state.data.activities.find(a => a.id === id) : null;
  const payload = {
- id: id || undefined,
+ id: id || null,
  type: formData.type,
  subject: formData.subject,
  notes: formData.notes || '',
@@ -2608,14 +2608,17 @@ async function saveOpportunity(e, id) {
  }
  }
 
- function deleteOpportunity(id) {
- if (confirm('Delete this opportunity?')) {
- state.data.opportunities = state.data.opportunities.filter(o => o.id !== id);
- saveData();
- closeModal();
- render();
- }
- }
+ async function deleteOpportunity(id) {
+  if (confirm('Delete this opportunity?')) {
+    state.data.opportunities = state.data.opportunities.filter(o => o.id !== id);
+    saveData();
+    closeModal();
+    render();
+    try {
+      await fetch(`${CRM_API_BASE}/api/opportunities/${encodeURIComponent(id)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`, { method: 'DELETE' });
+    } catch(e) { console.warn('Delete API error:', e); }
+  }
+}
 
  function closeModal() {
  document.getElementById('modal').classList.remove('show');
