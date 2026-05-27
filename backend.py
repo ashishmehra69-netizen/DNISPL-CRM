@@ -3267,7 +3267,7 @@ def kra_report():
                     return jsonify({"error": "KRA schema missing opportunities.assigned_salesops"}), 500
 
                 cur.execute("""SELECT COUNT(*) AS total,
-                    COUNT(CASE WHEN costing_returned_at IS NOT NULL AND costing_returned_at<>'' THEN 1 END) AS returned,
+                    COUNT(CASE WHEN costing_returned_at IS NOT NULL THEN 1 END) AS returned,
                     COALESCE(SUM(value),0) AS pipeline
                     FROM opportunities WHERE lower(assigned_salesops)=lower(%s)""", (target_email,))
                 r = cur.fetchone() or {}
@@ -3280,8 +3280,8 @@ def kra_report():
                         SELECT costing_returned_at, salesops_assigned_at
                         FROM opportunities
                         WHERE lower(assigned_salesops)=lower(%s)
-                          AND costing_returned_at IS NOT NULL AND trim(costing_returned_at) <> ''
-                          AND salesops_assigned_at IS NOT NULL AND trim(salesops_assigned_at) <> ''
+                          AND costing_returned_at IS NOT NULL
+                          AND salesops_assigned_at IS NOT NULL
                     """, (target_email,))
                     tat_hours = []
                     for row in cur.fetchall() or []:
