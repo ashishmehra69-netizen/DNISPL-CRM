@@ -2276,21 +2276,24 @@ async function deleteActivity(id) {
  }
 }
 
+const SALES_TEAM = [
+ 'aakriti.v@dnispl.com',
+ 'ayushi.v@dnispl.com',
+ 'mandeep.kaur@dnispl.com',
+ 'navneet.k@dnispl.com',
+ 'om.prakash@dnispl.com',
+ 'stephen.h@dnispl.com',
+ 'vikrant.tolumbia@dnispl.com',
+ 'yash.k@dnispl.com',
+ 'ankit.j@dnispl.com',
+];
+
 function getTeamUsers(role) {
- const users = new Set();
- if (role === 'sales') {
- state.data.leads.forEach(l => l.owner && users.add(l.owner));
- state.data.accounts.forEach(a => a.owner && users.add(a.owner));
- state.data.contacts.forEach(c => c.owner && users.add(c.owner));
- state.data.opportunities.forEach(o => o.owner && users.add(o.owner));
- users.add(currentUser || 'sales@company.com');
- return Array.from(users);
- }
+ if (role === 'sales') return SALES_TEAM;
  if (role === 'presales') return ['vinod.v@dnispl.com'];
  if (role === 'purchase' || role === 'salesops') return ['soumya.m@dnispl.com'];
- return Array.from(users);
+ return SALES_TEAM;
 }
-
 async function updateOpportunityWorkflow(id, updates) {
  const idx = state.data.opportunities.findIndex(o => o.id === id);
  if (idx === -1) return;
