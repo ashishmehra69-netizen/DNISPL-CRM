@@ -532,6 +532,21 @@ def _normalize_email(value: str) -> str:
     return (value or "").strip().lower()
 
 
+def _column_exists(cur, table_name: str, column_name: str) -> bool:
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = %s
+          AND column_name = %s
+        LIMIT 1
+        """,
+        (table_name, column_name),
+    )
+    return cur.fetchone() is not None
+
+
 def _split_emails(value: str):
     if not value:
         return []
@@ -3273,10 +3288,17 @@ def kra_report():
                     avg_tat = 0.0
 
                 tat_ach = min(round(48 / avg_tat * 100, 1), 150) if avg_tat > 0 else (100 if returned == 0 else 0)
-                cur.execute("""SELECT COUNT(*) AS c FROM opportunities
-                    WHERE lower(assigned_salesops)=lower(%s)
-                    AND sales_ops_comments IS NOT NULL AND sales_ops_comments<>''""", (target_email,))
-                crm_filled = int((cur.fetchone() or {}).get("c") or 0)
+                crm_filled = 0
+                crm_comment_column = None
+                if _column_exists(cur, "opportunities", "sales_ops_comments"):
+                    crm_comment_column = "sales_ops_comments"
+                elif _column_exists(cur, "opportunities", "salesops_comments"):
+                    crm_comment_column = "salesops_comments"
+                if crm_comment_column:
+                    cur.execute(f"""SELECT COUNT(*) AS c FROM opportunities
+                        WHERE lower(assigned_salesops)=lower(%s)
+                        AND {crm_comment_column} IS NOT NULL AND {crm_comment_column}<>''""", (target_email,))
+                    crm_filled = int((cur.fetchone() or {}).get("c") or 0)
                 crm_ach = min(round(crm_filled/total*100, 1) if total > 0 else 100, 100)
                 return jsonify({"role":"salesops","target_email":target_email,"quarter":quarter,"fy_year":fy_year,
                     "kras":[
@@ -3313,7 +3335,12 @@ def kra_report():
                 revenue_target = 75.0
                 revenue_ach = min(round(won_val/revenue_target*100, 1), 150)
 
-                cur.execute("SELECT COUNT(DISTINCT lower(account_name)) AS accs FROM opportunities WHERE lower(workflow_stage) IN ('won','closed won')", ())
+                cur.execute("""
+                    SELECT COUNT(DISTINCT account_id) AS accs
+                    FROM opportunities
+                    WHERE lower(workflow_stage) IN ('won','closed won')
+                      AND account_id IS NOT NULL AND trim(account_id) <> ''
+                """, ())
                 won_accounts = int((cur.fetchone() or {}).get("accs") or 0)
                 new_biz_ach = min(round(won_accounts/200*100, 1), 150)
 
