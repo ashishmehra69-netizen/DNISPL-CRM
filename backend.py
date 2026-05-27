@@ -3252,11 +3252,8 @@ def kra_report():
                           AND salesops_assigned_at IS NOT NULL AND length(trim(salesops_assigned_at))>5
                           AND costing_returned_at ~ '^\d{4}-'
                           AND salesops_assigned_at ~ '^\d{4}-'
-                    ) t""", (target_email,))
-                    avg_tat = round(float((cur.fetchone() or {}).get("avg_tat") or 0), 1)
-                except Exception:
                     avg_tat = 0.0
-                tat_ach = min(round(48/avg_tat*100, 1) if avg_tat > 0 else 100, 150)
+                tat_ach = 100
                 # KRA 4: CRM support — count of opps with salesops data filled
                 cur.execute("""SELECT COUNT(*) AS c FROM opportunities
                     WHERE lower(assigned_salesops)=lower(%s)
@@ -3292,14 +3289,56 @@ def kra_report():
                     ]})
             # SUPERVISOR KRA
             if effective_role in ("supervisor", "admin", "sales_head"):
+                # Auto-calculate from DB
+                cur.execute("SELECT COALESCE(SUM(value),0) AS won FROM opportunities WHERE lower(workflow_stage) IN ('won','closed won')", ())
+                won_val = round(float((cur.fetchone() or {}).get("won") or 0)/10000000, 2)
+                revenue_target = 75.0
+                revenue_ach = min(round(won_val/revenue_target*100, 1), 150)
+
+                cur.execute("SELECT COUNT(DISTINCT lower(account_name)) AS accs FROM opportunities WHERE lower(workflow_stage) IN ('won','closed won')", ())
+                won_accounts = int((cur.fetchone() or {}).get("accs") or 0)
+                new_biz_ach = min(round(won_accounts/200*100, 1), 150)
+
+                cur.execute("SELECT COALESCE(SUM(value),0) AS pipeline FROM opportunities WHERE lower(workflow_stage) NOT IN ('closed won','closed lost')", ())
+                pipeline_cr = round(float((cur.fetchone() or {}).get("pipeline") or 0)/10000000, 2)
+
+                cur.execute("""SELECT COUNT(DISTINCT lower(p.account_manager)) AS total_reps,
+                    COUNT(DISTINCT CASE WHEN o.won_val >= p.q_target THEN lower(p.account_manager) END) AS on_target
+                    FROM (SELECT lower(owner) AS account_manager,
+                        SUM(CASE WHEN lower(workflow_stage) IN ('won','closed won') THEN value ELSE 0 END) AS won_val,
+                        SUM(value)*0.25 AS q_target
+                        FROM opportunities GROUP BY lower(owner)) o
+                    JOIN (SELECT DISTINCT lower(account_manager) AS account_manager FROM aop_plans WHERE fy_year=%s) p
+                    ON o.account_manager = p.account_manager""", (fy_year,))
+                tr = cur.fetchone() or {}
+                total_reps = int(tr.get("total_reps") or 0)
+                on_target = int(tr.get("on_target") or 0)
+                team_ach = min(round(on_target/total_reps*100, 1) if total_reps > 0 else 0, 150)
+
                 return jsonify({"role":"supervisor","target_email":target_email,"quarter":quarter,"fy_year":fy_year,
                     "kras":[
-                        {"id":"revenue","name":"Overall Revenue & Profitability","weight":30,"target":"100% revenue target; GM >= agreed threshold","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
-                        {"id":"new_biz","name":"New Business Acquisition","weight":20,"target":"200 new logos/year; 20% YoY new biz growth","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
-                        {"id":"pipeline","name":"Sales Pipeline & Forecast Accuracy","weight":10,"target":"3x quota pipeline; win rate >= 35%; forecast accuracy >= 90%","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
-                        {"id":"team_perf","name":"Team Performance & Quota Attainment","weight":15,"target":">= 70% of team at 100% quota; zero unplanned attrition","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
-                        {"id":"coaching","name":"Leadership, Coaching & Team Development","weight":10,"target":"Structured PDPs for each team member","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
-                        {"id":"strategic","name":"Strategic Thinking & Market Intelligence","weight":15,"target":"Partnerships signed; Cisco/Fortinet/HP/Dell/Lenovo engagement","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
+                        {"id":"revenue","name":"Overall Revenue & Profitability","weight":30,
+                         "target":"₹75Cr annual revenue target",
+                         "actual_label":f"₹{won_val:.2f}Cr won | Target ₹75Cr",
+                         "actual_value":won_val,"target_value":revenue_target,"unit":"Cr","achievement_pct":revenue_ach},
+                        {"id":"new_biz","name":"New Business Acquisition","weight":20,
+                         "target":"200 accounts with closed won deals",
+                         "actual_label":f"{won_accounts} accounts with won deals | Target 200",
+                         "actual_value":won_accounts,"target_value":200,"unit":"accounts","achievement_pct":new_biz_ach},
+                        {"id":"pipeline","name":"Sales Pipeline & Forecast Accuracy","weight":10,
+                         "target":"3x quota pipeline; win rate >= 35%",
+                         "actual_label":f"₹{pipeline_cr:.2f}Cr active pipeline",
+                         "actual_value":pipeline_cr,"target_value":None,"unit":"Cr","achievement_pct":None,"manual":True},
+                        {"id":"team_perf","name":"Team Performance & Quota Attainment","weight":15,
+                         "target":">= 70% of team at 100% quota",
+                         "actual_label":f"{on_target}/{total_reps} reps on target ({team_ach}%)",
+                         "actual_value":team_ach,"target_value":70,"unit":"%","achievement_pct":min(round(team_ach/70*100,1),150)},
+                        {"id":"coaching","name":"Leadership, Coaching & Team Development","weight":10,
+                         "target":"Structured PDPs for each team member",
+                         "actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
+                        {"id":"strategic","name":"Strategic Thinking & Market Intelligence","weight":15,
+                         "target":"Partnerships signed; Cisco/Fortinet/HP/Dell/Lenovo",
+                         "actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
                     ]})
             # ACCOUNT MANAGER KRA
             cur.execute("SELECT COALESCE(SUM(value),0) AS won FROM opportunities WHERE lower(owner)=lower(%s) AND lower(workflow_stage) IN ('won','closed won')", (target_email,))
