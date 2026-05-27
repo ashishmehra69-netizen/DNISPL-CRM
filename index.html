@@ -876,9 +876,15 @@ function seedAccountsFromMap() {
    // normalize legacy field names
    if (!item.name && item.account_name) item.name = item.account_name;
    if (!item.owner && item.accountOwner) item.owner = item.accountOwner;
+   // API returns account_manager_email (email) and account_manager (display name)
+   // accountManager must be the email for getFilteredData() to match against currentUser
+   if (item.account_manager_email) {
+     item.accountManager = item.account_manager_email.toLowerCase();
+     item.owner = item.owner || item.account_manager_email.toLowerCase();
+   }
    const mapKey = item.name || '';
    const mapped = ACCOUNT_OWNER_MAP[mapKey] || ACCOUNT_OWNER_MAP[mapKey.toLowerCase()] || ACCOUNT_OWNER_MAP[mapKey.toUpperCase()];
-   if (mapped) {
+   if (mapped && !item.account_manager_email) {
      item.accountManager = mapped;
    }
  }
@@ -1226,25 +1232,33 @@ function handleOppsCsv(e) {
 }
 
 function renderAccounts(filtered) {
-
+ const coveredIds = new Set(
+   (filtered.contacts || []).map(c => c.accountId).filter(Boolean)
+ );
  return `
  <div class="card">
  <h2>🏢 Accounts (${filtered.accounts.length})</h2>
  </div>
  <div class="grid">
- ${filtered.accounts.map(a => `
- <div class="item-card" onclick="editAccount('${a.id}')">
+ ${filtered.accounts.map(a => {
+   const isCovered = coveredIds.has(String(a.id));
+   const borderColor = isCovered ? '#22c55e' : '#ef4444';
+   const bgColor = isCovered ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.10)';
+   return `
+ <div class="item-card" style="border:2px solid ${borderColor};background:${bgColor}" onclick="editAccount('${a.id}')">
  <h3>${a.name}</h3>
- <div>${a.industry}</div>
+ <div>${a.industry || ''}</div>
  <div style="margin-top:10px">
- <span class="tag">Tier ${a.tier}</span>
- <span class="tag">${a.location}</span>
+ <span class="tag">Tier ${a.tier || '-'}</span>
+ <span class="tag">${a.location || '-'}</span>
+ <span class="tag" style="background:${borderColor};color:white">${isCovered ? '✅ Covered' : '❌ No Contact'}</span>
  </div>
  <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
  📅 Created: ${fmtDate(a.createdDate)}<br>🕒 Updated: ${fmtDate(a.modifiedDate)}
  </div>
  </div>
- `).join('')}
+ `;
+ }).join('')}
  ${filtered.accounts.length === 0 ? '<div class="card">No accounts yet. Click + to add one!</div>' : ''}
  </div>
  `;
@@ -1810,8 +1824,7 @@ function renderReports(filtered) {
           }));
           kraState._teamFetching = false;
           // Re-render now that we have the list
-          const el = document.getElementById('reportsRoot');
-          if (el) el.innerHTML = renderReports(filtered);
+          render();
         })
         .catch(() => { kraState._teamFetching = false; });
     }
