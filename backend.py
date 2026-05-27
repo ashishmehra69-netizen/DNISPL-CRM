@@ -3195,18 +3195,29 @@ def kra_report():
     if not _is_supervisor(viewer_role) and viewer_email != target_email:
         return jsonify({"error": "not authorized"}), 403
 
-    qmonths = {"Q1":["april","may","june"],"Q2":["july","august","september"],"Q3":["october","november","december"],"Q4":["january","february","march"]}
-    q_frac  = {"Q1":0.15,"Q2":0.25,"Q3":0.35,"Q4":0.25}
-    months  = qmonths.get(quarter, ["april","may","june"])
-    frac    = q_frac.get(quarter, 0.15)
+    role_aliases = {
+        "sales": "account_manager",
+        "account_manager": "account_manager",
+        "presales": "presales",
+        "salesops": "salesops",
+        "sales_ops": "salesops",
+        "sales_head": "sales_head",
+        "supervisor": "supervisor",
+        "admin": "supervisor",
+    }
+    effective_role = role_aliases.get(target_role or viewer_role, target_role or viewer_role)
+
+    q_month_map = {
+        "Q1": ["apr", "may", "jun"],
+        "Q2": ["jul", "aug", "sep"],
+        "Q3": ["oct", "nov", "dec"],
+        "Q4": ["jan", "feb", "mar"],
+    }
+    q_prefixes = q_month_map.get(quarter, ["apr", "may", "jun"])
 
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-
-            # Use target_role from frontend (authoritative) to pick KRA branch
-            effective_role = target_role if target_role else viewer_role
-
             # PRESALES KRA
             if effective_role == "presales":
                 cur.execute("""SELECT COUNT(*) AS total,
@@ -3232,38 +3243,41 @@ def kra_report():
                     ]})
 
             # SALESOPS KRA — OEM/Distributor Quote & Pricing Ops
-            if effective_role in ("salesops", "sales_ops"):
-                # KRA 1: OEM quote TAT — time from salesops_assigned_at to costing_returned_at
+            if effective_role == "salesops":
                 cur.execute("""SELECT COUNT(*) AS total,
                     COUNT(CASE WHEN costing_returned_at IS NOT NULL AND costing_returned_at<>'' THEN 1 END) AS returned,
                     COALESCE(SUM(value),0) AS pipeline
                     FROM opportunities WHERE lower(assigned_salesops)=lower(%s)""", (target_email,))
                 r = cur.fetchone() or {}
-                total      = int(r.get("total") or 0)
-                returned   = int(r.get("returned") or 0)
-                pipeline   = round(float(r.get("pipeline") or 0) / 10000000, 2)
-                # TAT: compute safely in Python using a separate query with try/except
+                total = int(r.get("total") or 0)
+                returned = int(r.get("returned") or 0)
+                pipeline = round(float(r.get("pipeline") or 0) / 10000000, 2)
                 avg_tat = 0.0
                 try:
-                    cur.execute("""SELECT COALESCE(AVG(
-                        EXTRACT(EPOCH FROM (cr::timestamptz - sa::timestamptz))/3600
-                    ),0) AS avg_tat
-                    FROM (
-                        SELECT costing_returned_at AS cr, salesops_assigned_at AS sa
+                    cur.execute("""
+                        SELECT costing_returned_at, salesops_assigned_at
                         FROM opportunities
                         WHERE lower(assigned_salesops)=lower(%s)
-                          AND costing_returned_at IS NOT NULL AND length(trim(costing_returned_at))>5
-                          AND salesops_assigned_at IS NOT NULL AND length(trim(salesops_assigned_at))>5
-                          AND costing_returned_at ~ '^\d{4}-'
-                          AND salesops_assigned_at ~ '^\d{4}-'
+                          AND costing_returned_at IS NOT NULL AND trim(costing_returned_at) <> ''
+                          AND salesops_assigned_at IS NOT NULL AND trim(salesops_assigned_at) <> ''
+                    """, (target_email,))
+                    tat_hours = []
+                    for row in cur.fetchall() or []:
+                        cr = parse_iso_dt(row.get("costing_returned_at"))
+                        sa = parse_iso_dt(row.get("salesops_assigned_at"))
+                        if cr and sa and cr >= sa:
+                            tat_hours.append((cr - sa).total_seconds() / 3600.0)
+                    if tat_hours:
+                        avg_tat = round(sum(tat_hours) / len(tat_hours), 1)
+                except Exception:
                     avg_tat = 0.0
-                tat_ach = 100
-                # KRA 4: CRM support — count of opps with salesops data filled
+
+                tat_ach = min(round(48 / avg_tat * 100, 1), 150) if avg_tat > 0 else (100 if returned == 0 else 0)
                 cur.execute("""SELECT COUNT(*) AS c FROM opportunities
                     WHERE lower(assigned_salesops)=lower(%s)
-                    AND salesops_comments IS NOT NULL AND salesops_comments<>''""", (target_email,))
+                    AND sales_ops_comments IS NOT NULL AND sales_ops_comments<>''""", (target_email,))
                 crm_filled = int((cur.fetchone() or {}).get("c") or 0)
-                crm_ach    = min(round(crm_filled/total*100, 1) if total > 0 else 100, 100)
+                crm_ach = min(round(crm_filled/total*100, 1) if total > 0 else 100, 100)
                 return jsonify({"role":"salesops","target_email":target_email,"quarter":quarter,"fy_year":fy_year,
                     "kras":[
                         {"id":"oem_quote_tat","name":"OEM & Distributor Quote Follow-ups","weight":25,
@@ -3291,8 +3305,8 @@ def kra_report():
                          "actual_label":"Manual input required — track deal registrations",
                          "actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
                     ]})
-            # SUPERVISOR KRA
-            if effective_role in ("supervisor", "admin", "sales_head"):
+
+            if effective_role in ("supervisor", "sales_head"):
                 # Auto-calculate from DB
                 cur.execute("SELECT COALESCE(SUM(value),0) AS won FROM opportunities WHERE lower(workflow_stage) IN ('won','closed won')", ())
                 won_val = round(float((cur.fetchone() or {}).get("won") or 0)/10000000, 2)
@@ -3344,13 +3358,16 @@ def kra_report():
                          "target":"Partnerships signed; Cisco/Fortinet/HP/Dell/Lenovo",
                          "actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
                     ]})
-            # ACCOUNT MANAGER KRA
-            cur.execute("SELECT COALESCE(SUM(value),0) AS won FROM opportunities WHERE lower(owner)=lower(%s) AND lower(workflow_stage) IN ('won','closed won')", (target_email,))
+
+            # ACCOUNT MANAGER / SALES KRA
+            cur.execute("""
+                SELECT COALESCE(SUM(value),0) AS won
+                FROM opportunities
+                WHERE (lower(owner)=lower(%s) OR lower(COALESCE(sales_owner, ''))=lower(%s))
+                  AND lower(workflow_stage) IN ('won','closed won')
+            """, (target_email, target_email))
             won_cr = float((cur.fetchone() or {}).get("won") or 0) / 10000000
 
-            # Build quarter sum from flat columns, multiply by win_pct (stored in target_growth)
-            q_month_map = {"Q1":["apr","may","jun"],"Q2":["jul","aug","sep"],"Q3":["oct","nov","dec"],"Q4":["jan","feb","mar"]}
-            q_prefixes = q_month_map.get(quarter, ["apr","may","jun"])
             month_sum_expr = " + ".join([f"COALESCE(p.{px}_hardware,0)+COALESCE(p.{px}_software,0)+COALESCE(p.{px}_managed_services,0)" for px in q_prefixes])
             cur.execute(f"""
                 SELECT COALESCE(SUM(({month_sum_expr}) * COALESCE(p.target_growth, 1)), 0) AS q_target
@@ -3370,12 +3387,22 @@ def kra_report():
             new_act = int((cur.fetchone() or {}).get("c") or 0)
             new_act_ach = min(round(new_act/6*100,1), 150)
 
-            cur.execute("SELECT COALESCE(SUM(value),0) AS pipe FROM opportunities WHERE lower(owner)=lower(%s) AND lower(workflow_stage) NOT IN ('won','closed won','lost','closed lost')", (target_email,))
+            cur.execute("""
+                SELECT COALESCE(SUM(value),0) AS pipe
+                FROM opportunities
+                WHERE (lower(owner)=lower(%s) OR lower(COALESCE(sales_owner, ''))=lower(%s))
+                  AND lower(workflow_stage) NOT IN ('won','closed won','lost','closed lost')
+            """, (target_email, target_email))
             pipe_cr     = float((cur.fetchone() or {}).get("pipe") or 0) / 10000000
             pipe_target = q_target * 3
             pipe_ach    = min(round(pipe_cr/pipe_target*100,1) if pipe_target > 0 else 0, 150)
 
-            cur.execute("SELECT COUNT(*) AS c FROM opportunities WHERE lower(owner)=lower(%s) AND value>=10000000", (target_email,))
+            cur.execute("""
+                SELECT COUNT(*) AS c
+                FROM opportunities
+                WHERE (lower(owner)=lower(%s) OR lower(COALESCE(sales_owner, ''))=lower(%s))
+                  AND value>=10000000
+            """, (target_email, target_email))
             qual     = int((cur.fetchone() or {}).get("c") or 0)
             qual_ach = min(round(qual/9*100,1), 150)
 
@@ -3511,4 +3538,3 @@ if __name__ == "__main__":
     print(f"Simple CRM backend running on port {port}")
     print("DB host:", urlparse(DATABASE_URL).hostname)
     app.run(host="0.0.0.0", port=port, debug=True)
-    
