@@ -26,8 +26,12 @@ def utc_now() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
 
-def parse_iso_dt(value: str):
-    s = (value or "").strip()
+def parse_iso_dt(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    s = str(value).strip()
     if not s:
         return None
     try:
