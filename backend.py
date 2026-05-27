@@ -3379,13 +3379,10 @@ def kra_report():
                          "target":"200 accounts with closed won deals",
                          "actual_label":f"{won_accounts} accounts with won deals | Target 200",
                          "actual_value":won_accounts,"target_value":200,"unit":"accounts","achievement_pct":new_biz_ach},
-                        pipeline_target = revenue_target * 3
-                        pipeline_ach = min(round(pipeline_cr / pipeline_target * 100, 1), 150) if pipeline_target > 0 else 0
-                        
                         {"id":"pipeline","name":"Sales Pipeline & Forecast Accuracy","weight":10,
-                         "target":f"3x quota pipeline (₹{pipeline_target:.2f}Cr); win rate >= 35%",
+                         "target":"3x quota pipeline; win rate >= 35%",
                          "actual_label":f"₹{pipeline_cr:.2f}Cr active pipeline",
-                         "actual_value":pipeline_cr,"target_value":pipeline_target,"unit":"Cr","achievement_pct":pipeline_ach},
+                         "actual_value":pipeline_cr,"target_value":None,"unit":"Cr","achievement_pct":None,"manual":True},
                         {"id":"team_perf","name":"Team Performance & Quota Attainment","weight":15,
                          "target":">= 70% of team at 100% quota",
                          "actual_label":f"{on_target}/{total_reps} reps on target ({team_ach}%)",
