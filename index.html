@@ -302,11 +302,12 @@ const ACCOUNT_OWNER_MAP = {
  
  // ═══════════════════════════════════════════════════════════════
  
- let currentUser = '';
- let isSupervisor = false;
- let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] } };
- let activityFilter = { mode: 'today', from: '', to: '' };
- let supervisorAMFilter = ''; // email of selected AM for supervisor view
+let currentUser = '';
+let isSupervisor = false;
+let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] } };
+let activityFilter = { mode: 'today', from: '', to: '' };
+let supervisorAMFilter = ''; // email of selected AM for supervisor view
+let opportunityFilterMode = 'all';
 
  function getUserRole() {
  if (isSupervisor) return 'supervisor';
@@ -930,6 +931,7 @@ function seedAccountsFromMap() {
  }
 
 function filterOpps(filter) {
+  opportunityFilterMode = filter;
   const cards = document.querySelectorAll('.opp-card');
   const PRICING_STAGES = ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'];
   cards.forEach(card => {
@@ -947,6 +949,41 @@ function filterOpps(filter) {
     btn.style.fontWeight = isActive ? '700' : '400';
     btn.style.boxShadow = isActive ? '0 0 0 2px #5a67d8' : 'none';
   });
+}
+
+function exportVisibleOpportunitiesCSV() {
+ const filtered = getFilteredData();
+ const PRICING_STAGES = ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'];
+ const visibleOpps = (filtered.opportunities || []).filter(o => {
+   const stage = o.stage || '';
+   const wfStage = o.workflowStage || '';
+   if (opportunityFilterMode === 'all') return true;
+   if (opportunityFilterMode === 'Awaiting Pricing') return PRICING_STAGES.includes(wfStage);
+   if (opportunityFilterMode === 'Assigned to Presales') return wfStage === 'Assigned to Presales';
+   return stage === opportunityFilterMode;
+ });
+ const rows = [[
+   'Opportunity ID', 'Name', 'Account ID', 'Value', 'Stage', 'Workflow Stage',
+   'Sales Owner', 'Presales Owner', 'Sales Ops Owner', 'Purchase Owner', 'Created', 'Updated'
+ ]];
+ visibleOpps.forEach(o => {
+   rows.push([
+     o.id || '',
+     o.name || '',
+     o.accountId || '',
+     o.value || 0,
+     o.stage || '',
+     o.workflowStage || 'Sales Review',
+     o.salesOwner || o.owner || '',
+     o.assignedPresales || '',
+     o.assignedSalesOps || '',
+     o.assignedPurchase || '',
+     o.createdDate || '',
+     o.modifiedDate || ''
+   ]);
+ });
+ const stamp = new Date().toISOString().slice(0, 10);
+ downloadCSV(`opportunities_${opportunityFilterMode.replace(/\s+/g, '_').toLowerCase()}_${stamp}.csv`, rows);
 }
 
 function calculateWinProb(opp) {
@@ -1349,7 +1386,10 @@ function renderAccounts(filtered) {
  ${renderAMFilterBar()}
  <div class="card">
  <h2>💰 Opportunities (${opps.length}${supervisorAMFilter ? ' &ndash; ' + supervisorAMFilter.split('@')[0] : ''})</h2>
+ <div style="display:flex; gap:8px; flex-wrap:wrap">
  <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
+ <button class="btn btn-success" type="button" onclick="exportVisibleOpportunitiesCSV()">Export CSV</button>
+ </div>
  <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:16px">
    <button onclick="filterOpps('all')" style="background:#fff;color:#333;border:1px solid #cbd5e0;padding:5px 12px;border-radius:20px;cursor:pointer;font-size:0.85em;font-weight:600">📋 All (${opps.length})</button>
    <button onclick="filterOpps('Discovery')" style="background:#fff;color:#333;border:1px solid #cbd5e0;padding:5px 12px;border-radius:20px;cursor:pointer;font-size:0.85em">🔎 Discovery (${discoveryCount})</button>
@@ -1371,6 +1411,7 @@ function renderAccounts(filtered) {
  <div style="color:#4ade80; font-weight:bold; font-size:1.2em; margin:10px 0">
  ₹${(o.value / 100000).toFixed(1)}L
  </div>
+ <div style="font-size:0.78em; opacity:0.8; margin:2px 0 10px">Opportunity ID: <code>${o.id}</code></div>
  <div>
  <span class="tag" style="background:rgba(255,255,255,0.9);color:#333">${o.stage}</span>
  <span class="tag" style="background:rgba(255,255,255,0.9);color:#333">${wfStage}</span>
@@ -1411,6 +1452,7 @@ function renderAccounts(filtered) {
  ${list.map(o => `
  <div class="item-card">
  <h3>${o.name}</h3>
+ <div style="font-size:0.78em; opacity:0.8; margin:2px 0 8px">Opportunity ID: <code>${o.id}</code></div>
  <div style="margin:8px 0">
  <span class="tag">${o.workflowStage || 'Sales Review'}</span>
  <span class="tag">${o.stage || 'Discovery'}</span>
