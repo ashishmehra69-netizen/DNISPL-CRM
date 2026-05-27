@@ -1755,7 +1755,23 @@ async function loadKraReport(targetEmail, quarter, fy_year) {
     const targetRole = getRoleForEmail(targetEmail);
     const url = `${CRM_API_BASE}/api/reports/kra?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(viewerRole)}&target_email=${encodeURIComponent(targetEmail)}&target_role=${encodeURIComponent(targetRole)}&quarter=${encodeURIComponent(quarter)}&fy_year=${encodeURIComponent(fy_year)}`;
     const resp = await fetch(url);
-    kraState.data = await resp.json();
+    const raw = await resp.text();
+    let parsed = null;
+    if (raw) {
+      try {
+        parsed = JSON.parse(raw);
+      } catch (parseErr) {
+        if (!resp.ok) {
+          throw new Error(`KRA API failed (${resp.status}): ${raw.slice(0, 300)}`);
+        }
+        throw new Error(`KRA API returned invalid JSON (${resp.status}): ${raw.slice(0, 300)}`);
+      }
+    }
+    if (!resp.ok) {
+      const msg = parsed && parsed.error ? parsed.error : raw || `HTTP ${resp.status}`;
+      throw new Error(`KRA API failed (${resp.status}): ${msg}`);
+    }
+    kraState.data = parsed || { error: 'Empty KRA response from server.' };
   } catch(e) {
     kraState.data = { error: String(e) };
   }
