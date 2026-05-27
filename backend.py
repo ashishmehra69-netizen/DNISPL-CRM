@@ -3260,7 +3260,7 @@ def kra_report():
                 # KRA 4: CRM support — count of opps with salesops data filled
                 cur.execute("""SELECT COUNT(*) AS c FROM opportunities
                     WHERE lower(assigned_salesops)=lower(%s)
-                    AND sales_ops_comments IS NOT NULL AND sales_ops_comments<>''""", (target_email,))
+                    AND salesops_comments IS NOT NULL AND salesops_comments<>''""", (target_email,))
                 crm_filled = int((cur.fetchone() or {}).get("c") or 0)
                 crm_ach    = min(round(crm_filled/total*100, 1) if total > 0 else 100, 100)
                 return jsonify({"role":"salesops","target_email":target_email,"quarter":quarter,"fy_year":fy_year,
@@ -3290,7 +3290,17 @@ def kra_report():
                          "actual_label":"Manual input required — track deal registrations",
                          "actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
                     ]})
-
+            # SUPERVISOR KRA
+            if effective_role in ("supervisor", "admin", "sales_head"):
+                return jsonify({"role":"supervisor","target_email":target_email,"quarter":quarter,"fy_year":fy_year,
+                    "kras":[
+                        {"id":"revenue","name":"Overall Revenue & Profitability","weight":30,"target":"100% revenue target; GM >= agreed threshold","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
+                        {"id":"new_biz","name":"New Business Acquisition","weight":20,"target":"200 new logos/year; 20% YoY new biz growth","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
+                        {"id":"pipeline","name":"Sales Pipeline & Forecast Accuracy","weight":10,"target":"3x quota pipeline; win rate >= 35%; forecast accuracy >= 90%","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
+                        {"id":"team_perf","name":"Team Performance & Quota Attainment","weight":15,"target":">= 70% of team at 100% quota; zero unplanned attrition","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
+                        {"id":"coaching","name":"Leadership, Coaching & Team Development","weight":10,"target":"Structured PDPs for each team member","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
+                        {"id":"strategic","name":"Strategic Thinking & Market Intelligence","weight":15,"target":"Partnerships signed; Cisco/Fortinet/HP/Dell/Lenovo engagement","actual_label":"Manual input required","actual_value":None,"target_value":None,"unit":None,"achievement_pct":None,"manual":True},
+                    ]})
             # ACCOUNT MANAGER KRA
             cur.execute("SELECT COALESCE(SUM(value),0) AS won FROM opportunities WHERE lower(owner)=lower(%s) AND lower(workflow_stage) IN ('won','closed won')", (target_email,))
             won_cr = float((cur.fetchone() or {}).get("won") or 0) / 10000000
