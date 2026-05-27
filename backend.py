@@ -3259,6 +3259,13 @@ def kra_report():
 
             # SALESOPS KRA — OEM/Distributor Quote & Pricing Ops
             if effective_role == "salesops":
+                has_assigned_salesops = _column_exists(cur, "opportunities", "assigned_salesops")
+                has_costing_returned_at = _column_exists(cur, "opportunities", "costing_returned_at")
+                has_salesops_assigned_at = _column_exists(cur, "opportunities", "salesops_assigned_at")
+
+                if not has_assigned_salesops:
+                    return jsonify({"error": "KRA schema missing opportunities.assigned_salesops"}), 500
+
                 cur.execute("""SELECT COUNT(*) AS total,
                     COUNT(CASE WHEN costing_returned_at IS NOT NULL AND costing_returned_at<>'' THEN 1 END) AS returned,
                     COALESCE(SUM(value),0) AS pipeline
@@ -3268,7 +3275,7 @@ def kra_report():
                 returned = int(r.get("returned") or 0)
                 pipeline = round(float(r.get("pipeline") or 0) / 10000000, 2)
                 avg_tat = 0.0
-                try:
+                if has_costing_returned_at and has_salesops_assigned_at:
                     cur.execute("""
                         SELECT costing_returned_at, salesops_assigned_at
                         FROM opportunities
@@ -3284,8 +3291,6 @@ def kra_report():
                             tat_hours.append((cr - sa).total_seconds() / 3600.0)
                     if tat_hours:
                         avg_tat = round(sum(tat_hours) / len(tat_hours), 1)
-                except Exception:
-                    avg_tat = 0.0
 
                 tat_ach = min(round(48 / avg_tat * 100, 1), 150) if avg_tat > 0 else (100 if returned == 0 else 0)
                 crm_filled = 0
@@ -3348,7 +3353,7 @@ def kra_report():
                 pipeline_cr = round(float((cur.fetchone() or {}).get("pipeline") or 0)/10000000, 2)
 
                 cur.execute("""SELECT COUNT(DISTINCT lower(p.account_manager)) AS total_reps,
-                    COUNT(DISTINCT CASE WHEN o.won_val >= p.q_target THEN lower(p.account_manager) END) AS on_target
+                    COUNT(DISTINCT CASE WHEN o.won_val >= o.q_target THEN lower(p.account_manager) END) AS on_target
                     FROM (SELECT lower(owner) AS account_manager,
                         SUM(CASE WHEN lower(workflow_stage) IN ('won','closed won') THEN value ELSE 0 END) AS won_val,
                         SUM(value)*0.25 AS q_target
