@@ -306,6 +306,7 @@ const ACCOUNT_OWNER_MAP = {
  let isSupervisor = false;
  let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [], opportunities: [], activities: [] } };
  let activityFilter = { mode: 'today', from: '', to: '' };
+ let supervisorAMFilter = ''; // email of selected AM for supervisor view
 
  function getUserRole() {
  if (isSupervisor) return 'supervisor';
@@ -876,15 +877,9 @@ function seedAccountsFromMap() {
    // normalize legacy field names
    if (!item.name && item.account_name) item.name = item.account_name;
    if (!item.owner && item.accountOwner) item.owner = item.accountOwner;
-   // API returns account_manager_email (email) and account_manager (display name)
-   // accountManager must be the email for getFilteredData() to match against currentUser
-   if (item.account_manager_email) {
-     item.accountManager = item.account_manager_email.toLowerCase();
-     item.owner = item.owner || item.account_manager_email.toLowerCase();
-   }
    const mapKey = item.name || '';
    const mapped = ACCOUNT_OWNER_MAP[mapKey] || ACCOUNT_OWNER_MAP[mapKey.toLowerCase()] || ACCOUNT_OWNER_MAP[mapKey.toUpperCase()];
-   if (mapped && !item.account_manager_email) {
+   if (mapped) {
      item.accountManager = mapped;
    }
  }
@@ -1061,7 +1056,21 @@ function calculateICPScore(account) {
 
  function getFilteredData() {
  if (isSupervisor) {
- return state.data;
+   if (supervisorAMFilter) {
+     const amEmail = supervisorAMFilter.toLowerCase();
+     const amAccounts = state.data.accounts.filter(a =>
+       (a.accountManager||a.owner||'').toLowerCase() === amEmail
+     );
+     const amAccountIds = new Set(amAccounts.map(a => a.id));
+     return {
+       leads: state.data.leads.filter(l => (l.owner||'').toLowerCase() === amEmail),
+       accounts: amAccounts,
+       contacts: state.data.contacts.filter(c => (c.owner||'').toLowerCase() === amEmail || amAccountIds.has(c.accountId)),
+       opportunities: state.data.opportunities.filter(o => (o.owner||'').toLowerCase() === amEmail || (o.salesOwner||'').toLowerCase() === amEmail || amAccountIds.has(o.accountId)),
+       activities: state.data.activities.filter(a => (a.owner||'').toLowerCase() === amEmail),
+     };
+   }
+   return state.data;
  }
  const role = getUserRole();
  const me = (currentUser || '').toLowerCase();
@@ -1231,13 +1240,51 @@ function handleOppsCsv(e) {
  e.target.value = '';
 }
 
+
+function renderAMFilterBar() {
+  if (!isSupervisor) return '';
+  const members = SALES_TEAM.map(email => {
+    const name = email.split('@')[0].replace('.', ' ').replace(/\b\w/g, c => c.toUpperCase());
+    return `<option value="${email}" ${supervisorAMFilter === email ? 'selected' : ''}>${name}</option>`;
+  }).join('');
+  return `
+  <div style="background:rgba(255,255,255,0.15);border-radius:10px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <span style="font-size:13px;font-weight:600;opacity:0.85">👤 Filter by AM:</span>
+    <select style="padding:6px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:13px;min-width:180px"
+      onchange="supervisorAMFilter=this.value;render()">
+      <option value="">— All Members —</option>
+      ${members}
+    </select>
+    ${supervisorAMFilter ? '<button class="btn" style="padding:5px 12px;font-size:12px" onclick="supervisorAMFilter=\'\';render()">✕ Clear</button>' : ''}
+  </div>`;
+}
+
+
+function renderAMFilterBar() {
+  if (!isSupervisor) return '';
+  const members = SALES_TEAM.map(email => {
+    const name = email.split('@')[0].replace('.', ' ').replace(/\b\w/g, c => c.toUpperCase());
+    return `<option value="${email}" ${supervisorAMFilter === email ? 'selected' : ''}>${name}</option>`;
+  }).join('');
+  return `<div style="background:rgba(255,255,255,0.15);border-radius:10px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <span style="font-size:13px;font-weight:600;opacity:0.9">👤 Filter by AM:</span>
+    <select style="padding:6px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:13px;min-width:180px"
+      onchange="supervisorAMFilter=this.value;render()">
+      <option value="">— All Members —</option>
+      ${members}
+    </select>
+    ${supervisorAMFilter ? `<button class="btn" style="padding:5px 12px;font-size:12px" onclick="supervisorAMFilter='';render()">✕ Clear</button>` : ''}
+  </div>`;
+}
+
 function renderAccounts(filtered) {
  const coveredIds = new Set(
    (filtered.contacts || []).map(c => c.accountId).filter(Boolean)
  );
  return `
+ ${renderAMFilterBar()}
  <div class="card">
- <h2>🏢 Accounts (${filtered.accounts.length})</h2>
+ <h2>🏢 Accounts (${filtered.accounts.length}${supervisorAMFilter ? ' &ndash; ' + supervisorAMFilter.split('@')[0] : ''})</h2>
  </div>
  <div class="grid">
  ${filtered.accounts.map(a => {
@@ -1265,8 +1312,9 @@ function renderAccounts(filtered) {
 }
  function renderContacts(filtered) {
  return `
+ ${renderAMFilterBar()}
  <div class="card">
- <h2>👥 Contacts (${filtered.contacts.length})</h2>
+ <h2>👥 Contacts (${filtered.contacts.length}${supervisorAMFilter ? ' &ndash; ' + supervisorAMFilter.split('@')[0] : ''})</h2>
  </div>
  <div class="grid">
  ${filtered.contacts.map(c => `
@@ -1298,8 +1346,9 @@ function renderAccounts(filtered) {
  const awaitingPurchaseCount = opps.filter(o => (o.workflowStage || '') === 'Awaiting Purchase Costing').length;
  const awaitingSalesOpsCount = opps.filter(o => (o.workflowStage || '') === 'Awaiting Sales Ops Pricing').length;
  return `
+ ${renderAMFilterBar()}
  <div class="card">
- <h2>💰 Opportunities (${opps.length})</h2>
+ <h2>💰 Opportunities (${opps.length}${supervisorAMFilter ? ' &ndash; ' + supervisorAMFilter.split('@')[0] : ''})</h2>
  <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
  <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:16px">
    <button onclick="filterOpps('all')" style="background:#fff;color:#333;border:1px solid #cbd5e0;padding:5px 12px;border-radius:20px;cursor:pointer;font-size:0.85em;font-weight:600">📋 All (${opps.length})</button>
@@ -1456,8 +1505,9 @@ function renderActivities(filtered) {
  });
  
  return `
+ ${renderAMFilterBar()}
  <div class="card">
- <h2>📝 Activities (${activities.length})</h2>
+ <h2>📝 Activities (${activities.length}${supervisorAMFilter ? ' &ndash; ' + supervisorAMFilter.split('@')[0] : ''})</h2>
  <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px">
  <button class="btn" type="button" onclick="setActivityFilter('all')">All</button>
  <button class="btn" type="button" onclick="setActivityFilter('today')">Today</button>
@@ -1812,21 +1862,36 @@ function renderReports(filtered) {
   // ── SUPERVISOR VIEW: team member dropdown + KRA lookup ──
   if (role === 'supervisor') {
     // Fetch team list once
-    if (kraState.teamMembers.length === 0 && !kraState._teamFetching) {
+    // Pre-seed team list immediately from SALES_TEAM so dropdown is never empty
+    if (kraState.teamMembers.length === 0) {
+      kraState.teamMembers = SALES_TEAM.map(email => ({
+        email,
+        name: email.split('@')[0].replace('.', ' ').replace(/\b\w/g, c => c.toUpperCase()),
+        role: KNOWN_EMAIL_ROLES[email] || 'account_manager'
+      }));
+      // Also add known presales
+      ['vinod.v@dnispl.com'].forEach(email => {
+        if (!kraState.teamMembers.find(m => m.email === email)) {
+          kraState.teamMembers.push({ email, name: 'Vinod V', role: 'presales' });
+        }
+      });
+    }
+    // Refresh from API in background (updates names/roles from DB)
+    if (!kraState._teamFetching) {
       kraState._teamFetching = true;
-      fetch(`${CRM_API_BASE}/api/reports/team?viewer_role=supervisor`)
+      fetch(`${CRM_API_BASE}/api/reports/team?viewer_role=supervisor&viewer_email=${encodeURIComponent(currentUser)}`)
         .then(r => r.json())
         .then(members => {
-          // Override roles from DB with frontend source-of-truth for known emails
-          kraState.teamMembers = (Array.isArray(members) ? members : []).map(m => ({
-            ...m,
-            role: KNOWN_EMAIL_ROLES[m.email.toLowerCase()] || m.role
-          }));
-          kraState._teamFetching = false;
-          // Re-render now that we have the list
-          render();
+          if (Array.isArray(members) && members.length > 0) {
+            kraState.teamMembers = members.map(m => ({
+              ...m,
+              role: KNOWN_EMAIL_ROLES[m.email.toLowerCase()] || m.role
+            }));
+            render();
+          }
         })
-        .catch(() => { kraState._teamFetching = false; });
+        .catch(() => {})
+        .finally(() => { kraState._teamFetching = false; });
     }
 
     const memberOptions = kraState.teamMembers.map(m =>
