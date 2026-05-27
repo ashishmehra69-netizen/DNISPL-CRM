@@ -3169,7 +3169,11 @@ def reports_team():
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, email, name, role FROM users WHERE role IN ('account_manager','presales') ORDER BY name")
+            cur.execute("""
+                SELECT id, email, name, role FROM users
+                WHERE role IN ('account_manager','presales','salesops','sales','sales_head')
+                ORDER BY name
+            """)
             return jsonify(cur.fetchall())
     finally:
         conn.close()
@@ -3507,3 +3511,4 @@ if __name__ == "__main__":
     print(f"Simple CRM backend running on port {port}")
     print("DB host:", urlparse(DATABASE_URL).hostname)
     app.run(host="0.0.0.0", port=port, debug=True)
+    
