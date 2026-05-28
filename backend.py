@@ -472,7 +472,7 @@ def _json_exception_handler(exc):
 
 @app.before_request
 def _ensure_init_once():
-    pass  # Schema already initialized
+    ensure_db_initialized()
 
 
 def _client_ip() -> str:
@@ -1246,12 +1246,6 @@ def bootstrap_data():
         "contacts": [],
         "opportunities": [],
     }
-    _cache_key = f"bootstrap:{viewer_email}:{viewer_role}"
-    _now = time.time()
-    with _write_limits_lock:
-        _cached = _write_limits.get(_cache_key)
-        if _cached and _now - _cached[0] < 10:
-            return jsonify(_cached[1])
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -1402,8 +1396,6 @@ def bootstrap_data():
                     cur.execute(opp_scoped, (viewer_email, viewer_email, viewer_email, viewer_email, viewer_email))
                     rows = cur.fetchall()
                 payload["opportunities"] = rows
-        with _write_limits_lock:
-            _write_limits[f"bootstrap:{viewer_email}:{viewer_role}"] = (time.time(), payload)        
         return jsonify(payload)
         
     except Exception as exc:
@@ -1428,7 +1420,14 @@ def create_or_update_account():
     try:
         manager_id = ensure_user(account_manager)
         result = upsert_account(data, manager_id)
-        return jsonify({"status": result, "account_name": account_name}), 200
+        conn = get_conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT id FROM accounts WHERE lower(account_name)=lower(%s)", (account_name,))
+                row = cur.fetchone() or {}
+        finally:
+            conn.close()
+        return jsonify({"status": result, "id": row.get("id"), "account_name": account_name}), 200
     except ValueError as exc:
         print(f"[ACCOUNTS_POST_BAD_REQUEST] ip={ip} err={exc}")
         return jsonify({"error": str(exc)}), 400
@@ -1852,7 +1851,11 @@ def list_opportunities():
         conn.close()
 
 def clean_ts(value):
-    v = (value or "").strip()
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    v = str(value).strip()
     return v or None
     
 @app.route("/api/opportunities", methods=["POST"])
@@ -1886,6 +1889,8 @@ def upsert_opportunity():
         "final_pricing_proposal": (data.get("final_pricing_proposal") or data.get("finalPricingProposal") or "").strip(),
         "presales_assigned_at": clean_ts(data.get("presales_assigned_at") or data.get("presalesAssignedAt")),
         "presales_due_at": clean_ts(data.get("presales_due_at") or data.get("presalesDueAt")),
+        "salesops_assigned_at": clean_ts(data.get("salesops_assigned_at") or data.get("salesopsAssignedAt")),
+        "salesops_due_at": clean_ts(data.get("salesops_due_at") or data.get("salesopsDueAt")),
         "purchase_assigned_at": clean_ts(data.get("purchase_assigned_at") or data.get("purchaseAssignedAt")),
         "purchase_due_at": clean_ts(data.get("purchase_due_at") or data.get("purchaseDueAt")),
         "costing_returned_at": clean_ts(data.get("costing_returned_at") or data.get("costingReturnedAt")),
