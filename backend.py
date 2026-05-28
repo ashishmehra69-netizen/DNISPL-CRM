@@ -3144,13 +3144,22 @@ AOP_RAW_DATA = [
 # ---------------------------------------------------------------------------
 @app.route("/api/salary", methods=["GET"])
 def get_salary():
-    viewer_email = _normalize_email(request.args.get("viewer_email") or "")
-    if not viewer_email:
+    target_email = _normalize_email(request.args.get("viewer_email") or "")
+    actor_email = _normalize_email(
+        request.args.get("actor_email")
+        or request.args.get("requester_email")
+        or request.args.get("current_user")
+        or ""
+    )
+    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
+    if not target_email:
         return jsonify({})
+    if not _is_supervisor(viewer_role) and actor_email != target_email:
+        return jsonify({"error": "not authorized"}), 403
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT salary_data FROM user_salary WHERE lower(email)=lower(%s)", (viewer_email,))
+            cur.execute("SELECT salary_data FROM user_salary WHERE lower(email)=lower(%s)", (target_email,))
             row = cur.fetchone()
             if row:
                 d = row.get("salary_data") or {}
@@ -3165,16 +3174,25 @@ def get_salary():
 @app.route("/api/salary", methods=["POST"])
 def save_salary():
     data = request.get_json(silent=True) or {}
-    viewer_email = _normalize_email(data.get("viewer_email") or "")
-    if not viewer_email:
+    target_email = _normalize_email(data.get("viewer_email") or "")
+    actor_email = _normalize_email(
+        data.get("actor_email")
+        or data.get("requester_email")
+        or data.get("current_user")
+        or ""
+    )
+    viewer_role = (data.get("viewer_role") or "account_manager").strip().lower()
+    if not target_email:
         return jsonify({"error": "viewer_email required"}), 400
-    salary_data = {k: v for k, v in data.items() if k not in {"viewer_email", "viewer_role"}}
+    if not _is_supervisor(viewer_role) and actor_email != target_email:
+        return jsonify({"error": "not authorized"}), 403
+    salary_data = {k: v for k, v in data.items() if k not in {"viewer_email", "viewer_role", "actor_email", "requester_email", "current_user"}}
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO user_salary (email, salary_data, updated_at) VALUES (%s, %s::jsonb, now()) ON CONFLICT (email) DO UPDATE SET salary_data=EXCLUDED.salary_data, updated_at=now()",
-                (viewer_email, json.dumps(salary_data))
+                (target_email, json.dumps(salary_data))
             )
         conn.commit()
         return jsonify({"status": "ok"})
