@@ -1760,7 +1760,7 @@ async function loadIncentiveReport(targetEmail, quarter) {
     const targetRole = getRoleForEmail(targetEmail);
     const [incResp, salResp] = await Promise.all([
       fetch(`${CRM_API_BASE}/api/reports/incentive?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(viewerRole)}&target_email=${encodeURIComponent(targetEmail)}&target_role=${encodeURIComponent(targetRole)}&quarter=${encodeURIComponent(quarter)}`),
-      fetch(`${CRM_API_BASE}/api/salary?viewer_email=${encodeURIComponent(targetEmail)}`)
+      fetch(`${CRM_API_BASE}/api/salary?viewer_email=${encodeURIComponent(targetEmail)}&actor_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(viewerRole)}`)
     ]);
     incState.data = await incResp.json();
     incState.salaryData = await salResp.json();
@@ -1776,7 +1776,13 @@ async function saveIncentiveSalary(targetEmail, fixed, variable) {
     const resp = await fetch(`${CRM_API_BASE}/api/salary`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ viewer_email: targetEmail, fixed_annual_lakhs: fixed, variable_annual_lakhs: variable })
+      body: JSON.stringify({
+        viewer_email: targetEmail,
+        actor_email: currentUser,
+        viewer_role: getViewerRoleForApi(),
+        fixed_annual_lakhs: fixed,
+        variable_annual_lakhs: variable
+      })
     });
     const r = await resp.json();
     if (r.status === 'ok') { alert('Salary saved!'); loadIncentiveReport(incState.targetEmail, incState.quarter); }
@@ -1803,8 +1809,9 @@ function buildIncentiveHtml() {
   const slabs = d.slabs || [];
   const target = incState.targetEmail;
   const isSup = getUserRole() === 'supervisor';
+  const canEditSalary = isSup || ((target || '').toLowerCase() === (currentUser || '').toLowerCase());
 
-  const salaryForm = isSup ? `
+  const salaryForm = canEditSalary ? `
     <div class="card" style="margin-top:12px">
       <h4 style="margin:0 0 12px">⚙️ Salary Configuration for ${target}</h4>
       <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
@@ -1823,7 +1830,7 @@ function buildIncentiveHtml() {
   if (!configured || (fixed === 0 && variable === 0)) {
     return `<div class="card">
       <h3>💰 Incentive Report — ${target} | ${d.quarter}</h3>
-      <div style="color:#d69e2e;margin:12px 0">⚠️ Salary not configured for this employee. ${isSup ? 'Use the form below to set it.' : 'Please contact your supervisor.'}</div>
+      <div style="color:#d69e2e;margin:12px 0">⚠️ Salary not configured for this employee. ${canEditSalary ? 'Use the form below to set it.' : 'Ask this employee to fill it from their login.'}</div>
       ${salaryForm}
     </div>`;
   }
