@@ -308,6 +308,36 @@ let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [],
 let activityFilter = { mode: 'today', from: '', to: '' };
 let supervisorAMFilter = ''; // email of selected AM for supervisor view
 let opportunityFilterMode = 'all';
+const USER_DISPLAY_NAMES = {
+ 'a.gupta@dnispl.com': 'Awdesh Gupta',
+ 'ashish.mehra@dnispl.com': 'Ashish Mehra',
+ 'soumya.m@dnispl.com': 'Soumya M',
+ 'vinod.v@dnispl.com': 'Vinod V'
+};
+
+function displayUserName(email) {
+ const value = (email || '').trim();
+ if (!value) return '';
+ const lower = value.toLowerCase();
+ return USER_DISPLAY_NAMES[lower] || value.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function getSupervisorMemberEmails() {
+ const members = new Set(SALES_TEAM || []);
+ (state.data.accounts || []).forEach(a => [a.accountManager, a.account_manager, a.owner, a.accountManagerEmail].forEach(v => v && members.add(String(v).toLowerCase())));
+ (state.data.opportunities || []).forEach(o => [o.owner, o.salesOwner, o.assignedPresales, o.assignedSalesOps, o.assignedPurchase].forEach(v => v && members.add(String(v).toLowerCase())));
+ (state.data.leads || []).forEach(l => l.owner && members.add(String(l.owner).toLowerCase()));
+ (state.data.contacts || []).forEach(c => c.owner && members.add(String(c.owner).toLowerCase()));
+ members.add('a.gupta@dnispl.com');
+ members.add('ashish.mehra@dnispl.com');
+ return Array.from(members).filter(Boolean).sort((a, b) => displayUserName(a).localeCompare(displayUserName(b)));
+}
+
+function formatMoneyValue(value) {
+ const n = Number(value || 0);
+ if (Math.abs(n) >= 10000000) return `₹${(n / 10000000).toFixed(2)}Cr`;
+ return `₹${(n / 100000).toFixed(1)}L`;
+}
 
  function getUserRole() {
  if (isSupervisor) return 'supervisor';
@@ -1356,9 +1386,8 @@ function handleOppsCsv(e) {
 
 function renderAMFilterBar() {
   if (!isSupervisor) return '';
-  const members = SALES_TEAM.map(email => {
-    const name = email.split('@')[0].replace('.', ' ').replace(/\b\w/g, c => c.toUpperCase());
-    return `<option value="${email}" ${supervisorAMFilter === email ? 'selected' : ''}>${name}</option>`;
+  const members = getSupervisorMemberEmails().map(email => {
+    return `<option value="${email}" ${supervisorAMFilter === email ? 'selected' : ''}>${displayUserName(email)}</option>`;
   }).join('');
   return `
   <div style="background:rgba(255,255,255,0.15);border-radius:10px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
@@ -1375,9 +1404,8 @@ function renderAMFilterBar() {
 
 function renderAMFilterBar() {
   if (!isSupervisor) return '';
-  const members = SALES_TEAM.map(email => {
-    const name = email.split('@')[0].replace('.', ' ').replace(/\b\w/g, c => c.toUpperCase());
-    return `<option value="${email}" ${supervisorAMFilter === email ? 'selected' : ''}>${name}</option>`;
+  const members = getSupervisorMemberEmails().map(email => {
+    return `<option value="${email}" ${supervisorAMFilter === email ? 'selected' : ''}>${displayUserName(email)}</option>`;
   }).join('');
   return `<div style="background:rgba(255,255,255,0.15);border-radius:10px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
     <span style="font-size:13px;font-weight:600;opacity:0.9">👤 Filter by AM:</span>
@@ -1397,7 +1425,7 @@ function renderAccounts(filtered) {
  return `
  ${renderAMFilterBar()}
  <div class="card">
- <h2>🏢 Accounts (${filtered.accounts.length}${supervisorAMFilter ? ' &ndash; ' + supervisorAMFilter.split('@')[0] : ''})</h2>
+ <h2>🏢 Accounts (${filtered.accounts.length}${supervisorAMFilter ? ' &ndash; ' + displayUserName(supervisorAMFilter) : ''})</h2>
  </div>
  <div class="grid">
  ${filtered.accounts.map(a => {
@@ -1427,7 +1455,7 @@ function renderAccounts(filtered) {
  return `
  ${renderAMFilterBar()}
  <div class="card">
- <h2>👥 Contacts (${filtered.contacts.length}${supervisorAMFilter ? ' &ndash; ' + supervisorAMFilter.split('@')[0] : ''})</h2>
+ <h2>👥 Contacts (${filtered.contacts.length}${supervisorAMFilter ? ' &ndash; ' + displayUserName(supervisorAMFilter) : ''})</h2>
  </div>
  <div class="grid">
  ${filtered.contacts.map(c => `
@@ -1458,10 +1486,16 @@ function renderAccounts(filtered) {
  const pendingPresalesCount = opps.filter(o => (o.workflowStage || '') === 'Assigned to Presales').length;
  const awaitingPurchaseCount = opps.filter(o => (o.workflowStage || '') === 'Awaiting Purchase Costing').length;
  const awaitingSalesOpsCount = opps.filter(o => (o.workflowStage || '') === 'Awaiting Sales Ops Pricing').length;
+ const totalFunnelValue = opps.reduce((sum, o) => sum + (Number(o.value || 0) || 0), 0);
+ const weightedFunnelValue = opps.reduce((sum, o) => sum + ((Number(o.value || 0) || 0) * calculateWinProb(o) / 100), 0);
  return `
  ${renderAMFilterBar()}
  <div class="card">
- <h2>💰 Opportunities (${opps.length}${supervisorAMFilter ? ' &ndash; ' + supervisorAMFilter.split('@')[0] : ''})</h2>
+ <h2>💰 Opportunities (${opps.length}${supervisorAMFilter ? ' &ndash; ' + displayUserName(supervisorAMFilter) : ''})</h2>
+ <div style="display:flex;flex-wrap:wrap;gap:12px;margin:12px 0">
+   <div class="metric" style="min-width:180px"><div>Total Funnel Value</div><div class="metric-value" style="font-size:1.35rem">${formatMoneyValue(totalFunnelValue)}</div></div>
+   <div class="metric" style="min-width:180px"><div>Weighted Funnel</div><div class="metric-value" style="font-size:1.35rem">${formatMoneyValue(weightedFunnelValue)}</div></div>
+ </div>
  <div style="display:flex; gap:8px; flex-wrap:wrap">
  <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
  <button class="btn btn-success" type="button" onclick="exportVisibleOpportunitiesCSV()">Export CSV</button>
