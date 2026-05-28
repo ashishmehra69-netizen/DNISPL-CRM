@@ -385,8 +385,9 @@ function normalizeAccountFromApi(a) {
    industry: a.industry || '',
    tier: a.tier || 'B',
    location: a.location || '',
-   companySize: a.companySize || '',
-   annualSpend: a.annualSpend || '',
+   companySize: a.company_size || a.companySize || '',
+   annualSpend: a.annual_spend || a.annualSpend || '',
+   mode: a.mode || '',
    accountManager: a.account_manager_email || a.accountManager || '',
    owner: a.account_manager_email || a.owner || '',
    createdDate: created,
@@ -456,6 +457,8 @@ function normalizeOpportunityFromApi(o) {
   finalPricingProposal: o.final_pricing_proposal || o.finalPricingProposal || '',
   presalesAssignedAt: o.presales_assigned_at || o.presalesAssignedAt || '',
   presalesDueAt: o.presales_due_at || o.presalesDueAt || '',
+  salesopsAssignedAt: o.salesops_assigned_at || o.salesopsAssignedAt || '',
+  salesopsDueAt: o.salesops_due_at || o.salesopsDueAt || '',
   purchaseAssignedAt: o.purchase_assigned_at || o.purchaseAssignedAt || '',
   purchaseDueAt: o.purchase_due_at || o.purchaseDueAt || '',
   costingReturnedAt: o.costing_returned_at || o.costingReturnedAt || '',
@@ -646,6 +649,75 @@ async function deleteLeadFromApi(leadId) {
   } catch(e) { console.warn('Lead delete API error:', e); }
 }
 
+async function upsertAccountToApi(account) {
+ const payload = {
+  id: account.id || undefined,
+  account_name: account.name,
+  account_manager: account.accountManager || account.owner || currentUser,
+  industry: account.industry || '',
+  tier: account.tier || '',
+  location: account.location || '',
+  company_size: account.companySize || '',
+  annual_spend: account.annualSpend || '',
+  mode: account.mode || ''
+ };
+ const resp = await fetch(`${CRM_API_BASE}/api/accounts`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload)
+ });
+ if (!resp.ok) {
+  const msg = await resp.text();
+  throw new Error(`account save failed (${resp.status}): ${msg}`);
+ }
+ return resp.json();
+}
+
+async function upsertContactToApi(contact) {
+ const payload = {
+  id: contact.id || undefined,
+  name: contact.name,
+  title: contact.title || '',
+  email: contact.email || '',
+  phone: contact.phone || '',
+  role_type: contact.roleType || '',
+  influence_level: contact.influenceLevel || '',
+  emotion: contact.emotion || '',
+  account_id: contact.accountId || '',
+  owner: contact.owner || currentUser
+ };
+ const resp = await fetch(`${CRM_API_BASE}/api/contacts`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload)
+ });
+ if (!resp.ok) {
+  const msg = await resp.text();
+  throw new Error(`contact save failed (${resp.status}): ${msg}`);
+ }
+ return resp.json();
+}
+
+async function deleteAccountFromApi(accountId) {
+ const url = `${CRM_API_BASE}/api/accounts/${encodeURIComponent(accountId)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url, { method: 'DELETE' });
+ if (!resp.ok) {
+  const msg = await resp.text();
+  throw new Error(`account delete failed (${resp.status}): ${msg}`);
+ }
+ return resp.json();
+}
+
+async function deleteContactFromApi(contactId) {
+ const url = `${CRM_API_BASE}/api/contacts/${encodeURIComponent(contactId)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+ const resp = await fetch(url, { method: 'DELETE' });
+ if (!resp.ok) {
+  const msg = await resp.text();
+  throw new Error(`contact delete failed (${resp.status}): ${msg}`);
+ }
+ return resp.json();
+}
+
 async function deleteActivityFromApi(activityId) {
  const url = `${CRM_API_BASE}/api/activities/${encodeURIComponent(activityId)}?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
  const resp = await fetch(url, { method: 'DELETE' });
@@ -756,7 +828,7 @@ function slaBadge(label, dueIso) {
 
 function recordActivity(type, subject, notes = '', ownerOverride = null) {
  const now = new Date().toISOString();
- state.data.activities.push({
+ const activity = {
  id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
  type,
  subject,
@@ -765,7 +837,11 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  createdDate: now,
  modifiedDate: now,
  owner: ownerOverride || currentUser
- });
+ };
+ state.data.activities.push(activity);
+ if (currentUser) {
+ upsertActivityToApi(activity).catch(err => console.warn('Activity API save failed:', err));
+ }
 }
 
  async function login() {
@@ -1151,7 +1227,7 @@ function calculateICPScore(account) {
  const tabs = isSupervisor
  ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'dashboard', 'reports']
  : (role === 'sales'
- ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities']
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'reports']
  : (role === 'presales'
  ? ['leads', 'opportunities', 'workflow', 'activities', 'reports']
  : (role === 'salesops'
@@ -1561,7 +1637,7 @@ function renderActivities(filtered) {
  </div>
  <div class="grid">
  ${activities.map(a => `
- <div class="item-card">
+ <div class="item-card" onclick="editActivity('${a.id}')" style="cursor:pointer">
  <div style="display:flex; justify-content:space-between">
  <h3>${a.type}</h3>
  <span class="tag">${fmtDateTime(a.date || a.modifiedDate || a.createdDate)}</span>
@@ -2616,42 +2692,69 @@ async function saveLead(e, id) {
  }
 }
 
-function saveAccount(e, id) {
+async function saveAccount(e, id) {
  e.preventDefault();
  const data = Object.fromEntries(new FormData(e.target));
- data.owner = currentUser;
- data.createdDate = id ? state.data.accounts.find(a => a.id === id).createdDate : new Date().toISOString();
+ const existing = id ? state.data.accounts.find(a => a.id === id) : null;
+ data.owner = existing?.owner || currentUser;
+ data.accountManager = existing?.accountManager || currentUser;
+ data.createdDate = existing?.createdDate || new Date().toISOString();
  data.modifiedDate = new Date().toISOString();
+ const localId = id || ('acc_' + Date.now().toString());
  if (id) {
  const index = state.data.accounts.findIndex(a => a.id === id);
  state.data.accounts[index] = {...data, id};
  recordActivity('Account', `Account updated: ${data.name}`);
  } else {
- state.data.accounts.push({...data, id: Date.now().toString()});
+ state.data.accounts.push({...data, id: localId});
  recordActivity('Account', `Account created: ${data.name}`);
  }
  saveData();
  closeModal();
  render();
+ try {
+  const result = await upsertAccountToApi({...data, id: localId});
+  state.data.accounts = await fetchAccountsFromApi();
+  saveData();
+  render();
+  return result;
+ } catch (err) {
+  alert(`Could not save account to shared backend: ${err.message}`);
+ }
 }
 
-function saveContact(e, id) {
+async function saveContact(e, id) {
  e.preventDefault();
  const data = Object.fromEntries(new FormData(e.target));
- data.owner = currentUser;
- data.createdDate = id ? state.data.contacts.find(c => c.id === id).createdDate : new Date().toISOString();
+ const existing = id ? state.data.contacts.find(c => c.id === id) : null;
+ data.owner = existing?.owner || currentUser;
+ data.createdDate = existing?.createdDate || new Date().toISOString();
  data.modifiedDate = new Date().toISOString();
+ const localId = id || ('con_' + Date.now().toString());
  if (id) {
  const index = state.data.contacts.findIndex(c => c.id === id);
  state.data.contacts[index] = {...data, id};
  recordActivity('Contact', `Contact updated: ${data.name}`);
  } else {
- state.data.contacts.push({...data, id: Date.now().toString()});
+ state.data.contacts.push({...data, id: localId});
  recordActivity('Contact', `Contact created: ${data.name}`);
  }
  saveData();
  closeModal();
  render();
+ try {
+  await upsertContactToApi({...data, id: localId});
+  const remote = await fetchBootstrapFromApi();
+  state.data.accounts = remote.accounts;
+  state.data.contacts = remote.contacts;
+  state.data.opportunities = remote.opportunities;
+  state.data.activities = remote.activities;
+  state.data.leads = remote.leads;
+  saveData();
+  render();
+ } catch (err) {
+  alert(`Could not save contact to shared backend: ${err.message}`);
+ }
 }
 
 async function saveOpportunity(e, id) {
@@ -2675,18 +2778,6 @@ async function saveOpportunity(e, id) {
  data.costingTat = toISOOrBlank(data.costingTat) || existing?.costingTat || '';
  data.finalPricingProposal = data.finalPricingProposal || existing?.finalPricingProposal || '';
  const localId = id || ('opp_' + Date.now().toString());
- if (id) {
-  const index = state.data.opportunities.findIndex(o => o.id === id);
-  state.data.opportunities[index] = {...data, id};
-  recordActivity('Opportunity', `Opportunity updated: ${data.name}`);
- } else {
-  state.data.opportunities.push({...data, id: localId});
-  recordActivity('Opportunity', `Opportunity created: ${data.name}`);
- }
- saveData();
- closeModal();
- render();
- // Persist to backend
  try {
   const resp = await fetch(`${CRM_API_BASE}/api/opportunities`, {
    method: 'POST',
@@ -2700,24 +2791,31 @@ async function saveOpportunity(e, id) {
   });
   if (!resp.ok) {
    const err = await resp.json().catch(() => ({}));
-   alert('⚠️ Save failed: ' + (err.error || resp.status) + '\nChanges reverted on next refresh.');
-  } else {
-   const r = await resp.json();
-   // Update local id if backend assigned a different one
-   if (r.id && r.id !== localId) {
-    const idx = state.data.opportunities.findIndex(o => o.id === localId);
-    if (idx >= 0) state.data.opportunities[idx].id = r.id;
-    saveData();
-   }
+   throw new Error(err.error || `opportunity save failed (${resp.status})`);
   }
+  const saved = await resp.json();
+  recordActivity('Opportunity', `Opportunity ${id ? 'updated' : 'created'}: ${data.name}`);
+  const remote = await fetchBootstrapFromApi();
+  state.data.accounts = remote.accounts;
+  state.data.leads = remote.leads;
+  state.data.contacts = remote.contacts;
+  state.data.opportunities = remote.opportunities;
+  state.data.activities = remote.activities;
+  if (saved.id && !state.data.opportunities.some(o => o.id === String(saved.id))) {
+   state.data.opportunities.push({...data, id: String(saved.id)});
+  }
+  saveData();
+  closeModal();
+  render();
  } catch(e) {
-  alert('⚠️ Network error — opp saved locally but not to server. Please retry.');
+  alert(`Could not save opportunity to shared backend: ${e.message}`);
  }
 }
  function editLead(id) { openLeadModal(state.data.leads.find(l => l.id === id)); }
  function editAccount(id) { openAccountModal(state.data.accounts.find(a => a.id === id)); }
  function editContact(id) { openContactModal(state.data.contacts.find(c => c.id === id)); }
  function editOpportunity(id) { openOpportunityModal(state.data.opportunities.find(o => o.id === id)); }
+ function editActivity(id) { openActivityModal(state.data.activities.find(a => a.id === id)); }
 
  async function deleteLead(id) {
  if (confirm('Delete this lead?')) {
@@ -2729,21 +2827,31 @@ async function saveOpportunity(e, id) {
  }
  }
 
- function deleteAccount(id) {
+ async function deleteAccount(id) {
  if (confirm('Delete this account?')) {
+ try {
+ await deleteAccountFromApi(id);
  state.data.accounts = state.data.accounts.filter(a => a.id !== id);
  saveData();
  closeModal();
  render();
+ } catch (err) {
+ alert(`Could not delete account from shared backend: ${err.message}`);
+ }
  }
  }
 
- function deleteContact(id) {
+ async function deleteContact(id) {
  if (confirm('Delete this contact?')) {
+ try {
+ await deleteContactFromApi(id);
  state.data.contacts = state.data.contacts.filter(c => c.id !== id);
  saveData();
  closeModal();
  render();
+ } catch (err) {
+ alert(`Could not delete contact from shared backend: ${err.message}`);
+ }
  }
  }
 
