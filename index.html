@@ -403,6 +403,10 @@ function normalizeActivityFromApi(a) {
  accountName: a.account_name || a.accountName || '',
  createdDate: created,
  modifiedDate: modified,
+ mom_sent_at: a.mom_sent_at || null,
+ mom_sent_to: a.mom_sent_to || '',
+ mom_send_status: a.mom_send_status || '',
+ mom_payload: a.mom_payload || '',
  };
 }
 
@@ -2477,15 +2481,39 @@ function openActivityModal(activity = null) {
  </select>
  <textarea name="notes" placeholder="What did you do? What was discussed?">${activity?.notes || ''}</textarea>
  <input class="input" required type="datetime-local" name="date" value="${activity?.date ? activity.date.slice(0,16) : new Date().toISOString().slice(0,16)}">
+ ${(activity?.type === 'Meeting' || !activity) ? `
+ <div id="momSection" style="margin-top:18px; padding:14px; border-radius:10px; background:rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.25);">
+   <div style="font-weight:600; margin-bottom:10px; font-size:0.95em;">📋 Minutes of Meeting (MoM)</div>
+   <input class="input" name="mom_to_emails" placeholder="Send To (emails, comma-separated) *" value="${activity?.mom_sent_to || ''}">
+   <input class="input" name="mom_cc_emails" placeholder="CC (emails, comma-separated, optional)">
+   <input class="input" name="client_name" placeholder="Client Name / Salutation (e.g. Rajesh)">
+   <textarea name="mom_intro" placeholder="Introduction / context of the meeting..." style="height:60px">${activity?.mom_intro || ''}</textarea>
+   <textarea name="mom_discussion" placeholder="Discussion Points (one per line)..." style="height:80px">${activity?.mom_discussion || ''}</textarea>
+   <textarea name="mom_actions" placeholder="Action Points (format: Action | Owner | Due Date | Status, one per line)..." style="height:80px">${activity?.mom_actions || ''}</textarea>
+   <textarea name="mom_next_steps" placeholder="Next Steps..." style="height:60px">${activity?.mom_next_steps || ''}</textarea>
+   ${activity?.mom_sent_at ? `<div style="margin-top:6px; font-size:0.82em; color:#b9f6ca;">✅ MoM sent on ${fmtDateTime(activity.mom_sent_at)} → ${activity.mom_sent_to}</div>` : ''}
+ </div>` : ''}
  <div style="margin-top:20px">
  <button type="button" class="btn" onclick="closeModal()">Cancel</button>
  <button type="submit" class="btn btn-success">Save Activity</button>
+ ${activity && (activity.type === 'Meeting') ? `<button type="button" class="btn" style="background:linear-gradient(135deg,#1976d2,#42a5f5);" onclick="sendMoM('${activity.id}')">📧 Send MoM</button>` : ''}
  ${activity ? `<button type="button" class="btn btn-danger" onclick="deleteActivity('${activity.id}')">Delete</button>` : ''}
  </div>
  </form>
  </div>
  `;
  document.getElementById('modal').classList.add('show');
+ // Show/hide MoM section on type change for new activities
+ const typeSelect = document.getElementById('modal').querySelector('select[name="type"]');
+ if (typeSelect && !activity) {
+   typeSelect.addEventListener('change', function() {
+     const momSec = document.getElementById('momSection');
+     if (momSec) momSec.style.display = this.value === 'Meeting' ? 'block' : 'none';
+   });
+   // Hide by default for non-meeting new activity
+   const momSec = document.getElementById('momSection');
+   if (momSec) momSec.style.display = 'none';
+ }
 }
 
 async function saveActivity(e, id) {
@@ -2526,6 +2554,57 @@ async function deleteActivity(id) {
  render();
  } catch (err) {
  alert(`Could not delete activity from shared backend: ${err.message}`);
+ }
+}
+
+async function sendMoM(activityId) {
+ const modal = document.getElementById('modal');
+ const f = modal.querySelector('form');
+ if (!f) { alert('Please save the activity first, then click Send MoM.'); return; }
+ const fd = new FormData(f);
+ const toEmails = (fd.get('mom_to_emails') || '').trim();
+ if (!toEmails) { alert('Please enter at least one recipient email in the "Send To" field.'); return; }
+
+ const activity = state.data.activities.find(a => a.id === activityId);
+ const meetingDate = fd.get('date') ? new Date(fd.get('date')).toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'}) : '';
+ const subject = `Minutes of Meeting | ${activity?.accountName || fd.get('accountId') || 'Account'} | ${meetingDate}`;
+
+ const payload = {
+   viewer_email: currentUser,
+   viewer_role: getViewerRoleForApi(),
+   activity_id: activityId,
+   account_id: activity?.accountId || fd.get('accountId') || '',
+   account_name: activity?.accountName || '',
+   to_emails: toEmails,
+   cc_emails: fd.get('mom_cc_emails') || '',
+   subject,
+   meeting_date: meetingDate,
+   client_name: fd.get('client_name') || 'Team',
+   mom_intro: fd.get('mom_intro') || '',
+   mom_discussion: fd.get('mom_discussion') || '',
+   mom_actions: fd.get('mom_actions') || '',
+   mom_next_steps: fd.get('mom_next_steps') || '',
+ };
+
+ const btn = modal.querySelector('button[onclick*="sendMoM"]');
+ if (btn) { btn.disabled = true; btn.textContent = '⏳ Sending...'; }
+ try {
+   const resp = await fetch(`${CRM_API_BASE}/api/mom/send`, {
+     method: 'POST',
+     headers: { 'Content-Type': 'application/json' },
+     body: JSON.stringify(payload),
+   });
+   const result = await resp.json();
+   if (!resp.ok) throw new Error(result.error || 'Send failed');
+   alert(`✅ MoM sent successfully to ${result.to?.join(', ')}`);
+   // Refresh activities to pull updated mom_sent_at
+   state.data.activities = await fetchActivitiesFromApi();
+   saveData();
+   closeModal();
+   render();
+ } catch (err) {
+   alert(`❌ MoM send failed: ${err.message}`);
+   if (btn) { btn.disabled = false; btn.textContent = '📧 Send MoM'; }
  }
 }
 
