@@ -309,10 +309,20 @@ let activityFilter = { mode: 'today', from: '', to: '' };
 let supervisorAMFilter = ''; // email of selected AM for supervisor view
 let opportunityFilterMode = 'all';
 const USER_DISPLAY_NAMES = {
- 'a.gupta@dnispl.com': 'Awdesh Gupta',
- 'ashish.mehra@dnispl.com': 'Ashish Mehra',
- 'soumya.m@dnispl.com': 'Soumya M',
- 'vinod.v@dnispl.com': 'Vinod V'
+  'ashish.mehra@dnispl.com':    'Ashish Mehra (Supervisor)',
+  'a.gupta@dnispl.com':         'Awdesh Gupta (Supervisor)',
+  'rakesh.uniyal@dnispl.com':   'Rakesh Uniyal (Supervisor)',
+  'vinod.v@dnispl.com':         'Vinod V (Presales)',
+  'soumya.m@dnispl.com':        'Soumya M (Sales Ops)',
+  'aakriti.v@dnispl.com':       'Aakriti V',
+  'ayushi.v@dnispl.com':        'Ayushi V',
+  'mandeep.kaur@dnispl.com':    'Mandeep Kaur',
+  'navneet.k@dnispl.com':       'Navneet K',
+  'om.prakash@dnispl.com':      'Om Prakash',
+  'stephen.h@dnispl.com':       'Stephen H',
+  'vikrant.tolumbia@dnispl.com':'Vikrant Tolumbia',
+  'yash.k@dnispl.com':          'Yash K',
+  'ankit.j@dnispl.com':         'Ankit J',
 };
 
 function displayUserName(email) {
@@ -322,15 +332,30 @@ function displayUserName(email) {
  return USER_DISPLAY_NAMES[lower] || value.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
+// Canonical list of who appears in the AM filter dropdown (sales + presales + supervisors only)
+const CRM_VISIBLE_MEMBERS = [
+  // Supervisors
+  'ashish.mehra@dnispl.com',
+  'a.gupta@dnispl.com',
+  'rakesh.uniyal@dnispl.com',
+  // Presales
+  'vinod.v@dnispl.com',
+  // Sales team
+  'aakriti.v@dnispl.com',
+  'ayushi.v@dnispl.com',
+  'mandeep.kaur@dnispl.com',
+  'navneet.k@dnispl.com',
+  'om.prakash@dnispl.com',
+  'stephen.h@dnispl.com',
+  'vikrant.tolumbia@dnispl.com',
+  'yash.k@dnispl.com',
+  'ankit.j@dnispl.com',
+  // Sales Ops (has opportunities tied to him)
+  'soumya.m@dnispl.com',
+];
+
 function getSupervisorMemberEmails() {
- const members = new Set(SALES_TEAM || []);
- (state.data.accounts || []).forEach(a => [a.accountManager, a.account_manager, a.owner, a.accountManagerEmail].forEach(v => v && members.add(String(v).toLowerCase())));
- (state.data.opportunities || []).forEach(o => [o.owner, o.salesOwner, o.assignedPresales, o.assignedSalesOps, o.assignedPurchase].forEach(v => v && members.add(String(v).toLowerCase())));
- (state.data.leads || []).forEach(l => l.owner && members.add(String(l.owner).toLowerCase()));
- (state.data.contacts || []).forEach(c => c.owner && members.add(String(c.owner).toLowerCase()));
- members.add('a.gupta@dnispl.com');
- members.add('ashish.mehra@dnispl.com');
- return Array.from(members).filter(Boolean).sort((a, b) => displayUserName(a).localeCompare(displayUserName(b)));
+  return [...CRM_VISIBLE_MEMBERS].sort((a, b) => displayUserName(a).localeCompare(displayUserName(b)));
 }
 
 function formatMoneyValue(value) {
@@ -1645,7 +1670,16 @@ function renderActivities(filtered) {
  new Date(b.date || b.modifiedDate || b.createdDate) - new Date(a.date || a.modifiedDate || a.createdDate)
  );
  const today = new Date().toDateString();
+ const USER_ACTIVITY_TYPES = new Set(['Call','Email','Meeting','Demo','Proposal','Follow-up','Note']);
+ const ACTIVITY_EXCLUDED_OWNERS = new Set([
+   'soumya.m@dnispl.com','niharika.s@dnispl.com','shashank.r@dnispl.com',
+   'rakesh.uniyal@dnispl.com','pokhraj.yadav@dnispl.com','rakesh.u@dnispl.com'
+ ]);
  const activities = allActivities.filter(a => {
+ // Only show user-logged activity types, not system events
+ if (!USER_ACTIVITY_TYPES.has(a.type)) return false;
+ // Exclude purchase/finance/ops owners
+ if (a.owner && ACTIVITY_EXCLUDED_OWNERS.has(a.owner.toLowerCase())) return false;
  const stamp = a.date || a.modifiedDate || a.createdDate;
  if (!stamp) return false;
  const d = new Date(stamp);
