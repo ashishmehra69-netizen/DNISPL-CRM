@@ -2479,7 +2479,10 @@ function openAddModal() {
  <option value="Worry" ${contact?.emotion === 'Worry' ? 'selected' : ''}>Worry</option>
  </select>
  
- <input class="input" name="accountId" placeholder="Account ID (optional)" value="${contact?.accountId || ''}">
+ <select class="input" required name="accountId">
+ <option value="">Select Account *</option>
+ ${state.data.accounts.map(a => `<option value="${a.id}" ${String(contact?.accountId) === String(a.id) ? 'selected' : ''}>${a.name}</option>`).join('')}
+ </select>
  
  <div style="margin-top:20px">
  <button type="button" class="btn" onclick="closeModal()">Cancel</button>
