@@ -1320,7 +1320,8 @@ function calculateICPScore(account) {
  </div>
  <div class="grid">
  ${filtered.leads.map(l => `
- <div class="item-card" onclick="editLead('${l.id}')">
+ <div class="item-card" onclick="editLead('${l.id}')" style="position:relative">
+ ${getUserRole() === 'presales' ? `<button class="btn btn-success" style="position:absolute;top:10px;right:10px;font-size:0.75em;padding:5px 10px" onclick="event.stopPropagation();convertLeadToOpp('${l.id}')">➕ Convert</button>` : ''}
  <h3>${l.name}</h3>
  <div>${l.company}</div>
  <div style="margin-top:10px">
@@ -2967,6 +2968,44 @@ async function saveOpportunity(e, id) {
  } catch(e) {
   alert(`Could not save opportunity to shared backend: ${e.message}`);
  }
+}
+  async function convertLeadToOpp(leadId) {
+  const lead = state.data.leads.find(l => l.id === leadId);
+  if (!lead) return;
+  const value = prompt(`Opportunity value (₹) for "${lead.name}":`, '0');
+  if (value === null) return;
+  const now = new Date().toISOString();
+  const payload = {
+    id: 'opp_' + Date.now(),
+    name: lead.name,
+    account_id: '',
+    value: parseFloat(value) || 0,
+    stage: 'Discovery',
+    owner: lead.owner,
+    sales_owner: lead.owner,
+    assigned_presales: currentUser,
+    workflow_stage: 'Assigned to Presales',
+    presales_assigned_at: now,
+    presales_due_at: addHours(now, 72),
+    viewer_email: currentUser,
+    viewer_role: getViewerRoleForApi()
+  };
+  try {
+    const resp = await fetch(`${CRM_API_BASE}/api/opportunities`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    alert(`✅ "${lead.name}" converted to opportunity!`);
+    const remote = await fetchBootstrapFromApi();
+    state.data.opportunities = remote.opportunities;
+    state.data.activities = remote.activities;
+    saveData();
+    render();
+  } catch(err) {
+    alert(`❌ Convert failed: ${err.message}`);
+  }
 }
  function editLead(id) { openLeadModal(state.data.leads.find(l => l.id === id)); }
  function editAccount(id) { openAccountModal(state.data.accounts.find(a => a.id === id)); }
