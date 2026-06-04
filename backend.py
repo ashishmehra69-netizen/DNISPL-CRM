@@ -48,7 +48,7 @@ DATABASE_URL = (
 PRESALES_OWNER = os.environ.get("PRESALES_OWNER", "vinod.v@dnispl.com")
 SALES_OPS_OWNER = os.environ.get("SALES_OPS_OWNER", "soumya.m@dnispl.com")
 SUPERVISOR_EMAIL = os.environ.get("SUPERVISOR_EMAIL", "ashish.mehra@dnispl.com").strip().lower()
-SUPERVISOR_EMAILS_ALL = [SUPERVISOR_EMAIL, 'a.gupta@dnispl.com', 'rakesh.uniyal@dnispl.com']
+SUPERVISOR_EMAILS_ALL = [SUPERVISOR_EMAIL, 'a.gupta@dnispl.com']
 ESCALATION_EMAILS = [
     e.strip().lower()
     for e in os.environ.get("ESCALATION_EMAILS", "ashish.mehra@dnispl.com,a.gupta@dnispl.com").split(",")
