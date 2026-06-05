@@ -1456,7 +1456,10 @@ function renderAccounts(filtered) {
  ${renderAMFilterBar()}
  <div class="card">
  <h2>🏢 Accounts (${filtered.accounts.length}${supervisorAMFilter ? ' &ndash; ' + displayUserName(supervisorAMFilter) : ''})</h2>
- </div>
+ <div style="display:flex;gap:16px;margin-top:8px;flex-wrap:wrap">
+  <span style="background:#22c55e;color:white;padding:5px 14px;border-radius:20px;font-size:0.9em">✅ Covered: ${filtered.accounts.filter(a => coveredIds.has(String(a.id))).length}</span>
+  <span style="background:#ef4444;color:white;padding:5px 14px;border-radius:20px;font-size:0.9em">❌ No Contact: ${filtered.accounts.length - filtered.accounts.filter(a => coveredIds.has(String(a.id))).length}</span>
+</div>
  <div class="grid">
  ${filtered.accounts.map(a => {
    const isCovered = coveredIds.has(String(a.id));
