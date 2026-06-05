@@ -1316,8 +1316,7 @@ function calculateICPScore(account) {
  ${l.email} | ${l.phone}
  </div>
  <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
- ${o.expectedClosureDate ? `🎯 Closure: ${fmtDate(o.expectedClosureDate)}<br>` : ''}
- 📅 Created: ${fmtDate(o.createdDate)}<br>🕒 Updated: ${fmtDate(o.modifiedDate)}
+ 📅 Created: ${fmtDate(l.createdDate)}<br>🕒 Updated: ${fmtDate(l.modifiedDate)}
  </div>
  </div>
  `).join('')}
