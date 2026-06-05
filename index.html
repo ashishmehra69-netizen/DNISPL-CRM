@@ -1513,7 +1513,7 @@ function renderAccounts(filtered) {
  <div style="display:flex;flex-wrap:wrap;gap:12px;margin:12px 0">
    <div class="metric" style="min-width:180px"><div>Total Funnel Value</div><div class="metric-value" style="font-size:1.35rem">${formatMoneyValue(totalFunnelValue)}</div></div>
    <div class="metric" style="min-width:180px"><div>Weighted Funnel</div><div class="metric-value" style="font-size:1.35rem">${formatMoneyValue(weightedFunnelValue)}</div></div>
-   ${opportunityFilterMode === 'Closed Lost' ? `<div class="metric" style="min-width:180px;background:rgba(239,68,68,0.2)"><div>Closed Lost Value</div><div class="metric-value" style="font-size:1.35rem;color:#fca5a5">${formatMoneyValue(lostFunnelValue)}</div></div>` : ''}
+   <div class="metric" style="min-width:180px;background:rgba(239,68,68,0.2);display:${opportunityFilterMode === 'Closed Lost' ? 'block' : 'none'}"><div>Closed Lost Value</div><div class="metric-value" style="font-size:1.35rem;color:#fca5a5">${formatMoneyValue(lostFunnelValue)}</div></div>
  </div>
  <div style="display:flex; gap:8px; flex-wrap:wrap">
  <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
