@@ -3514,9 +3514,35 @@ def incentive_report():
             {"label":"Stretch","min":110,"max":119.99,"payout_pct":120},
             {"label":"Accelerator","min":120,"max":999,"payout_pct":150},
         ]
+        # Fetch KRA achievement to calculate actual payout
+        actual_payout_lakhs = 0.0
+        actual_achievement_pct = None
+        try:
+            kra_url = f"{request.url_root}api/reports/kra?viewer_email={target_email}&viewer_role={viewer_role}&target_email={target_email}&target_role=account_manager&quarter={quarter}&fy_year=2025-26"
+            import urllib.request as _ur
+            with _ur.urlopen(kra_url, timeout=5) as _r:
+                kra_data = json.loads(_r.read().decode())
+            kras = kra_data.get("kras") or []
+            weighted_ach = 0.0
+            total_weight = 0
+            for k in kras:
+                w = k.get("weight") or 0
+                a = k.get("achievement_pct")
+                if a is not None:
+                    weighted_ach += (a * w / 100)
+                    total_weight += w
+            if total_weight > 0:
+                actual_achievement_pct = round(weighted_ach * 100 / total_weight, 1)
+                matched_slab = next((s for s in reversed(slabs) if actual_achievement_pct >= s["min"]), slabs[0])
+                actual_payout_lakhs = round(q_var * matched_slab["payout_pct"] / 100, 2)
+        except Exception as _e:
+            pass
+
         return jsonify({"target_email":target_email,"quarter":quarter,"fixed_annual_lakhs":fixed,
             "variable_annual_lakhs":var,"quarterly_variable_lakhs":q_var,
-            "salary_configured":bool(sal),"slabs":slabs})
+            "salary_configured":bool(sal),"slabs":slabs,
+            "actual_achievement_pct": actual_achievement_pct,
+            "actual_payout_lakhs": actual_payout_lakhs})
     finally:
         conn.close()
 
