@@ -1519,8 +1519,9 @@ function renderAccounts(filtered) {
  const pendingPresalesCount = opps.filter(o => (o.workflowStage || '') === 'Assigned to Presales').length;
  const awaitingPurchaseCount = opps.filter(o => (o.workflowStage || '') === 'Awaiting Purchase Costing').length;
  const awaitingSalesOpsCount = opps.filter(o => (o.workflowStage || '') === 'Awaiting Sales Ops Pricing').length;
- const totalFunnelValue = opps.reduce((sum, o) => sum + (Number(o.value || 0) || 0), 0);
- const weightedFunnelValue = opps.reduce((sum, o) => sum + ((Number(o.value || 0) || 0) * calculateWinProb(o) / 100), 0);
+ const totalFunnelValue = opps.filter(o => o.stage !== 'Closed Lost').reduce((sum, o) => sum + (Number(o.value || 0) || 0), 0);
+ const weightedFunnelValue = opps.filter(o => o.stage !== 'Closed Lost').reduce((sum, o) => sum + ((Number(o.value || 0) || 0) * calculateWinProb(o) / 100), 0);
+ const lostFunnelValue = opps.filter(o => o.stage === 'Closed Lost').reduce((sum, o) => sum + (Number(o.value || 0) || 0), 0);
  return `
  ${renderAMFilterBar()}
  <div class="card">
@@ -1528,6 +1529,7 @@ function renderAccounts(filtered) {
  <div style="display:flex;flex-wrap:wrap;gap:12px;margin:12px 0">
    <div class="metric" style="min-width:180px"><div>Total Funnel Value</div><div class="metric-value" style="font-size:1.35rem">${formatMoneyValue(totalFunnelValue)}</div></div>
    <div class="metric" style="min-width:180px"><div>Weighted Funnel</div><div class="metric-value" style="font-size:1.35rem">${formatMoneyValue(weightedFunnelValue)}</div></div>
+   ${opportunityFilterMode === 'Closed Lost' ? `<div class="metric" style="min-width:180px;background:rgba(239,68,68,0.2)"><div>Closed Lost Value</div><div class="metric-value" style="font-size:1.35rem;color:#fca5a5">${formatMoneyValue(lostFunnelValue)}</div></div>` : ''}
  </div>
  <div style="display:flex; gap:8px; flex-wrap:wrap">
  <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
