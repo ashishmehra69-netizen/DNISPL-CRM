@@ -1015,7 +1015,7 @@ function seedAccountsFromMap() {
    if (!item.owner && item.accountOwner) item.owner = item.accountOwner;
    const mapKey = item.name || '';
    const mapped = ACCOUNT_OWNER_MAP[mapKey] || ACCOUNT_OWNER_MAP[mapKey.toLowerCase()] || ACCOUNT_OWNER_MAP[mapKey.toUpperCase()];
-   if (mapped) {
+   if (mapped && !item.accountManager) {
      item.accountManager = mapped;
    }
  }
