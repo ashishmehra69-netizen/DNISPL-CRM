@@ -1503,7 +1503,7 @@ function renderAccounts(filtered) {
  const pendingPresalesCount = opps.filter(o => (o.workflowStage || '') === 'Assigned to Presales').length;
  const awaitingPurchaseCount = opps.filter(o => (o.workflowStage || '') === 'Awaiting Purchase Costing').length;
  const awaitingSalesOpsCount = opps.filter(o => (o.workflowStage || '') === 'Awaiting Sales Ops Pricing').length;
- const totalFunnelValue = opps.filter(o => o.stage !== 'Closed Lost').reduce((sum, o) => sum + (Number(o.value || 0) || 0), 0);
+ const totalFunnelValue = opps.filter(o => (o.stage || '') !== 'Closed Lost').reduce((sum, o) => sum + (Number(o.value || 0) || 0), 0);
  const weightedFunnelValue = opps.filter(o => o.stage !== 'Closed Lost').reduce((sum, o) => sum + ((Number(o.value || 0) || 0) * calculateWinProb(o) / 100), 0);
  const lostFunnelValue = opps.filter(o => o.stage === 'Closed Lost').reduce((sum, o) => sum + (Number(o.value || 0) || 0), 0);
  return `
