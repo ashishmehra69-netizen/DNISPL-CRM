@@ -1067,23 +1067,7 @@ function seedAccountsFromMap() {
 
 function filterOpps(filter) {
   opportunityFilterMode = filter;
-  const cards = document.querySelectorAll('.opp-card');
-  const PRICING_STAGES = ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'];
-  cards.forEach(card => {
-    const stage = card.dataset.stage || '';
-    const wfStage = card.dataset.wfstage || '';
-    let show = false;
-    if (filter === 'all') show = true;
-    else if (filter === 'Awaiting Pricing') show = PRICING_STAGES.includes(wfStage);
-    else if (filter === 'Assigned to Presales') show = wfStage === 'Assigned to Presales';
-    else show = stage === filter;
-    card.style.display = show ? '' : 'none';
-  });
-  document.querySelectorAll('[onclick^="filterOpps"]').forEach(btn => {
-    const isActive = btn.getAttribute('onclick').includes("'" + filter + "'");
-    btn.style.fontWeight = isActive ? '700' : '400';
-    btn.style.boxShadow = isActive ? '0 0 0 2px #5a67d8' : 'none';
-  });
+  render();
 }
 
 function exportVisibleOpportunitiesCSV() {
