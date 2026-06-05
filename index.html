@@ -1928,6 +1928,14 @@ function buildIncentiveHtml() {
         </table>
       </div>
     </div>
+    ${d.actual_achievement_pct !== null && d.actual_achievement_pct !== undefined ? `
+    <div class="card" style="margin-top:12px;background:rgba(255,255,255,0.15)">
+      <h4 style="margin:0 0 10px">💰 Actual Payout This Quarter</h4>
+      <div style="display:flex;flex-wrap:wrap;gap:16px">
+        <div class="metric" style="min-width:160px"><div>KRA Achievement</div><div class="metric-value" style="font-size:1.3rem;color:${d.actual_achievement_pct>=100?'#4ade80':d.actual_achievement_pct>=85?'#fbbf24':'#f87171'}">${d.actual_achievement_pct}%</div></div>
+        <div class="metric" style="min-width:160px"><div>Actual Payout</div><div class="metric-value" style="font-size:1.3rem">₹${d.actual_payout_lakhs}L</div></div>
+      </div>
+    </div>` : '<div class="card" style="margin-top:12px;opacity:0.7">Load the KRA report first to see actual payout calculation.</div>'}
     ${salaryForm}`;
 }
 
