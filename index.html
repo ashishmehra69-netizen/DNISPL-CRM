@@ -1496,7 +1496,12 @@ function renderAccounts(filtered) {
 }
  function renderOpportunities(filtered) {
  const role = getUserRole();
- const opps = filtered.opportunities || [];
+ const PRICING_STAGES = ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'];
+ const allOpps = filtered.opportunities || [];
+ const opps = opportunityFilterMode === 'all' ? allOpps
+   : opportunityFilterMode === 'Awaiting Pricing' ? allOpps.filter(o => PRICING_STAGES.includes(o.workflowStage))
+   : opportunityFilterMode === 'Assigned to Presales' ? allOpps.filter(o => o.workflowStage === 'Assigned to Presales')
+   : allOpps.filter(o => o.stage === opportunityFilterMode);
  const discoveryCount = opps.filter(o => (o.stage || '') === 'Discovery').length;
  const proposalCount = opps.filter(o => (o.stage || '') === 'Proposal').length;
  const negotiationCount = opps.filter(o => (o.stage || '') === 'Negotiation').length;
