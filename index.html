@@ -2346,6 +2346,14 @@ function openAddModal() {
  <option value="">Assign Purchase</option>
  ${getTeamUsers('purchase').map(u => `<option value="${u}" ${opp?.assignedPurchase === u ? 'selected' : ''}>${u}</option>`).join('')}
  </select>
+ <select class="input" name="category">
+  <option value="">— Select Category —</option>
+  <option value="Laptops & Desktops" ${opp?.category === 'Laptops & Desktops' ? 'selected' : ''}>💻 Laptops & Desktops</option>
+  <option value="Networking Hardware" ${opp?.category === 'Networking Hardware' ? 'selected' : ''}>🔌 Networking Hardware</option>
+  <option value="Software & Licensing" ${opp?.category === 'Software & Licensing' ? 'selected' : ''}>📦 Software & Licensing</option>
+  <option value="Services & AMC" ${opp?.category === 'Services & AMC' ? 'selected' : ''}>🔧 Services & AMC</option>
+  <option value="Mixed/Other" ${opp?.category === 'Mixed/Other' ? 'selected' : ''}>📋 Mixed / Other</option>
+</select>
  <textarea name="salesComments" placeholder="Sales Comments">${opp?.salesComments || ''}</textarea>
  <textarea name="requirements" placeholder="Customer Requirements">${opp?.requirements || ''}</textarea>
  <textarea name="presalesArchitecture" placeholder="Presales Architecture Notes">${opp?.presalesArchitecture || ''}</textarea>
