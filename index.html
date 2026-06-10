@@ -1498,10 +1498,15 @@ function renderAccounts(filtered) {
  const role = getUserRole();
  const PRICING_STAGES = ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'];
  const allOpps = filtered.opportunities || [];
- const opps = opportunityFilterMode === 'all' ? allOpps
-   : opportunityFilterMode === 'Awaiting Pricing' ? allOpps.filter(o => PRICING_STAGES.includes(o.workflowStage))
-   : opportunityFilterMode === 'Assigned to Presales' ? allOpps.filter(o => o.workflowStage === 'Assigned to Presales')
-   : allOpps.filter(o => o.stage === opportunityFilterMode);
+ const VINOD = 'vinod.v@dnispl.com';
+ const salesOpps = isSupervisor ? allOpps.filter(o => (o.owner||'').toLowerCase() !== VINOD) : allOpps;
+ const vinodOpps = isSupervisor ? allOpps.filter(o => (o.owner||'').toLowerCase() === VINOD) : [];
+ if (typeof window._oppView === 'undefined') window._oppView = 'sales';
+ const baseOpps = (isSupervisor && window._oppView === 'presales') ? vinodOpps : salesOpps;
+ const opps = opportunityFilterMode === 'all' ? baseOpps
+   : opportunityFilterMode === 'Awaiting Pricing' ? baseOpps.filter(o => PRICING_STAGES.includes(o.workflowStage))
+   : opportunityFilterMode === 'Assigned to Presales' ? baseOpps.filter(o => o.workflowStage === 'Assigned to Presales')
+   : baseOpps.filter(o => o.stage === opportunityFilterMode);
  const discoveryCount = opps.filter(o => (o.stage || '') === 'Discovery').length;
  const proposalCount = opps.filter(o => (o.stage || '') === 'Proposal').length;
  const negotiationCount = opps.filter(o => (o.stage || '') === 'Negotiation').length;
@@ -1516,6 +1521,15 @@ function renderAccounts(filtered) {
  return `
  ${renderAMFilterBar()}
  <div class="card">
+ ${isSupervisor ? `
+  <div style="display:flex;gap:8px;margin-bottom:12px">
+    <button class="btn" type="button"
+      style="${window._oppView !== 'presales' ? 'background:#5a67d8;color:#fff' : ''}"
+      onclick="window._oppView='sales';render()">💼 Sales Opps (${salesOpps.length})</button>
+    <button class="btn" type="button"
+      style="${window._oppView === 'presales' ? 'background:#5a67d8;color:#fff' : ''}"
+      onclick="window._oppView='presales';render()">🔧 Presales — Vinod (${vinodOpps.length})</button>
+  </div>` : ''}
  <h2>💰 Opportunities (${opps.length}${supervisorAMFilter ? ' &ndash; ' + displayUserName(supervisorAMFilter) : ''})</h2>
  <div style="display:flex;flex-wrap:wrap;gap:12px;margin:12px 0">
    <div class="metric" style="min-width:180px"><div>Total Funnel Value</div><div class="metric-value" style="font-size:1.35rem">${formatMoneyValue(totalFunnelValue)}</div></div>
