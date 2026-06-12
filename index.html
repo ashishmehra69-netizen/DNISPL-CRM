@@ -1084,7 +1084,7 @@ function exportVisibleOpportunitiesCSV() {
    return stage === opportunityFilterMode;
  });
  const rows = [[
-   'Opportunity ID', 'Name', 'Account ID', 'Value', 'Stage', 'Workflow Stage',
+   'Opportunity ID', 'Name', 'Account ID', 'Value', 'Category', 'Stage', 'Workflow Stage',
    'Sales Owner', 'Presales Owner', 'Sales Ops Owner', 'Purchase Owner', 'Created', 'Updated'
  ]];
  visibleOpps.forEach(o => {
@@ -1093,6 +1093,7 @@ function exportVisibleOpportunitiesCSV() {
      o.name || '',
      o.accountId || '',
      o.value || 0,
+     o.dealType || o.deal_type || '',
      o.stage || '',
      o.workflowStage || 'Sales Review',
      o.salesOwner || o.owner || '',
