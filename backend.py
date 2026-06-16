@@ -51,7 +51,7 @@ SUPERVISOR_EMAIL = os.environ.get("SUPERVISOR_EMAIL", "ashish.mehra@dnispl.com")
 SUPERVISOR_EMAILS_ALL = [SUPERVISOR_EMAIL, 'a.gupta@dnispl.com']
 ESCALATION_EMAILS = [
     e.strip().lower()
-    for e in os.environ.get("ESCALATION_EMAILS", "ashish.mehra@dnispl.com,rakesh.uniyal@dnispl.com").split(",")
+    for e in os.environ.get("ESCALATION_EMAILS", "rakesh.uniyal@dnispl.com").split(",")
     if e.strip()
 ]
 SMTP_HOST = os.environ.get("SMTP_HOST", "").strip()
@@ -824,7 +824,17 @@ def send_presales_escalation_email(row, presales_due_iso: str) -> None:
     for e in [presales_email, sales_email]:
         if e and e not in to_list:
             to_list.append(e)
-    send_email_smtp(to_list, subject, body)
+    html_body = f"<pre style='font-family:sans-serif'>{body}</pre>"
+    sent = False
+    for sender in [SUPERVISOR_EMAIL] + to_list:
+        try:
+            _send_graph_mail(sender, to_list, [], subject, html_body)
+            sent = True
+            break
+        except Exception as eg:
+            print(f"[CRM EMAIL] Graph failed for {sender}: {eg}")
+    if not sent:
+        send_email_smtp(to_list, subject, body)
 
 
 def send_presales_assignment_email(opportunity_name: str, opp_id: str, presales_email: str, presales_due_iso: str) -> None:
