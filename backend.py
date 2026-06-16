@@ -977,6 +977,7 @@ def enforce_opportunity_sla(conn, rows):
             ):
                 updates["workflow_stage"] = "Presales Overdue"
                 updates["presales_escalated_at"] = now.isoformat().replace("+00:00", "Z")
+                print(f"[CRM ESCALATION] Firing presales escalation for {row.get('id')} to {row.get('assigned_presales')}")
                 send_presales_escalation_email(
                     row, presales_due.isoformat().replace("+00:00", "Z")
                 )
