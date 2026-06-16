@@ -51,7 +51,7 @@ SUPERVISOR_EMAIL = os.environ.get("SUPERVISOR_EMAIL", "ashish.mehra@dnispl.com")
 SUPERVISOR_EMAILS_ALL = [SUPERVISOR_EMAIL, 'a.gupta@dnispl.com']
 ESCALATION_EMAILS = [
     e.strip().lower()
-    for e in os.environ.get("ESCALATION_EMAILS", "ashish.mehra@dnispl.com,a.gupta@dnispl.com").split(",")
+    for e in os.environ.get("ESCALATION_EMAILS", "ashish.mehra@dnispl.com,rakesh.uniyal@dnispl.com").split(",")
     if e.strip()
 ]
 SMTP_HOST = os.environ.get("SMTP_HOST", "").strip()
@@ -818,7 +818,13 @@ def send_presales_escalation_email(row, presales_due_iso: str) -> None:
         f"Presales Due At (72h SLA): {presales_due_iso}\n\n"
         "Action Needed: Please review and expedite proposal submission."
     )
-    send_email_smtp(ESCALATION_EMAILS, subject, body)
+    to_list = list(ESCALATION_EMAILS)
+    presales_email = (row.get('assigned_presales') or PRESALES_OWNER or '').strip().lower()
+    sales_email = (row.get('sales_owner') or row.get('owner') or '').strip().lower()
+    for e in [presales_email, sales_email]:
+        if e and e not in to_list:
+            to_list.append(e)
+    send_email_smtp(to_list, subject, body)
 
 
 def send_presales_assignment_email(opportunity_name: str, opp_id: str, presales_email: str, presales_due_iso: str) -> None:
@@ -3616,7 +3622,27 @@ def aop_bulk_import():
         return jsonify({"error":str(exc)}), 500
     finally:
         conn.close()
-
+@app.route("/api/escalation/check", methods=["GET"])
+def run_escalation_check():
+    secret = request.args.get("secret") or ""
+    if secret != OAUTH_STATE_SECRET:
+        return jsonify({"error": "unauthorized"}), 401
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, name, owner, sales_owner, assigned_presales, assigned_salesops,
+                       workflow_stage, presales_due_at, purchase_due_at, presales_escalated_at,
+                       final_pricing_proposal, sales_submitted_at, assignment_due_at,
+                       costing_returned_at, account_id, created_at
+                FROM opportunities
+                WHERE workflow_stage IN ('Assigned to Presales','Awaiting Sales Ops Pricing','Awaiting Purchase Costing')
+            """)
+            rows = cur.fetchall()
+        changed = enforce_opportunity_sla(conn, rows)
+        return jsonify({"status": "ok", "checked": len(rows), "escalated": changed})
+    finally:
+        conn.close()
 if __name__ == "__main__":
     init_db()
     port = int(os.environ.get("PORT", "8001"))
