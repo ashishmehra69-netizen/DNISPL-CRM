@@ -2585,7 +2585,13 @@ def microsoft_oauth_status():
     if not viewer_email:
         return jsonify({"connected": False, "error": "viewer_email required"}), 400
     row = _get_o365_token_row(viewer_email)
-    return jsonify({"connected": bool(row and (row.get("status") or "") == "active")})
+    if not row or (row.get("status") or "") != "active":
+        return jsonify({"connected": False})
+    expires_at = row.get("expires_at")
+    if expires_at and isinstance(expires_at, datetime):
+        if expires_at < datetime.now(timezone.utc):
+            return jsonify({"connected": False})
+    return jsonify({"connected": True})
 
 
 @app.route("/api/mom/send", methods=["POST"])
