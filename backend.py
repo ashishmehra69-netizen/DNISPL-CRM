@@ -45,7 +45,7 @@ DATABASE_URL = (
     or os.environ.get("SUPABASE_DB_URL")
     or os.environ.get("SUPABASE_DATABASE_URL")
 )
-PRESALES_OWNER = os.environ.get("PRESALES_OWNER", "vinod.v@dnispl.com")
+PRESALES_OWNER = os.environ.get("PRESALES_OWNER", "sumit@dnispl.com")
 SALES_OPS_OWNER = os.environ.get("SALES_OPS_OWNER", "soumya.m@dnispl.com")
 SUPERVISOR_EMAIL = os.environ.get("SUPERVISOR_EMAIL", "ashish.mehra@dnispl.com").strip().lower()
 SUPERVISOR_EMAILS_ALL = [SUPERVISOR_EMAIL, 'a.gupta@dnispl.com']
