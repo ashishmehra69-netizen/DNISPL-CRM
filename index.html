@@ -371,6 +371,7 @@ function formatMoneyValue(value) {
  function getUserRole() {
  if (isSupervisor) return 'supervisor';
  const email = (currentUser || '').toLowerCase();
+ if (KNOWN_EMAIL_ROLES[email]) return KNOWN_EMAIL_ROLES[email];
  const PRESALES_USERS = ['vinod.v@dnispl.com'];
  const SALESOPS_USERS = ['soumya.m@dnispl.com', 'soumay.m@dnispl.com'];
  const PURCHASE_USERS = [];
