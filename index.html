@@ -88,7 +88,7 @@ const PRESALES_OWNER = 'vinod.v@dnispl.com';
 const PURCHASE_OWNER = 'soumya.m@dnispl.com';
 const SALES_OPS_OWNER = 'soumya.m@dnispl.com';
 const ESCALATION_EMAILS = ['ashish.mehra@dnispl.com', 'rakesh.uniyal@dnispl.com'];
-const BUILD_VERSION = '2026-03-10-01';
+
 const ACCOUNT_OWNER_MAP = {
   'Satin Credit care': 'shasank.raturi@dnispl.com',
   'haier': 'shasank.raturi@dnispl.com',
@@ -1067,7 +1067,7 @@ function seedAccountsFromMap() {
  console.warn('Backend activities unavailable, using local activities only', err);
  }
 
- document.getElementById('status').textContent = (isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data') + ` | Build ${BUILD_VERSION}`;
+ document.getElementById('status').textContent = isSupervisor ? '✅ Supervisor View - ALL Data' : '✅ Your Data';
  render();
  }
 
