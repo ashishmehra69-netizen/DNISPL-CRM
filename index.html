@@ -313,6 +313,7 @@ const USER_DISPLAY_NAMES = {
   'a.gupta@dnispl.com':         'Awdesh Gupta (Supervisor)',
   'rakesh.uniyal@dnispl.com':   'Rakesh Uniyal (Supervisor)',
   'vinod.v@dnispl.com':         'Vinod V (Presales)',
+  'sumit@dnispl.com':           'Sumit Choudhary (Presales)',
   'soumya.m@dnispl.com':        'Soumya M (Sales Ops)',
   'aakriti.v@dnispl.com':       'Aakriti V',
   'ayushi.v@dnispl.com':        'Ayushi V',
@@ -341,6 +342,7 @@ const CRM_VISIBLE_MEMBERS = [
   'rakesh.uniyal@dnispl.com',
   // Presales
   'vinod.v@dnispl.com',
+  'sumit@dnispl.com',
   // Sales team
   'aakriti.v@dnispl.com',
   'ayushi.v@dnispl.com',
@@ -389,7 +391,9 @@ const KNOWN_EMAIL_ROLES = {
   'a.gupta@dnispl.com':      'supervisor',
   'rakesh.uniyal@dnispl.com':'supervisor',
   'vinod.v@dnispl.com':      'presales',
+  'sumit@dnispl.com':        'presales',
   'soumya.m@dnispl.com':     'salesops',
+  'sumit@dnispl.com':        'Presales',
 };
 
 // Friendly display labels for roles
@@ -574,7 +578,7 @@ async function fetchUserPassword(email) {
  try {
  const normEmail = (email || '').toLowerCase();
  const selfRole = SUPERVISOR_EMAILS.includes(normEmail) ? 'supervisor'
-   : normEmail === 'vinod.v@dnispl.com' ? 'presales'
+   : (normEmail === 'vinod.v@dnispl.com' || normEmail === 'sumit@dnispl.com') ? 'presales'
    : normEmail === 'soumya.m@dnispl.com' ? 'salesops'
    : 'account_manager';
  const url = `${CRM_API_BASE}/api/passwords/${encodeURIComponent(email)}?viewer_email=${encodeURIComponent(email)}&viewer_role=${encodeURIComponent(selfRole)}`;
