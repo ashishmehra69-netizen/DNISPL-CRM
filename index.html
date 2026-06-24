@@ -308,6 +308,9 @@ let state = { activeTab: 'leads', data: { leads: [], accounts: [], contacts: [],
 let activityFilter = { mode: 'today', from: '', to: '' };
 let supervisorAMFilter = ''; // email of selected AM for supervisor view
 let opportunityFilterMode = 'all';
+let oppSortOrder = 'desc';
+let oppDateFrom = '';
+let oppDateTo = '';
 const USER_DISPLAY_NAMES = {
   'ashish.mehra@dnispl.com':    'Ashish Mehra (Supervisor)',
   'a.gupta@dnispl.com':         'Awdesh Gupta (Supervisor)',
@@ -1509,10 +1512,15 @@ function renderAccounts(filtered) {
  const vinodOpps = isSupervisor ? allOpps.filter(o => (o.owner||'').toLowerCase() === VINOD) : [];
  if (typeof window._oppView === 'undefined') window._oppView = 'sales';
  const baseOpps = (isSupervisor && window._oppView === 'presales') ? vinodOpps : salesOpps;
- const opps = opportunityFilterMode === 'all' ? baseOpps
+ let opps = opportunityFilterMode === 'all' ? baseOpps
    : opportunityFilterMode === 'Awaiting Pricing' ? baseOpps.filter(o => PRICING_STAGES.includes(o.workflowStage))
    : opportunityFilterMode === 'Assigned to Presales' ? baseOpps.filter(o => o.workflowStage === 'Assigned to Presales')
    : baseOpps.filter(o => o.stage === opportunityFilterMode);
+   if (oppDateFrom) opps = opps.filter(o => new Date(o.createdDate) >= new Date(oppDateFrom + 'T00:00:00'));
+   if (oppDateTo) opps = opps.filter(o => new Date(o.createdDate) <= new Date(oppDateTo + 'T23:59:59'));
+   opps = opps.sort((a, b) => oppSortOrder === 'desc'
+     ? new Date(b.createdDate) - new Date(a.createdDate)
+     : new Date(a.createdDate) - new Date(b.createdDate));
  const discoveryCount = opps.filter(o => (o.stage || '') === 'Discovery').length;
  const proposalCount = opps.filter(o => (o.stage || '') === 'Proposal').length;
  const negotiationCount = opps.filter(o => (o.stage || '') === 'Negotiation').length;
@@ -1542,9 +1550,13 @@ function renderAccounts(filtered) {
    <div class="metric" style="min-width:180px"><div>Weighted Funnel</div><div class="metric-value" style="font-size:1.35rem">${formatMoneyValue(weightedFunnelValue)}</div></div>
    <div class="metric" style="min-width:180px;background:rgba(239,68,68,0.2);display:${opportunityFilterMode === 'Closed Lost' ? 'block' : 'none'}"><div>Closed Lost Value</div><div class="metric-value" style="font-size:1.35rem;color:#fca5a5">${formatMoneyValue(lostFunnelValue)}</div></div>
  </div>
- <div style="display:flex; gap:8px; flex-wrap:wrap">
+ <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
  <button class="btn" type="button" onclick="document.getElementById('oppsCsvInput').click()">Import CSV</button>
  <button class="btn btn-success" type="button" onclick="exportVisibleOpportunitiesCSV()">Export CSV</button>
+ <button class="btn" onclick="oppSortOrder=oppSortOrder==='desc'?'asc':'desc';render()" style="font-size:0.85em">${oppSortOrder === 'desc' ? '↓ Newest First' : '↑ Oldest First'}</button>
+ <label style="font-size:0.85em">From <input class="input" style="display:inline-block;width:auto" type="date" value="${oppDateFrom}" onchange="oppDateFrom=this.value;render()"></label>
+ <label style="font-size:0.85em">To <input class="input" style="display:inline-block;width:auto" type="date" value="${oppDateTo}" onchange="oppDateTo=this.value;render()"></label>
+ ${oppDateFrom||oppDateTo ? `<button class="btn btn-danger" style="font-size:0.85em" onclick="oppDateFrom='';oppDateTo='';render()">Clear</button>` : ''}
  </div>
  <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:16px">
    <button onclick="filterOpps('all')" style="background:#fff;color:#333;border:1px solid #cbd5e0;padding:5px 12px;border-radius:20px;cursor:pointer;font-size:0.85em;font-weight:600">📋 All (${opps.length})</button>
