@@ -2377,6 +2377,9 @@ function openAddModal() {
  <textarea name="presalesArchitecture" placeholder="Presales Architecture Notes">${opp?.presalesArchitecture || ''}</textarea>
  <textarea name="presalesQuestions" placeholder="Presales Questions">${opp?.presalesQuestions || ''}</textarea>
  <textarea name="boq" placeholder="BOQ">${opp?.boq || ''}</textarea>
+ <input type="file" id="poScanInput" accept=".pdf,.jpg,.jpeg,.png" style="display:none" onchange="scanPODocument(this)">
+ <button type="button" class="btn" onclick="document.getElementById('poScanInput').click()" style="width:100%;margin-bottom:4px">📷 Scan PO / Quote Document</button>
+ <div id="poScanStatus" style="font-size:0.82em;opacity:0.75;margin-bottom:4px"></div>
  <textarea name="purchaseCosting" placeholder="Purchase Costing">${opp?.purchaseCosting || ''}</textarea>
  <label style="display:block;margin:4px 0 2px;font-size:0.85em;opacity:0.85">Costing TAT</label>
  <input class="input" type="datetime-local" name="costingTat" value="${opp?.costingTat ? opp.costingTat.slice(0,16) : ''}">
@@ -2961,7 +2964,38 @@ async function saveContact(e, id) {
   alert(`Could not save contact to shared backend: ${err.message}`);
  }
 }
-
+async function scanPODocument(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const status = document.getElementById('poScanStatus');
+  status.textContent = '⏳ Reading document…';
+  const reader = new FileReader();
+  reader.onload = async function(e) {
+    status.textContent = '🤖 Extracting details with AI…';
+    try {
+      const resp = await fetch(`${CRM_API_BASE}/api/ai-extract`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_b64: e.target.result, media_type: file.type || 'image/jpeg',
+          prompt: 'Extract from this PO or quote: customer name, items (description, qty, unit price), total amount, PO number, date. Return JSON with keys: customer, items, total, po_number, date.' })
+      });
+      const data = await resp.json();
+      if (data.error) { status.textContent = '❌ ' + data.error; return; }
+      status.textContent = '✅ Extracted successfully';
+      try {
+        const parsed = JSON.parse(data.text);
+        if (parsed.customer) { const f = document.querySelector('[name="name"]'); if (f && !f.value) f.value = parsed.customer; }
+        if (parsed.total) { const f = document.querySelector('[name="value"]'); if (f && !f.value) f.value = String(parsed.total).replace(/[^0-9.]/g,''); }
+        const boq = document.querySelector('[name="boq"]');
+        if (boq) boq.value = data.text;
+      } catch(e) {
+        const boq = document.querySelector('[name="boq"]');
+        if (boq) boq.value = data.text;
+      }
+    } catch(e) { status.textContent = '❌ Network error: ' + e.message; }
+  };
+  reader.readAsDataURL(file);
+}
 async function saveOpportunity(e, id) {
  e.preventDefault();
  const existing = id ? state.data.opportunities.find(o => o.id === id) : null;
