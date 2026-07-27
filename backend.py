@@ -3726,22 +3726,19 @@ def geo_ping():
                  data.get("accuracy"), data.get("battery"))
             )
             cur.execute("""
-                SELECT id::text as id, account_name, geo_lat, geo_lng, 
-                       geo_radius_meters,
-                       (6371000 * acos(
-                           LEAST(1.0, cos(radians(%s)) * cos(radians(geo_lat)) *
-                           cos(radians(geo_lng) - radians(%s)) +
-                           sin(radians(%s)) * sin(radians(geo_lat)))
-                       )) AS distance_meters
-                FROM accounts
-                WHERE geo_lat IS NOT NULL 
-                AND geo_lng IS NOT NULL
-                HAVING (6371000 * acos(
-                    LEAST(1.0, cos(radians(%s)) * cos(radians(geo_lat)) *
-                    cos(radians(geo_lng) - radians(%s)) +
-                    sin(radians(%s)) * sin(radians(geo_lat)))
-                )) <= COALESCE(geo_radius_meters, 150)
-            """, (lat, lng, lat, lat, lng, lat))
+                SELECT id, account_name, distance_meters FROM (
+                    SELECT id::text as id, account_name, geo_radius_meters,
+                           (6371000 * acos(
+                               LEAST(1.0, cos(radians(%s)) * cos(radians(geo_lat)) *
+                               cos(radians(geo_lng) - radians(%s)) +
+                               sin(radians(%s)) * sin(radians(geo_lat)))
+                           )) AS distance_meters
+                    FROM accounts
+                    WHERE geo_lat IS NOT NULL 
+                    AND geo_lng IS NOT NULL
+                ) sub
+                WHERE distance_meters <= COALESCE(geo_radius_meters, 150)
+            """, (lat, lng, lat))
             nearby = cur.fetchall()
         conn.commit()
         return jsonify({
