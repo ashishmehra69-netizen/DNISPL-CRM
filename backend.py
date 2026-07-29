@@ -3919,6 +3919,55 @@ def geo_live_locations():
             return jsonify([dict(r) for r in cur.fetchall()])
     finally:
         conn.close()
+@app.route("/api/geo/bulk-geocode", methods=["POST"])
+def bulk_geocode_accounts():
+    """Geocode all accounts using their location field via Nominatim"""
+    data = request.get_json(silent=True) or {}
+    viewer_role = (data.get("viewer_role") or "").strip().lower()
+    if not _is_supervisor(viewer_role):
+        return jsonify({"error": "supervisor only"}), 403
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, account_name, location FROM accounts
+                WHERE geo_lat IS NULL 
+                AND location IS NOT NULL 
+                AND trim(location) <> ''
+            """)
+            accounts = cur.fetchall()
+
+        results = {"geocoded": 0, "failed": 0, "skipped": 0, "details": []}
+        for acc in accounts:
+            query = f"{acc['account_name']}, {acc['location']}, India"
+            try:
+                resp = _http_json_request(
+                    f"https://nominatim.openstreetmap.org/search?q={urllib.parse.quote(query)}&format=json&limit=1",
+                    headers={"User-Agent": "DNISPL-CRM/1.0"}
+                )
+                if resp and len(resp) > 0:
+                    lat = float(resp[0]["lat"])
+                    lon = float(resp[0]["lon"])
+                    with conn.cursor() as cur2:
+                        cur2.execute(
+                            "UPDATE accounts SET geo_lat=%s, geo_lng=%s, geo_radius_meters=150 WHERE id=%s",
+                            (lat, lon, acc["id"])
+                        )
+                    conn.commit()
+                    results["geocoded"] += 1
+                    results["details"].append({"account": acc["account_name"], "status": "ok", "lat": lat, "lng": lon})
+                else:
+                    results["failed"] += 1
+                    results["details"].append({"account": acc["account_name"], "status": "no match"})
+            except Exception as e:
+                results["failed"] += 1
+                results["details"].append({"account": acc["account_name"], "status": str(e)})
+            time.sleep(1.1)
+
+        return jsonify(results)
+    finally:
+        conn.close()
 if __name__ == "__main__":
     init_db()
     port = int(os.environ.get("PORT", "8001"))
