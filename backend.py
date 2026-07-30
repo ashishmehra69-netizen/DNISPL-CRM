@@ -3921,11 +3921,13 @@ def geo_live_locations():
         conn.close()
 @app.route("/api/geo/bulk-geocode", methods=["POST"])
 def bulk_geocode_accounts():
-    """Geocode all accounts using their location field via Nominatim"""
+    """Geocode a small batch of accounts per call — call repeatedly until done"""
     data = request.get_json(silent=True) or {}
     viewer_role = (data.get("viewer_role") or "").strip().lower()
     if not _is_supervisor(viewer_role):
         return jsonify({"error": "supervisor only"}), 403
+
+    batch_size = int(data.get("batch_size") or 8)
 
     conn = get_conn()
     try:
@@ -3935,10 +3937,11 @@ def bulk_geocode_accounts():
                 WHERE geo_lat IS NULL 
                 AND location IS NOT NULL 
                 AND trim(location) <> ''
-            """)
+                LIMIT %s
+            """, (batch_size,))
             accounts = cur.fetchall()
 
-        results = {"geocoded": 0, "failed": 0, "skipped": 0, "details": []}
+        results = {"geocoded": 0, "failed": 0, "remaining": 0, "details": []}
         for acc in accounts:
             query = f"{acc['account_name']}, {acc['location']}, India"
             try:
@@ -3956,8 +3959,15 @@ def bulk_geocode_accounts():
                         )
                     conn.commit()
                     results["geocoded"] += 1
-                    results["details"].append({"account": acc["account_name"], "status": "ok", "lat": lat, "lng": lon})
+                    results["details"].append({"account": acc["account_name"], "status": "ok"})
                 else:
+                    # Mark as attempted so it's not retried forever — set a tiny sentinel radius
+                    with conn.cursor() as cur2:
+                        cur2.execute(
+                            "UPDATE accounts SET geo_radius_meters=0 WHERE id=%s",
+                            (acc["id"],)
+                        )
+                    conn.commit()
                     results["failed"] += 1
                     results["details"].append({"account": acc["account_name"], "status": "no match"})
             except Exception as e:
@@ -3965,9 +3975,20 @@ def bulk_geocode_accounts():
                 results["details"].append({"account": acc["account_name"], "status": str(e)})
             time.sleep(1.1)
 
+        with conn.cursor(cursor_factory=RealDictCursor) as cur3:
+            cur3.execute("""
+                SELECT COUNT(*) as c FROM accounts
+                WHERE geo_lat IS NULL 
+                AND location IS NOT NULL 
+                AND trim(location) <> ''
+            """)
+            results["remaining"] = cur3.fetchone()["c"]
+
         return jsonify(results)
-    finally:
+   finally:
         conn.close()
+
+
 if __name__ == "__main__":
     init_db()
     port = int(os.environ.get("PORT", "8001"))
