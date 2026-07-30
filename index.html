@@ -3,6 +3,8 @@
 <head>
  <meta charset="UTF-8">
  <title>Sales CRM - Simple Version</title>
+ <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+ <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
  <style>
  * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
  body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; color: white; padding: 20px; }
@@ -949,6 +951,7 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  }
  
  await loadData();
+ startGeoTracking();
  await refreshMicrosoftButton();
  }
 
@@ -956,7 +959,9 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
    kraState = { data: null, loading: false, quarter: 'Q1', fy_year: '2025-26', targetEmail: '', teamMembers: [] };
    incState = { data: null, loading: false, quarter: 'Q1', targetEmail: '', salaryData: null };
  }
+ 
  function logout() {
+ stopGeoTracking();
  currentUser = '';
  isSupervisor = false;
  resetReportState();
@@ -1275,11 +1280,132 @@ function calculateICPScore(account) {
  activities: state.data.activities.filter(a => (a.owner || '').toLowerCase() === me)
  };
 }
+ let teamLocState = { members: [], loading: false, loaded: false };
+let _teamMapInstance = null;
 
+async function loadTeamLocations() {
+  teamLocState.loading = true;
+  render();
+  try {
+    const url = `${CRM_API_BASE}/api/geo/live?viewer_email=${encodeURIComponent(currentUser)}&viewer_role=${encodeURIComponent(getViewerRoleForApi())}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    teamLocState.members = Array.isArray(data) ? data : [];
+  } catch (e) {
+    teamLocState.members = [];
+  }
+  teamLocState.loading = false;
+  teamLocState.loaded = true;
+  render();
+}
+
+function minutesAgo(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return Math.floor((Date.now() - d.getTime()) / 60000);
+}
+
+function statusForMinutes(mins) {
+  if (mins === null) return { color: '#a0aec0', text: 'No location yet' };
+  if (mins <= 10) return { color: '#4ade80', text: `Active — ${mins}m ago` };
+  if (mins <= 60) return { color: '#fbbf24', text: `Idle — ${mins}m ago` };
+  return { color: '#ff4757', text: `Stale — ${mins}m ago` };
+}
+
+function renderTeamMap() {
+  if (!teamLocState.loaded && !teamLocState.loading) {
+    loadTeamLocations();
+  }
+  if (teamLocState.loading) {
+    return '<div class="card" style="text-align:center;padding:32px">⏳ Loading team locations…</div>';
+  }
+  const members = teamLocState.members;
+
+  const cards = members.map(m => {
+    const mins = minutesAgo(m.pinged_at);
+    const s = statusForMinutes(mins);
+    return `
+    <div class="item-card">
+      <h3>${displayUserName(m.user_email)}</h3>
+      <div style="margin-top:10px">
+        <span class="tag" style="background:${s.color};color:white">${s.text}</span>
+      </div>
+      <div style="font-size:0.85em; opacity:0.85; margin-top:10px">${m.user_email}</div>
+    </div>`;
+  }).join('');
+
+  return `
+  <div class="card">
+    <h2>🗺️ Team Map</h2>
+    <div style="opacity:0.85; margin-top:8px">Live location of your team, based on their last GPS ping while the app is open.</div>
+    <button class="btn" style="margin-top:12px" onclick="loadTeamLocations()">🔄 Refresh</button>
+  </div>
+  <div class="card" style="padding:0; overflow:hidden">
+    <div id="teamMapContainer" style="height:400px; width:100%; border-radius:12px"></div>
+  </div>
+  <div class="grid" style="margin-top:16px">
+    ${cards || '<div class="card">No team members found.</div>'}
+  </div>`;
+}
+
+function initTeamMap() {
+  const container = document.getElementById('teamMapContainer');
+  if (!container || typeof L === 'undefined') return;
+  if (_teamMapInstance) { _teamMapInstance.remove(); _teamMapInstance = null; }
+
+  const withLocation = teamLocState.members.filter(m => m.lat && m.lng);
+  const defaultCenter = [28.4595, 77.0266];
+  const center = withLocation.length ? [withLocation[0].lat, withLocation[0].lng] : defaultCenter;
+
+  _teamMapInstance = L.map('teamMapContainer').setView(center, withLocation.length ? 11 : 10);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 19
+  }).addTo(_teamMapInstance);
+
+  withLocation.forEach(m => {
+    const mins = minutesAgo(m.pinged_at);
+    const s = statusForMinutes(mins);
+    const icon = L.divIcon({
+      className: '',
+      html: `<div style="background:${s.color};width:16px;height:16px;border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.4)"></div>`,
+      iconSize: [16, 16], iconAnchor: [8, 8]
+    });
+    L.marker([m.lat, m.lng], { icon }).addTo(_teamMapInstance)
+      .bindPopup(`<b>${displayUserName(m.user_email)}</b><br><span style="color:${s.color}">${s.text}</span>`);
+  });
+
+  if (withLocation.length > 1) {
+    _teamMapInstance.fitBounds(L.latLngBounds(withLocation.map(m => [m.lat, m.lng])), { padding: [40, 40] });
+  }
+}
+
+let _geoWatcher = null;
+function startGeoTracking() {
+  if (!navigator.geolocation || !currentUser) return;
+  _geoWatcher = navigator.geolocation.watchPosition(
+    async pos => {
+      const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+      try {
+        await fetch(`${CRM_API_BASE}/api/geo/ping`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_email: currentUser, lat, lng, accuracy })
+        });
+      } catch (e) { /* offline — silent fail */ }
+    },
+    err => console.warn('GPS error', err),
+    { enableHighAccuracy: true, maximumAge: 30000, timeout: 15000 }
+  );
+}
+function stopGeoTracking() {
+  if (_geoWatcher !== null) { navigator.geolocation.clearWatch(_geoWatcher); _geoWatcher = null; }
+}
  function render() {
  const role = getUserRole();
  const tabs = isSupervisor
- ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'dashboard', 'reports']
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'dashboard', 'reports', 'team']
  : (role === 'sales'
  ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'reports']
  : (role === 'presales'
@@ -1303,8 +1429,10 @@ function calculateICPScore(account) {
  else if (state.activeTab === 'workflow') content = renderWorkflow(filtered);
  else if (state.activeTab === 'reports') content = `<div id="reportsRoot">${renderReports(filtered)}</div>`;
  else if (state.activeTab === 'dashboard') content = renderDashboard(filtered);
+ else if (state.activeTab === 'team') content = renderTeamMap();
  
  document.getElementById('content').innerHTML = content;
+ if (state.activeTab === 'team') setTimeout(initTeamMap, 0);
  }
 
  function renderLeads(filtered) {
