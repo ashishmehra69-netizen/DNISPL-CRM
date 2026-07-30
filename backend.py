@@ -3940,7 +3940,6 @@ def bulk_geocode_accounts():
                 LIMIT %s
             """, (batch_size,))
             accounts = cur.fetchall()
-
         results = {"geocoded": 0, "failed": 0, "remaining": 0, "details": []}
         for acc in accounts:
             query = f"{acc['account_name']}, {acc['location']}, India"
@@ -3974,7 +3973,6 @@ def bulk_geocode_accounts():
                 results["failed"] += 1
                 results["details"].append({"account": acc["account_name"], "status": str(e)})
             time.sleep(1.1)
-
         with conn.cursor(cursor_factory=RealDictCursor) as cur3:
             cur3.execute("""
                 SELECT COUNT(*) as c FROM accounts
@@ -3983,15 +3981,6 @@ def bulk_geocode_accounts():
                 AND trim(location) <> ''
             """)
             results["remaining"] = cur3.fetchone()["c"]
-
         return jsonify(results)
-   finally:
+    finally:
         conn.close()
-
-
-if __name__ == "__main__":
-    init_db()
-    port = int(os.environ.get("PORT", "8001"))
-    print(f"Simple CRM backend running on port {port}")
-    print("DB host:", urlparse(DATABASE_URL).hostname)
-    app.run(host="0.0.0.0", port=port, debug=True)
