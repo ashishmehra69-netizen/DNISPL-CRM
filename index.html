@@ -1246,7 +1246,7 @@ function calculateICPScore(account) {
  }
  const role = getUserRole();
  const me = (currentUser || '').toLowerCase();
- const myAccounts = state.data.accounts.filter(a => {
+ const myAccounts = (role === 'presales') ? state.data.accounts : state.data.accounts.filter(a => {
  const mgr = (a.accountManager || a.account_manager || '').toLowerCase();
  const owner = (a.owner || '').toLowerCase();
  return mgr === me || owner === me;
@@ -1409,7 +1409,7 @@ function stopGeoTracking() {
  : (role === 'sales'
  ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'reports']
  : (role === 'presales'
- ? ['leads', 'opportunities', 'workflow', 'activities', 'reports']
+ ? ['leads', 'accounts', 'opportunities', 'workflow', 'activities', 'reports']
  : (role === 'salesops'
  ? ['opportunities', 'workflow', 'activities', 'reports']
  : ['opportunities', 'workflow', 'activities'])));
