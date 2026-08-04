@@ -1405,16 +1405,16 @@ function initTeamMap() {
 
 let _geoWatcher = null;
 let _lastPingTime = 0;
-const PING_THROTTLE_MS = 30000; // only ping at most once every 30 seconds
+const PING_INTERVAL_MS = 30000;
 
 function startGeoTracking() {
   if (!navigator.geolocation || !currentUser) return;
   _geoWatcher = navigator.geolocation.watchPosition(
     async pos => {
       const now = Date.now();
-      if (now - _lastPingTime < PING_THROTTLE_MS) return;
+      if (now - _lastPingTime < PING_INTERVAL_MS) return;
       _lastPingTime = now;
-
+      
       const { latitude: lat, longitude: lng, accuracy } = pos.coords;
       try {
         await fetch(`${CRM_API_BASE}/api/geo/ping`, {
