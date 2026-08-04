@@ -101,13 +101,13 @@ def add_cors_headers(resp):
 
 def get_conn():
     last_exc = None
-    for attempt in range(2):
+    for attempt in range(4):
         try:
             return psycopg2.connect(
                 DATABASE_URL,
                 sslmode="require",
-                connect_timeout=3,
-                options="-c statement_timeout=30000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=10000",
+                connect_timeout=5,
+                options="-c statement_timeout=15000 -c lock_timeout=3000 -c idle_in_transaction_session_timeout=8000",
                 application_name="dnispl-crm",
                 keepalives=1,
                 keepalives_idle=30,
@@ -116,9 +116,8 @@ def get_conn():
             )
         except Exception as exc:
             last_exc = exc
-            time.sleep(0.2 * (attempt + 1))
+            time.sleep(0.15 * (attempt + 1))
     raise last_exc
-
 
 def init_db() -> None:
     conn = get_conn()
