@@ -915,6 +915,26 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  }
 }
 
+  window.addEventListener('DOMContentLoaded', () => {
+  const saved = localStorage.getItem('crmSession');
+  if (saved) {
+    try {
+      const session = JSON.parse(saved);
+      currentUser = session.email;
+      resetReportState();
+      isSupervisor = SUPERVISOR_EMAILS.includes(currentUser.toLowerCase());
+      document.getElementById('loginScreen').style.display = 'none';
+      document.getElementById('mainScreen').style.display = 'block';
+      document.getElementById('userEmail').textContent = currentUser;
+      const roleLabel = { supervisor: 'SUPERVISOR', sales: 'SALESPERSON', presales: 'PRESALES', salesops: 'SALESOPS', purchase: 'PURCHASE' };
+      document.getElementById('userRole').textContent = roleLabel[getUserRole()] || 'SALESPERSON';
+      document.getElementById('fabBtn').style.display = 'block';
+      loadData();
+      refreshMicrosoftButton();
+      startGeoTracking();
+    } catch (e) { /* corrupted session, ignore */ }
+  }
+});
  async function login() {
  const email = document.getElementById('emailInput').value.trim();
  const password = document.getElementById('passwordInput').value;
@@ -931,6 +951,7 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  }
  
  currentUser = email;
+ localStorage.setItem('crmSession', JSON.stringify({ email: currentUser }));
  resetReportState();
  isSupervisor = SUPERVISOR_EMAILS.includes(email.toLowerCase());
  
@@ -962,6 +983,7 @@ function recordActivity(type, subject, notes = '', ownerOverride = null) {
  
  function logout() {
  stopGeoTracking();
+ localStorage.removeItem('crmSession');
  currentUser = '';
  isSupervisor = false;
  resetReportState();
