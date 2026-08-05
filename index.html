@@ -1404,13 +1404,15 @@ function initTeamMap() {
   withLocation.forEach(m => {
     const mins = minutesAgo(m.pinged_at);
     const s = statusForMinutes(mins);
+    const safeId = m.user_email.replace(/[^a-zA-Z0-9]/g, '_');
     const icon = L.divIcon({
       className: '',
       html: `<div style="background:${s.color};width:16px;height:16px;border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.4)"></div>`,
       iconSize: [16, 16], iconAnchor: [8, 8]
     });
-    L.marker([m.lat, m.lng], { icon }).addTo(_teamMapInstance)
-      .bindPopup(`<b>${displayUserName(m.user_email)}</b><br><span style="color:${s.color}">${s.text}</span>`);
+    const marker = L.marker([m.lat, m.lng], { icon }).addTo(_teamMapInstance)
+      .bindPopup(`<b>${displayUserName(m.user_email)}</b><br><span style="color:${s.color}">${s.text}</span><br><span id="map_place_${safeId}">📍 Loading location…</span>`);
+    marker.on('popupopen', () => fetchPlaceName(m.lat, m.lng, `map_place_${safeId}`));
   });
 
   if (withLocation.length > 1) {
