@@ -1334,7 +1334,17 @@ function statusForMinutes(mins) {
   if (mins <= 60) return { color: '#fbbf24', text: `Idle — ${mins}m ago` };
   return { color: '#ff4757', text: `Stale — ${mins}m ago` };
 }
-
+async function fetchPlaceName(lat, lng, targetElId) {
+  const el = document.getElementById(targetElId);
+  if (el) el.textContent = 'Loading location...';
+  try {
+    const resp = await fetch(`${CRM_API_BASE}/api/geo/place-name?viewer_role=supervisor&lat=${lat}&lng=${lng}`);
+    const data = await resp.json();
+    if (el) el.textContent = `📍 ${data.place_name}`;
+  } catch(e) {
+    if (el) el.textContent = '📍 Location unavailable';
+  }
+}
 function renderTeamMap() {
   if (!teamLocState.loaded && !teamLocState.loading) {
     loadTeamLocations();
@@ -1347,15 +1357,20 @@ function renderTeamMap() {
   const cards = members.map(m => {
     const mins = minutesAgo(m.pinged_at);
     const s = statusForMinutes(mins);
-    return `
-    <div class="item-card">
-      <h3>${displayUserName(m.user_email)}</h3>
-      <div style="margin-top:10px">
-        <span class="tag" style="background:${s.color};color:white">${s.text}</span>
-      </div>
-      <div style="font-size:0.85em; opacity:0.85; margin-top:10px">${m.user_email}</div>
-    </div>`;
-  }).join('');
+    const safeId = m.user_email.replace(/[^a-zA-Z0-9]/g, '_');
+      return `
+      <div class="item-card">
+        <h3>${displayUserName(m.user_email)}</h3>
+        <div style="margin-top:10px">
+          <span class="tag" style="background:${s.color};color:white">${s.text}</span>
+        </div>
+        <div style="font-size:0.85em; opacity:0.85; margin-top:10px">${m.user_email}</div>
+        <div onclick="fetchPlaceName(${m.lat}, ${m.lng}, 'place_${safeId}')" style="cursor:pointer; text-decoration:underline; font-size:0.85em; margin-top:8px; color:#93c5fd">
+          📍 Show location
+        </div>
+        <span id="place_${safeId}" style="font-size:0.85em; display:block; margin-top:4px"></span>
+      </div>`;
+    }).join('');
 
   return `
   <div class="card">
