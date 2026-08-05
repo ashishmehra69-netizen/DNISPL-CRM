@@ -3896,7 +3896,18 @@ def list_geo_visits():
     finally:
         conn.close()
 
-
+def _reverse_geocode_backend(lat, lng):
+    try:
+        resp = _http_json_request(
+            f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lng}&format=json",
+            headers={"User-Agent": "DNISPL-CRM/1.0"}
+        )
+        addr = resp.get("address", {})
+        return (addr.get("suburb") or addr.get("neighbourhood") or addr.get("road")
+                or addr.get("city_district") or addr.get("town")
+                or resp.get("display_name", "").split(",")[0] or "Unknown location")
+    except Exception:
+        return "Unknown location"
 @app.route("/api/geo/live", methods=["GET"])
 def geo_live_locations():
     """Latest location ping per salesperson — for manager map view"""
@@ -3918,6 +3929,19 @@ def geo_live_locations():
             return jsonify([dict(r) for r in cur.fetchall()])
     finally:
         conn.close()
+@app.route("/api/geo/place-name", methods=["GET"])
+def geo_place_name():
+    """On-demand reverse geocode for one person's last known location"""
+    viewer_role = (request.args.get("viewer_role") or "account_manager").strip().lower()
+    if not _is_supervisor(viewer_role):
+        return jsonify({"error": "supervisor only"}), 403
+    try:
+        lat = float(request.args.get("lat"))
+        lng = float(request.args.get("lng"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "lat and lng required"}), 400
+    place = _reverse_geocode_backend(lat, lng)
+    return jsonify({"place_name": place})
 @app.route("/api/geo/bulk-geocode", methods=["POST"])
 def bulk_geocode_accounts():
     """Geocode a small batch of accounts per call — call repeatedly until done"""
