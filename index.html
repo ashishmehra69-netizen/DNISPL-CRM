@@ -1106,7 +1106,46 @@ function filterOpps(filter) {
   opportunityFilterMode = filter;
   render();
 }
+function exportActivitiesCSV() {
+  const filtered = getFilteredData();
+  const allActivities = [...filtered.activities].sort((a, b) =>
+    new Date(b.date || b.modifiedDate || b.createdDate) - new Date(a.date || a.modifiedDate || a.createdDate)
+  );
+  const today = new Date().toDateString();
+  const activities = allActivities.filter(a => {
+    const stamp = a.date || a.modifiedDate || a.createdDate;
+    if (!stamp) return false;
+    const d = new Date(stamp);
+    if (isNaN(d.getTime())) return false;
+    if (activityFilter.mode === 'all') return true;
+    if (activityFilter.mode === 'today') return d.toDateString() === today;
+    if (activityFilter.mode === 'range') {
+      const fromOK = !activityFilter.from || d >= new Date(activityFilter.from + 'T00:00:00');
+      const toOK = !activityFilter.to || d <= new Date(activityFilter.to + 'T23:59:59');
+      return fromOK && toOK;
+    }
+    return true;
+  });
 
+  if (!activities.length) { alert('No activities to export.'); return; }
+
+  const rows = [['Type', 'Subject', 'Notes', 'Account', 'Owner', 'Date', 'Created', 'Updated']];
+  activities.forEach(a => {
+    rows.push([
+      a.type || '',
+      a.subject || '',
+      a.notes || '',
+      a.accountName || '',
+      a.owner || '',
+      fmtDateTime(a.date || a.modifiedDate || a.createdDate),
+      fmtDateTime(a.createdDate),
+      fmtDateTime(a.modifiedDate)
+    ]);
+  });
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  downloadCSV(`activities_${activityFilter.mode}_${stamp}.csv`, rows);
+}
 function exportVisibleOpportunitiesCSV() {
  const filtered = getFilteredData();
  const PRICING_STAGES = ['Awaiting Purchase Costing', 'Awaiting Sales Ops Pricing'];
@@ -1908,6 +1947,8 @@ function renderActivities(filtered) {
  <label style="font-size:0.85em">To <input class="input" style="display:inline-block; width:auto" type="date" id="activityToDate" value="${activityFilter.to || ''}"></label>
  <button class="btn btn-success" type="button" onclick="applyActivityDateRange()">Apply</button>
  <button class="btn btn-danger" type="button" onclick="clearActivityDateRange()">Clear</button>
+ <button class="btn btn-danger" type="button" onclick="clearActivityDateRange()">Clear</button>
+ <button class="btn btn-success" type="button" onclick="exportActivitiesCSV()">⬇ Export CSV</button>
  </div>
  </div>
  <div class="grid">
