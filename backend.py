@@ -168,6 +168,7 @@ def init_db() -> None:
             cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS company_size TEXT;")
             cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS annual_spend TEXT;")
             cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS mode TEXT;")
+            cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS account_tag TEXT DEFAULT 'existing';")
             cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q1 TEXT;")
             cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q2 TEXT;")
             cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspect_q3 TEXT;")
@@ -1087,6 +1088,9 @@ def upsert_account(data: dict, manager_id: int) -> str:
     company_size = (data.get("company_size") or data.get("companySize") or "").strip()
     annual_spend = (data.get("annual_spend") or data.get("annualSpend") or "").strip()
     mode = (data.get("mode") or "").strip()
+    account_tag = (data.get("account_tag") or "existing").strip().lower()
+    if account_tag not in ("new", "existing"):
+        account_tag = "existing"
     suspect_answers = {
         f"suspect_q{i}": (data.get(f"suspect_q{i}") or "").strip()
         for i in range(1, 11)
@@ -1115,6 +1119,7 @@ def upsert_account(data: dict, manager_id: int) -> str:
                         company_size=%s,
                         annual_spend=%s,
                         mode=%s,
+                        account_tag=%s,
                         suspect_q1=%s,
                         suspect_q2=%s,
                         suspect_q3=%s,
@@ -1137,6 +1142,7 @@ def upsert_account(data: dict, manager_id: int) -> str:
                         company_size,
                         annual_spend,
                         mode,
+                        account_tag,
                         suspect_answers["suspect_q1"],
                         suspect_answers["suspect_q2"],
                         suspect_answers["suspect_q3"],
@@ -1157,13 +1163,13 @@ def upsert_account(data: dict, manager_id: int) -> str:
             cur.execute(
                 """
                 INSERT INTO accounts (
-                    account_name, account_manager_id, industry, tier, location, company_size, annual_spend, mode,
+                    account_name, account_manager_id, industry, tier, location, company_size, annual_spend, mode, account_tag,
                     suspect_q1, suspect_q2, suspect_q3, suspect_q4, suspect_q5,
                     suspect_q6, suspect_q7, suspect_q8, suspect_q9, suspect_q10, suspect_score,
                     created_at, updated_at
                 )
                 VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s,
                     now(), now()
@@ -1178,6 +1184,7 @@ def upsert_account(data: dict, manager_id: int) -> str:
                     company_size,
                     annual_spend,
                     mode,
+                    account_tag,
                     suspect_answers["suspect_q1"],
                     suspect_answers["suspect_q2"],
                     suspect_answers["suspect_q3"],
@@ -1528,6 +1535,9 @@ def import_accounts():
         return jsonify({"error": "Missing file in form-data"}), 400
 
     file_obj = request.files["file"]
+    default_tag = (request.form.get("default_tag") or "existing").strip().lower()
+    if default_tag not in ("new", "existing"):
+        default_tag = "existing"
     if not file_obj or not file_obj.filename:
         return jsonify({"error": "Invalid file"}), 400
 
@@ -1553,6 +1563,7 @@ def import_accounts():
                 {
                     "account_name": name,
                     "account_manager": manager,
+                    "account_tag": (row.get("account_tag") or default_tag).strip().lower(),
                 },
                 manager_id,
             )
