@@ -313,6 +313,7 @@ let opportunityFilterMode = 'all';
 let oppSortOrder = 'desc';
 let oppDateFrom = '';
 let oppDateTo = '';
+let accountTagFilter = '';
 const USER_DISPLAY_NAMES = {
   'ashish.mehra@dnispl.com':    'Ashish Mehra (Supervisor)',
   'a.gupta@dnispl.com':         'Awdesh Gupta (Supervisor)',
@@ -459,6 +460,7 @@ function normalizeAccountFromApi(a) {
    companySize: a.company_size || a.companySize || '',
    annualSpend: a.annual_spend || a.annualSpend || '',
    mode: a.mode || '',
+   tag: a.account_tag || 'existing',
    accountManager: a.account_manager_email || a.accountManager || '',
    owner: a.account_manager_email || a.owner || '',
    createdDate: created,
@@ -730,7 +732,8 @@ async function upsertAccountToApi(account) {
   location: account.location || '',
   company_size: account.companySize || '',
   annual_spend: account.annualSpend || '',
-  mode: account.mode || ''
+  mode: account.mode || '',
+  account_tag: account.account_tag || account.tag || 'existing'
  };
  const resp = await fetch(`${CRM_API_BASE}/api/accounts`, {
   method: 'POST',
@@ -1323,7 +1326,7 @@ function calculateICPScore(account) {
  // Presales sees only their active bin (assigned to them as presales)
  if (role === 'presales') return assignedPresales === me || oppOwner === me || (o.workflowStage || '').toLowerCase().includes('presales');
  // Soumya sees only her active pricing queue (assigned to her AND in a pricing stage)
- if (role === 'salesops') return assignedSalesOps === me || assignedPurchase === me;
+  if (role === 'salesops') return assignedSalesOps === me || assignedPurchase === me || oppOwner === me || myAccountIds.has(o.accountId);
  if (role === 'purchase') return assignedPurchase === me && salesOpsStages.has(workflowStage);
  if (oppOwner === me) return true;
  if (myAccountIds.has(o.accountId)) return true;
@@ -1490,14 +1493,12 @@ function stopGeoTracking() {
  function render() {
  const role = getUserRole();
  const tabs = isSupervisor
- ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'dashboard', 'reports', 'team']
- : (role === 'sales'
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'dashboard', 'reports']
+ : (role === 'sales' || role === 'salesops'
  ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'reports']
  : (role === 'presales'
- ? ['leads', 'accounts', 'opportunities', 'workflow', 'activities', 'reports']
- : (role === 'salesops'
- ? ['opportunities', 'workflow', 'activities', 'reports']
- : ['opportunities', 'workflow', 'activities'])));
+ ? ['leads', 'opportunities', 'workflow', 'activities', 'reports']
+ : ['opportunities', 'workflow', 'activities']));
  if (!tabs.includes(state.activeTab)) state.activeTab = tabs[0];
  document.getElementById('tabs').innerHTML = tabs.map(t => 
  `<button class="tab ${state.activeTab === t ? 'active' : ''}" onclick="changeTab('${t}')">${t.toUpperCase()}</button>`
@@ -1629,15 +1630,21 @@ function renderAMFilterBar() {
   }).join('');
   return `
   <div style="background:rgba(255,255,255,0.15);border-radius:10px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-    <span style="font-size:13px;font-weight:600;opacity:0.85">👤 Filter by AM:</span>
     <select style="padding:6px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:13px;min-width:180px"
       onchange="supervisorAMFilter=this.value;render()">
       <option value="">— All Members —</option>
       ${members}
     </select>
-    ${supervisorAMFilter ? '<button class="btn" style="padding:5px 12px;font-size:12px" onclick="supervisorAMFilter=\'\';render()">✕ Clear</button>' : ''}
+    ${supervisorAMFilter ? `<button class="btn" style="padding:5px 12px;font-size:12px" onclick="supervisorAMFilter='';render()">✕ Clear</button>` : ''}
+    <select style="padding:6px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:13px"
+      onchange="accountTagFilter=this.value;render()">
+      <option value="">— New + Existing —</option>
+      <option value="new" ${accountTagFilter==='new'?'selected':''}>🆕 New</option>
+      <option value="existing" ${accountTagFilter==='existing'?'selected':''}>Existing</option>
+    </select>
+    ${accountTagFilter ? `<button class="btn" style="padding:5px 12px;font-size:12px" onclick="accountTagFilter='';render()">✕ Clear</button>` : ''}
   </div>`;
-}
+}   
 
 
 function renderAMFilterBar() {
@@ -1660,16 +1667,19 @@ function renderAccounts(filtered) {
  const coveredIds = new Set(
    (filtered.contacts || []).map(c => c.accountId).filter(Boolean)
  );
+ const accountsToShow = accountTagFilter
+   ? filtered.accounts.filter(a => (a.tag || 'existing') === accountTagFilter)
+   : filtered.accounts;
  return `
  ${renderAMFilterBar()}
  <div class="card">
- <h2>🏢 Accounts (${filtered.accounts.length}${supervisorAMFilter ? ' &ndash; ' + displayUserName(supervisorAMFilter) : ''})</h2>
+ <h2>🏢 Accounts (${accountsToShow.length}${supervisorAMFilter ? ' &ndash; ' + displayUserName(supervisorAMFilter) : ''}${accountTagFilter ? ' &ndash; ' + accountTagFilter : ''})</h2>
  <div style="display:flex;gap:16px;margin-top:8px;flex-wrap:wrap">
-  <span style="background:#22c55e;color:white;padding:5px 14px;border-radius:20px;font-size:0.9em">✅ Covered: ${filtered.accounts.filter(a => coveredIds.has(String(a.id))).length}</span>
-  <span style="background:#ef4444;color:white;padding:5px 14px;border-radius:20px;font-size:0.9em">❌ No Contact: ${filtered.accounts.length - filtered.accounts.filter(a => coveredIds.has(String(a.id))).length}</span>
+  <span style="background:#22c55e;color:white;padding:5px 14px;border-radius:20px;font-size:0.9em">✅ Covered: ${accountsToShow.filter(a => coveredIds.has(String(a.id))).length}</span>
+  <span style="background:#ef4444;color:white;padding:5px 14px;border-radius:20px;font-size:0.9em">❌ No Contact: ${accountsToShow.length - accountsToShow.filter(a => coveredIds.has(String(a.id))).length}</span>
 </div>
  <div class="grid">
- ${filtered.accounts.map(a => {
+ ${accountsToShow.map(a => {
    const isCovered = coveredIds.has(String(a.id));
    const borderColor = isCovered ? '#22c55e' : '#ef4444';
    const bgColor = isCovered ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.10)';
@@ -1681,6 +1691,7 @@ function renderAccounts(filtered) {
  <span class="tag">Tier ${a.tier || '-'}</span>
  <span class="tag">${a.location || '-'}</span>
  <span class="tag" style="background:${borderColor};color:white">${isCovered ? '✅ Covered' : '❌ No Contact'}</span>
+ <span class="tag" style="background:${(a.tag||'existing')==='new' ? '#f59e0b' : 'rgba(255,255,255,0.25)'};color:white">${(a.tag||'existing')==='new' ? '🆕 New' : 'Existing'}</span>
  </div>
  <div style="font-size:0.8em; opacity:0.6; margin-top:10px">
  📅 Created: ${fmtDate(a.createdDate)}<br>🕒 Updated: ${fmtDate(a.modifiedDate)}
@@ -1688,7 +1699,7 @@ function renderAccounts(filtered) {
  </div>
  `;
  }).join('')}
- ${filtered.accounts.length === 0 ? '<div class="card">No accounts yet. Click + to add one!</div>' : ''}
+ ${accountsToShow.length === 0 ? '<div class="card">No accounts yet. Click + to add one!</div>' : ''}
  </div>
  `;
 }
@@ -2699,6 +2710,11 @@ function openAddModal() {
  <option value="Overcome Bottleneck" ${account?.mode === 'Overcome Bottleneck' ? 'selected' : ''}>Overcome Bottleneck</option>
  <option value="Status Quo" ${account?.mode === 'Status Quo' ? 'selected' : ''}>Status Quo</option>
  </select>
+
+ <select class="input" name="accountTag">
+ <option value="existing" ${(account?.tag||'existing') === 'existing' ? 'selected' : ''}>Existing Account</option>
+ <option value="new" ${account?.tag === 'new' ? 'selected' : ''}>🆕 New Account</option>
+ </select>
  
  <div style="margin-top:20px">
  <button type="button" class="btn" onclick="closeModal()">Cancel</button>
@@ -3121,6 +3137,7 @@ async function saveAccount(e, id) {
  const existing = id ? state.data.accounts.find(a => a.id === id) : null;
  data.owner = existing?.owner || currentUser;
  data.accountManager = existing?.accountManager || currentUser;
+ data.account_tag = data.accountTag || existing?.tag || 'existing';
  data.createdDate = existing?.createdDate || new Date().toISOString();
  data.modifiedDate = new Date().toISOString();
  const localId = id || ('acc_' + Date.now().toString());
