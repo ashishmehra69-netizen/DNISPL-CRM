@@ -1623,29 +1623,6 @@ function handleOppsCsv(e) {
 }
 
 
-function renderAMFilterBar() {
-  if (!isSupervisor) return '';
-  const members = getSupervisorMemberEmails().map(email => {
-    return `<option value="${email}" ${supervisorAMFilter === email ? 'selected' : ''}>${displayUserName(email)}</option>`;
-  }).join('');
-  return `
-  <div style="background:rgba(255,255,255,0.15);border-radius:10px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-    <select style="padding:6px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:13px;min-width:180px"
-      onchange="supervisorAMFilter=this.value;render()">
-      <option value="">— All Members —</option>
-      ${members}
-    </select>
-    ${supervisorAMFilter ? `<button class="btn" style="padding:5px 12px;font-size:12px" onclick="supervisorAMFilter='';render()">✕ Clear</button>` : ''}
-    <select style="padding:6px 12px;border-radius:6px;border:1px solid #cbd5e0;font-size:13px"
-      onchange="accountTagFilter=this.value;render()">
-      <option value="">— New + Existing —</option>
-      <option value="new" ${accountTagFilter==='new'?'selected':''}>🆕 New</option>
-      <option value="existing" ${accountTagFilter==='existing'?'selected':''}>Existing</option>
-    </select>
-    ${accountTagFilter ? `<button class="btn" style="padding:5px 12px;font-size:12px" onclick="accountTagFilter='';render()">✕ Clear</button>` : ''}
-  </div>`;
-}   
-
 
 function renderAMFilterBar() {
   if (!isSupervisor) return '';
@@ -1674,6 +1651,7 @@ function renderAccounts(filtered) {
  ${renderAMFilterBar()}
  <div class="card">
  <h2>🏢 Accounts (${accountsToShow.length}${supervisorAMFilter ? ' &ndash; ' + displayUserName(supervisorAMFilter) : ''}${accountTagFilter ? ' &ndash; ' + accountTagFilter : ''})</h2>
+ <button class="btn" type="button" onclick="document.getElementById('accountsCsvInput').click()">Import CSV</button>
  <div style="display:flex;gap:16px;margin-top:8px;flex-wrap:wrap">
   <span style="background:#22c55e;color:white;padding:5px 14px;border-radius:20px;font-size:0.9em">✅ Covered: ${accountsToShow.filter(a => coveredIds.has(String(a.id))).length}</span>
   <span style="background:#ef4444;color:white;padding:5px 14px;border-radius:20px;font-size:0.9em">❌ No Contact: ${accountsToShow.length - accountsToShow.filter(a => coveredIds.has(String(a.id))).length}</span>
