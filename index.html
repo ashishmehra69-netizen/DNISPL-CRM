@@ -75,7 +75,7 @@
  <div class="modal" id="modal"></div>
  <input type="file" id="leadsCsvInput" accept=".csv" style="display:none" onchange="handleLeadsCsv(event)">
  <input type="file" id="oppsCsvInput" accept=".csv" style="display:none" onchange="handleOppsCsv(event)">
-
+ <input type="file" id="accountsCsvInput" accept=".csv" style="display:none" onchange="handleAccountsCsv(event)">
  <script>
  // ═══════════════════════════════════════════════════════════════
  // CONFIGURATION - SIMPLE GOOGLE SHEETS BACKEND
@@ -1582,6 +1582,23 @@ function handleLeadsCsv(e) {
  e.target.value = '';
 }
 
+function handleAccountsCsv(e) {
+ const file = e.target.files[0];
+ if (!file) return;
+ const formData = new FormData();
+ formData.append('file', file);
+ formData.append('default_tag', 'new');
+ fetch(`${CRM_API_BASE}/api/accounts/import`, { method: 'POST', body: formData })
+  .then(r => r.json())
+  .then(async (result) => {
+   alert(`Imported: ${result.created} created, ${result.updated} updated, ${result.failed_count} failed.`);
+   state.data.accounts = await fetchAccountsFromApi();
+   saveData();
+   render();
+  })
+  .catch(err => alert(`Import failed: ${err.message}`));
+ e.target.value = '';
+}
 function handleOppsCsv(e) {
  const file = e.target.files[0];
  if (!file) return;
