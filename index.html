@@ -1493,7 +1493,7 @@ function stopGeoTracking() {
  function render() {
  const role = getUserRole();
  const tabs = isSupervisor
- ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'dashboard', 'reports']
+ ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'dashboard', 'reports', 'team']
  : (role === 'sales' || role === 'salesops'
  ? ['leads', 'accounts', 'contacts', 'opportunities', 'workflow', 'activities', 'reports']
  : (role === 'presales'
