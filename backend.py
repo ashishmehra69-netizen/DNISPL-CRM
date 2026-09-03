@@ -1544,6 +1544,7 @@ def import_accounts():
     try:
         content = file_obj.read().decode("utf-8", errors="replace")
         reader = csv.DictReader(StringIO(content))
+        rows = list(reader)
     except Exception as exc:
         return jsonify({"error": f"Could not read CSV: {exc}"}), 400
 
@@ -1551,28 +1552,104 @@ def import_accounts():
     updated = 0
     failed = []
 
-    for idx, row in enumerate(reader, start=2):
-        name = (row.get("account_name") or "").strip()
-        manager = (row.get("account_manager") or "").strip()
-        if not name or not manager:
-            failed.append({"row": idx, "error": "Missing account_name/account_manager"})
-            continue
-        try:
-            manager_id = ensure_user(manager)
-            result = upsert_account(
-                {
-                    "account_name": name,
-                    "account_manager": manager,
-                    "account_tag": (row.get("account_tag") or default_tag).strip().lower(),
-                },
-                manager_id,
-            )
-            if result == "created":
-                created += 1
-            else:
-                updated += 1
-        except Exception as exc:
-            failed.append({"row": idx, "error": str(exc), "account_name": name})
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            for idx, row in enumerate(rows, start=2):
+                name = (row.get("account_name") or "").strip()
+                manager = (row.get("account_manager") or "").strip()
+                if not name or not manager:
+                    failed.append({"row": idx, "error": "Missing account_name/account_manager"})
+                    continue
+
+                try:
+                    # ---- ensure_user, inline using the shared connection ----
+                    manager_email = manager.strip()
+                    manager_id = None
+                    if "@" in manager_email:
+                        cur.execute(
+                            "SELECT id FROM users WHERE lower(email)=lower(%s)",
+                            (manager_email,),
+                        )
+                        urow = cur.fetchone()
+                        if urow:
+                            manager_id = int(urow["id"])
+                        else:
+                            cur.execute(
+                                "INSERT INTO users (email, name, role, created_at) VALUES (%s, %s, 'account_manager', now()) RETURNING id",
+                                (manager_email, manager_email.split("@")[0]),
+                            )
+                            manager_id = int(cur.fetchone()["id"])
+                    else:
+                        cur.execute(
+                            "SELECT id FROM users WHERE lower(name)=lower(%s)",
+                            (manager_email,),
+                        )
+                        urow = cur.fetchone()
+                        if urow:
+                            manager_id = int(urow["id"])
+                        else:
+                            placeholder_email = f"{manager_email.lower().replace(' ', '.')}@local.crm"
+                            cur.execute(
+                                "INSERT INTO users (email, name, role, created_at) VALUES (%s, %s, 'account_manager', now()) RETURNING id",
+                                (placeholder_email, manager_email),
+                            )
+                            manager_id = int(cur.fetchone()["id"])
+
+                    # ---- upsert_account, inline using the shared connection ----
+                    industry = (row.get("industry") or "").strip()
+                    tier = (row.get("tier") or "").strip()
+                    location = (row.get("location") or "").strip()
+                    company_size = (row.get("company_size") or "").strip()
+                    annual_spend = (row.get("annual_spend") or "").strip()
+                    mode = (row.get("mode") or "").strip()
+                    account_tag = (row.get("account_tag") or default_tag).strip().lower()
+                    if account_tag not in ("new", "existing"):
+                        account_tag = default_tag
+
+                    cur.execute(
+                        "SELECT id FROM accounts WHERE lower(account_name)=lower(%s)",
+                        (name,),
+                    )
+                    existing_acc = cur.fetchone()
+
+                    if existing_acc:
+                        cur.execute(
+                            """
+                            UPDATE accounts
+                            SET account_manager_id=%s, industry=%s, tier=%s, location=%s,
+                                company_size=%s, annual_spend=%s, mode=%s, account_tag=%s,
+                                updated_at=now()
+                            WHERE id=%s
+                            """,
+                            (manager_id, industry, tier, location, company_size,
+                             annual_spend, mode, account_tag, int(existing_acc["id"])),
+                        )
+                        updated += 1
+                    else:
+                        cur.execute(
+                            """
+                            INSERT INTO accounts (
+                                account_name, account_manager_id, industry, tier, location,
+                                company_size, annual_spend, mode, account_tag,
+                                created_at, updated_at
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+                            """,
+                            (name, manager_id, industry, tier, location,
+                             company_size, annual_spend, mode, account_tag),
+                        )
+                        created += 1
+
+                except Exception as row_exc:
+                    failed.append({"row": idx, "error": str(row_exc), "account_name": name})
+
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        return jsonify({"error": f"import failed: {exc}"}), 500
+    finally:
+        conn.close()
 
     return jsonify(
         {
@@ -1582,7 +1659,6 @@ def import_accounts():
             "failed_rows": failed[:50],
         }
     )
-
 
 @app.route("/api/activities", methods=["GET"])
 def list_activities():
