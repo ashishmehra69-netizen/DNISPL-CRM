@@ -1168,7 +1168,7 @@ def list_accounts():
                 cur.execute(
                     """
                     SELECT a.id, a.account_name, a.created_at, a.updated_at,
-                           a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode,
+                           a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode, a.account_tag,
                            a.suspect_q1, a.suspect_q2, a.suspect_q3, a.suspect_q4, a.suspect_q5,
                            a.suspect_q6, a.suspect_q7, a.suspect_q8, a.suspect_q9, a.suspect_q10, a.suspect_score,
                            u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
@@ -1193,7 +1193,7 @@ def list_accounts():
             cur.execute(
                 """
                 SELECT a.id, a.account_name, a.created_at, a.updated_at,
-                       a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode,
+                       a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode, a.account_tag,
                        a.suspect_q1, a.suspect_q2, a.suspect_q3, a.suspect_q4, a.suspect_q5,
                        a.suspect_q6, a.suspect_q7, a.suspect_q8, a.suspect_q9, a.suspect_q10, a.suspect_score,
                        u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
@@ -1229,7 +1229,7 @@ def bootstrap_data():
                 cur.execute(
                     """
                     SELECT a.id, a.account_name, a.created_at, a.updated_at,
-                           a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode,
+                           a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode, a.account_tag,
                            a.suspect_q1, a.suspect_q2, a.suspect_q3, a.suspect_q4, a.suspect_q5,
                            a.suspect_q6, a.suspect_q7, a.suspect_q8, a.suspect_q9, a.suspect_q10, a.suspect_score,
                            u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
@@ -1244,7 +1244,7 @@ def bootstrap_data():
                     cur.execute(
                         """
                         SELECT a.id, a.account_name, a.created_at, a.updated_at,
-                               a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode,
+                               a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode, a.account_tag,
                                a.suspect_q1, a.suspect_q2, a.suspect_q3, a.suspect_q4, a.suspect_q5,
                                a.suspect_q6, a.suspect_q7, a.suspect_q8, a.suspect_q9, a.suspect_q10, a.suspect_score,
                                u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
@@ -1261,7 +1261,7 @@ def bootstrap_data():
                         cur.execute(
                             """
                             SELECT a.id, a.account_name, a.created_at, a.updated_at,
-                                   a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode,
+                                   a.industry, a.tier, a.location, a.company_size, a.annual_spend, a.mode, a.account_tag,
                                    a.suspect_q1, a.suspect_q2, a.suspect_q3, a.suspect_q4, a.suspect_q5,
                                    a.suspect_q6, a.suspect_q7, a.suspect_q8, a.suspect_q9, a.suspect_q10, a.suspect_score,
                                    u.id AS account_manager_id, u.name AS account_manager, u.email AS account_manager_email
@@ -1492,12 +1492,16 @@ def import_accounts():
         return jsonify({"error": "Missing file in form-data"}), 400
 
     file_obj = request.files["file"]
+    default_tag = (request.form.get("default_tag") or "existing").strip().lower()
+    if default_tag not in ("new", "existing"):
+        default_tag = "existing"
     if not file_obj or not file_obj.filename:
         return jsonify({"error": "Invalid file"}), 400
 
     try:
-        content = file_obj.read().decode("utf-8", errors="replace")
-        reader = csv.DictReader(StringIO(content))
+        # utf-8-sig transparently strips a leading BOM (common from Excel CSV exports)
+        content = file_obj.read().decode("utf-8-sig", errors="replace")
+        rows = list(csv.DictReader(StringIO(content)))
     except Exception as exc:
         return jsonify({"error": f"Could not read CSV: {exc}"}), 400
 
@@ -1505,27 +1509,86 @@ def import_accounts():
     updated = 0
     failed = []
 
-    for idx, row in enumerate(reader, start=2):
-        name = (row.get("account_name") or "").strip()
-        manager = (row.get("account_manager") or "").strip()
-        if not name or not manager:
-            failed.append({"row": idx, "error": "Missing account_name/account_manager"})
-            continue
-        try:
-            manager_id = ensure_user(manager)
-            result = upsert_account(
-                {
-                    "account_name": name,
-                    "account_manager": manager,
-                },
-                manager_id,
-            )
-            if result == "created":
-                created += 1
-            else:
-                updated += 1
-        except Exception as exc:
-            failed.append({"row": idx, "error": str(exc), "account_name": name})
+    # Single connection + single transaction for the whole batch instead of one
+    # connection per row (which was blowing past the serverless function timeout
+    # on large imports and causing silent failures / crashes).
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, lower(email) AS email FROM users")
+            user_by_email = {r["email"]: int(r["id"]) for r in cur.fetchall()}
+
+            cur.execute("SELECT id, lower(account_name) AS account_name FROM accounts")
+            account_by_name = {r["account_name"]: int(r["id"]) for r in cur.fetchall()}
+
+            for idx, row in enumerate(rows, start=2):
+                name = (row.get("account_name") or "").strip()
+                manager = (row.get("account_manager") or "").strip()
+                if not name or not manager:
+                    failed.append({"row": idx, "error": "Missing account_name/account_manager"})
+                    continue
+                try:
+                    manager_key = manager.strip().lower()
+                    if "@" in manager_key:
+                        manager_id = user_by_email.get(manager_key)
+                        if manager_id is None:
+                            cur.execute(
+                                "INSERT INTO users (email, name, role, created_at) "
+                                "VALUES (%s, %s, 'account_manager', now()) "
+                                "ON CONFLICT (email) DO UPDATE SET email=EXCLUDED.email RETURNING id",
+                                (manager, manager.split("@")[0]),
+                            )
+                            manager_id = int(cur.fetchone()["id"])
+                            user_by_email[manager_key] = manager_id
+                    else:
+                        cur.execute("SELECT id FROM users WHERE lower(name)=lower(%s)", (manager,))
+                        row_u = cur.fetchone()
+                        if row_u:
+                            manager_id = int(row_u["id"])
+                        else:
+                            placeholder_email = f"{manager.lower().replace(' ', '.')}@local.crm"
+                            cur.execute(
+                                "INSERT INTO users (email, name, role, created_at) "
+                                "VALUES (%s, %s, 'account_manager', now()) "
+                                "ON CONFLICT (email) DO UPDATE SET email=EXCLUDED.email RETURNING id",
+                                (placeholder_email, manager),
+                            )
+                            manager_id = int(cur.fetchone()["id"])
+                            user_by_email[placeholder_email] = manager_id
+
+                    account_tag = (row.get("account_tag") or default_tag).strip().lower()
+                    if account_tag not in ("new", "existing"):
+                        account_tag = default_tag
+
+                    name_key = name.strip().lower()
+                    existing_id = account_by_name.get(name_key)
+
+                    if existing_id:
+                        cur.execute(
+                            "UPDATE accounts SET account_manager_id=%s, account_tag=%s, updated_at=now() WHERE id=%s",
+                            (manager_id, account_tag, existing_id),
+                        )
+                        updated += 1
+                    else:
+                        cur.execute(
+                            "INSERT INTO accounts (account_name, account_manager_id, account_tag, created_at, updated_at) "
+                            "VALUES (%s, %s, %s, now(), now()) RETURNING id",
+                            (name, manager_id, account_tag),
+                        )
+                        account_by_name[name_key] = int(cur.fetchone()["id"])
+                        created += 1
+
+                    # Commit in small batches so a mid-batch error doesn't roll back
+                    # everything already processed.
+                    if (created + updated) % 25 == 0:
+                        conn.commit()
+                except Exception as exc:
+                    conn.rollback()
+                    failed.append({"row": idx, "error": str(exc), "account_name": name})
+
+        conn.commit()
+    finally:
+        conn.close()
 
     return jsonify(
         {
