@@ -1499,9 +1499,9 @@ def import_accounts():
         return jsonify({"error": "Invalid file"}), 400
 
     try:
-        # utf-8-sig transparently strips a leading BOM (common from Excel CSV exports)
-        content = file_obj.read().decode("utf-8-sig", errors="replace")
-        rows = list(csv.DictReader(StringIO(content)))
+        content = file_obj.read().decode("utf-8", errors="replace")
+        reader = csv.DictReader(StringIO(content))
+        rows = list(reader)
     except Exception as exc:
         return jsonify({"error": f"Could not read CSV: {exc}"}), 400
 
@@ -1509,84 +1509,102 @@ def import_accounts():
     updated = 0
     failed = []
 
-    # Single connection + single transaction for the whole batch instead of one
-    # connection per row (which was blowing past the serverless function timeout
-    # on large imports and causing silent failures / crashes).
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, lower(email) AS email FROM users")
-            user_by_email = {r["email"]: int(r["id"]) for r in cur.fetchall()}
-
-            cur.execute("SELECT id, lower(account_name) AS account_name FROM accounts")
-            account_by_name = {r["account_name"]: int(r["id"]) for r in cur.fetchall()}
-
             for idx, row in enumerate(rows, start=2):
                 name = (row.get("account_name") or "").strip()
                 manager = (row.get("account_manager") or "").strip()
                 if not name or not manager:
                     failed.append({"row": idx, "error": "Missing account_name/account_manager"})
                     continue
-                try:
-                    manager_key = manager.strip().lower()
-                    if "@" in manager_key:
-                        manager_id = user_by_email.get(manager_key)
-                        if manager_id is None:
-                            cur.execute(
-                                "INSERT INTO users (email, name, role, created_at) "
-                                "VALUES (%s, %s, 'account_manager', now()) "
-                                "ON CONFLICT (email) DO UPDATE SET email=EXCLUDED.email RETURNING id",
-                                (manager, manager.split("@")[0]),
-                            )
-                            manager_id = int(cur.fetchone()["id"])
-                            user_by_email[manager_key] = manager_id
-                    else:
-                        cur.execute("SELECT id FROM users WHERE lower(name)=lower(%s)", (manager,))
-                        row_u = cur.fetchone()
-                        if row_u:
-                            manager_id = int(row_u["id"])
-                        else:
-                            placeholder_email = f"{manager.lower().replace(' ', '.')}@local.crm"
-                            cur.execute(
-                                "INSERT INTO users (email, name, role, created_at) "
-                                "VALUES (%s, %s, 'account_manager', now()) "
-                                "ON CONFLICT (email) DO UPDATE SET email=EXCLUDED.email RETURNING id",
-                                (placeholder_email, manager),
-                            )
-                            manager_id = int(cur.fetchone()["id"])
-                            user_by_email[placeholder_email] = manager_id
 
+                try:
+                    # ---- ensure_user, inline using the shared connection ----
+                    manager_email = manager.strip()
+                    manager_id = None
+                    if "@" in manager_email:
+                        cur.execute(
+                            "SELECT id FROM users WHERE lower(email)=lower(%s)",
+                            (manager_email,),
+                        )
+                        urow = cur.fetchone()
+                        if urow:
+                            manager_id = int(urow["id"])
+                        else:
+                            cur.execute(
+                                "INSERT INTO users (email, name, role, created_at) VALUES (%s, %s, 'account_manager', now()) RETURNING id",
+                                (manager_email, manager_email.split("@")[0]),
+                            )
+                            manager_id = int(cur.fetchone()["id"])
+                    else:
+                        cur.execute(
+                            "SELECT id FROM users WHERE lower(name)=lower(%s)",
+                            (manager_email,),
+                        )
+                        urow = cur.fetchone()
+                        if urow:
+                            manager_id = int(urow["id"])
+                        else:
+                            placeholder_email = f"{manager_email.lower().replace(' ', '.')}@local.crm"
+                            cur.execute(
+                                "INSERT INTO users (email, name, role, created_at) VALUES (%s, %s, 'account_manager', now()) RETURNING id",
+                                (placeholder_email, manager_email),
+                            )
+                            manager_id = int(cur.fetchone()["id"])
+
+                    # ---- upsert_account, inline using the shared connection ----
+                    industry = (row.get("industry") or "").strip()
+                    tier = (row.get("tier") or "").strip()
+                    location = (row.get("location") or "").strip()
+                    company_size = (row.get("company_size") or "").strip()
+                    annual_spend = (row.get("annual_spend") or "").strip()
+                    mode = (row.get("mode") or "").strip()
                     account_tag = (row.get("account_tag") or default_tag).strip().lower()
                     if account_tag not in ("new", "existing"):
                         account_tag = default_tag
 
-                    name_key = name.strip().lower()
-                    existing_id = account_by_name.get(name_key)
+                    cur.execute(
+                        "SELECT id FROM accounts WHERE lower(account_name)=lower(%s)",
+                        (name,),
+                    )
+                    existing_acc = cur.fetchone()
 
-                    if existing_id:
+                    if existing_acc:
                         cur.execute(
-                            "UPDATE accounts SET account_manager_id=%s, account_tag=%s, updated_at=now() WHERE id=%s",
-                            (manager_id, account_tag, existing_id),
+                            """
+                            UPDATE accounts
+                            SET account_manager_id=%s, industry=%s, tier=%s, location=%s,
+                                company_size=%s, annual_spend=%s, mode=%s, account_tag=%s,
+                                updated_at=now()
+                            WHERE id=%s
+                            """,
+                            (manager_id, industry, tier, location, company_size,
+                             annual_spend, mode, account_tag, int(existing_acc["id"])),
                         )
                         updated += 1
                     else:
                         cur.execute(
-                            "INSERT INTO accounts (account_name, account_manager_id, account_tag, created_at, updated_at) "
-                            "VALUES (%s, %s, %s, now(), now()) RETURNING id",
-                            (name, manager_id, account_tag),
+                            """
+                            INSERT INTO accounts (
+                                account_name, account_manager_id, industry, tier, location,
+                                company_size, annual_spend, mode, account_tag,
+                                created_at, updated_at
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+                            """,
+                            (name, manager_id, industry, tier, location,
+                             company_size, annual_spend, mode, account_tag),
                         )
-                        account_by_name[name_key] = int(cur.fetchone()["id"])
                         created += 1
 
-                    # Commit in small batches so a mid-batch error doesn't roll back
-                    # everything already processed.
-                    if (created + updated) % 25 == 0:
-                        conn.commit()
-                except Exception as exc:
-                    conn.rollback()
-                    failed.append({"row": idx, "error": str(exc), "account_name": name})
+                except Exception as row_exc:
+                    failed.append({"row": idx, "error": str(row_exc), "account_name": name})
 
         conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        return jsonify({"error": f"import failed: {exc}"}), 500
     finally:
         conn.close()
 
@@ -1598,7 +1616,6 @@ def import_accounts():
             "failed_rows": failed[:50],
         }
     )
-
 
 @app.route("/api/activities", methods=["GET"])
 def list_activities():
